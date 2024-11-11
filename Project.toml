@@ -1,0 +1,29 @@
+name = "ElectronDynamicsModels"
+uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
+authors = ["Sebastian Micluța-Câmpeanu <sebastian.mc95@proton.me> and contributors"]
+version = "0.1.0-DEV"
+
+[deps]
+LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
+ModelingToolkit = "961ee093-0014-501f-94e3-6117800e7a78"
+PhysicalConstants = "5ad8b20f-a522-5ce9-bfc9-ddf1d5bda6ab"
+Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
+Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
+UnitfulAtomic = "a7773ee8-282e-5fa2-be4e-bd808c38a91a"
+
+[compat]
+LinearAlgebra = "1.11.0"
+ModelingToolkit = "9.50.0"
+PhysicalConstants = "0.2.3"
+Symbolics = "6.18.3"
+Unitful = "1.21.0"
+UnitfulAtomic = "1.0.0"
+julia = "1.11"
+
+[extras]
+Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
+JET = "c3a54625-cd67-489e-a8e7-0a5a0ff4e31b"
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Aqua", "JET", "Test"]
