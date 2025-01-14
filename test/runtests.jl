@@ -10,5 +10,7 @@ using JET
     @testset "Code linting (JET.jl)" begin
         JET.test_package(ElectronDynamicsModels; target_defined_modules = true)
     end
-    # Write your tests here.
+    @testset "Figure 8" begin
+        include("fig8.jl")
+    end
 end
