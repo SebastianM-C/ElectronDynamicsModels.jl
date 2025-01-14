@@ -118,3 +118,37 @@ function PlaneWave(; name)
         parameter_dependencies = [ω ~ 2π * c / λ, k ~ 2π / λ, E₀ ~ a₀ * m * c * ω / abs(q)],
     )
 end
+
+function PlaneWave2(; name)
+    @parameters begin
+        λ = austrip(800u"nm")
+        a₀ = 10.0
+        c = austrip(c_0), [tunable = false]
+        m = austrip(m_e)
+        q = austrip(e)
+        ω
+        k
+        E₀
+    end
+
+    @independent_variables t
+
+    @variables E(t)[1:3] [output = true] B(t)[1:3] [output = true]
+    @variables τ(t) x(t)[1:4] [input = true]
+
+    eqs = [
+        E[1] ~ E₀ * cos(k * x[4] - ω * t)
+        E[2] ~ 0
+        E[3] ~ 0
+        B[1] ~ 0
+        B[2] ~ 1 / c * E₀ * cos(k * x[4] - ω * t)
+        B[3] ~ 0
+    ]
+
+    ODESystem(
+        eqs,
+        t;
+        name,
+        parameter_dependencies = [ω ~ 2π * c / λ, k ~ 2π / λ, E₀ ~ a₀ * m * c * ω / abs(q)],
+    )
+end
