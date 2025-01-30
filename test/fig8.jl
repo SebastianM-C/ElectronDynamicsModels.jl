@@ -4,7 +4,7 @@ using LinearAlgebra
 using Plots
 
 @named laser = PlaneWave()
-@named electron = ElectronDynamicsModels.ClassicalElectronModel()
+@named electron = ClassicalElectronModel()
 
 eqs = [
     electron.external_field.E ~ laser.E
