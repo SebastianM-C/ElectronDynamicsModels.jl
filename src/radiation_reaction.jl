@@ -8,11 +8,10 @@ function LandauLifshitzRadiationReaction(; name)
 
     @independent_variables t
     Dt = Differential(t)
-    @variables γ(t) x(t)[1:4] [guess = [c * t, 0, 0, 0]] u(t)[1:4] [
-        guess = [c, 0, 0, 0],
-    ] v(t)[1:3] p(t)[1:4] p⃗(t)[1:3]
+    @variables γ(t) x(t)[1:4] [guess = [c * t, 0, 0, 0]] τ(t)
+    @variables u(t)[1:4] [guess = [c, 0, 0, 0]] v(t)[1:3] p(t)[1:4] p⃗(t)[1:3]
 
-    @variables Pcl(t)
+    @variables Pcl(t) Ė(t)[1:3] Ḃ(t)[1:3]
     @parameters P0 Ecr rₑ = q^2 / (4π * ϵ₀ * m * c^2) [tunable = false] τₑ = rₑ / c [
         tunable = false,
     ]
@@ -20,21 +19,22 @@ function LandauLifshitzRadiationReaction(; name)
     E, B = external_field.E, external_field.B
 
     eqs = [
-        # t ~ x[1] / c
-        p ~ m * u
-        p[1] ~ γ * m * c
-        p[2] ~ p⃗[1]
-        p[3] ~ p⃗[2]
-        p[4] ~ p⃗[3]
-        # u[1] ~ γ * c
-        u[2] ~ γ * v[1]
-        u[3] ~ γ * v[2]
-        u[4] ~ γ * v[3]
-        # γ ~ 1 / √(1 - (v ⋅ v) / c^2)
-        Pcl ~ P0 * γ^2 / Ecr^2 * abs((E + v × B) ⋅ (E + v × B) - (v ⋅ E)^2)
-        Dt(x) ~ u
-        m * c^2 * Dt(γ) ~ q * c * v ⋅ E - Pcl
-        Dt(p⃗) ~ q * (E + v × B) - Pcl * v / (c * v ⋅ v)
+        x[1] ~ c * t
+        Dt(τ) ~ 1 / γ
+        Dt(x[2]) ~ (p⃗/(γ*m))[1]
+        Dt(x[3]) ~ (p⃗/(γ*m))[2]
+        Dt(x[4]) ~ (p⃗/(γ*m))[3]
+        v ~ p⃗ / (γ * m)
+        Ė ~ Dt(E)
+        Ḃ ~ Dt(B)
+        Dt(γ) ~
+            q / (m * c^2) * v ⋅ E + 2 / 3 * q * τₑ * γ * Ė ⋅ v -
+            2 / 3 * q / Ecr * E ⋅ (E + v × B) +
+            2 / 3 * q / Ecr * γ^2 * ((E + v × B) ⋅ (E + v × B) - (v ⋅ E)^2)
+        Dt(p⃗) ~
+            q * (E + v × B) + 2 / (3 * c) * q * τₑ * γ * (Ė + v × Ḃ) -
+            2 / (3 * c) * q / Ecr * ((v ⋅ E) * E - B × (E + v × B)) +
+            2 / (3 * c) * γ^2 * ((E + v × B) ⋅ (E + v × B) - (v ⋅ E)^2) * v
     ]
 
     ODESystem(
