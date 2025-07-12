@@ -35,16 +35,10 @@ function LandauLifshitzRadiationReaction(; name)
             q * (E + v × B) + 2 / (3 * c) * q * τₑ * γ * (Ė + v × Ḃ) -
             2 / (3 * c) * q / Ecr * ((v ⋅ E) * E - B × (E + v × B)) +
             2 / (3 * c) * γ^2 * ((E + v × B) ⋅ (E + v × B) - (v ⋅ E)^2) * v
+        # parameters
+        P0 ~ 2m * c^2 / (3τₑ)
+        Ecr ~ 4π * ϵ₀ * m^2 * c^4 / q^3
     ]
 
-    ODESystem(
-        eqs,
-        t;
-        name,
-        systems = [external_field],
-        parameter_dependencies = [
-            P0 ~ 2m * c^2 / (3τₑ)
-            Ecr ~ 4π * ϵ₀ * m^2 * c^4 / q^3
-        ],
-    )
+    System(eqs, t; name, systems = [external_field])
 end

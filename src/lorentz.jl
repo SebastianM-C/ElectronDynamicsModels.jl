@@ -23,7 +23,7 @@ function ClassicalElectronModel(; name)
         dτ(u) ~ q / m * (Fμν * gμν * u)
     ]
 
-    ODESystem(eqs, τ; name, systems = [external_field])
+    System(eqs, τ; name, systems = [external_field])
 end
 
 function ClassicalElectronModel2(; name)
@@ -58,5 +58,5 @@ function ClassicalElectronModel2(; name)
         Dt(p⃗) ~ q * (E + p⃗/(γ*m) × B)
     ]
 
-    ODESystem(eqs, t; name, systems = [external_field])
+    System(eqs, t; name, systems = [external_field])
 end

@@ -1,4 +1,4 @@
-using ModelingToolkit, OrdinaryDiffEq
+using ModelingToolkit, OrdinaryDiffEqVerner, OrdinaryDiffEqRosenbrock, OrdinaryDiffEqNonlinearSolve
 using ElectronDynamicsModels
 using LinearAlgebra
 using Plots
@@ -12,8 +12,8 @@ eqs = [
     electron.x ~ laser.x
 ]
 
-model = ODESystem(eqs, electron.t; name = :sys, systems = [electron, laser])
-sys = structural_simplify(model)
+model = System(eqs, electron.t; name = :sys, systems = [electron, laser])
+sys = mtkcompile(model)
 
 (; a₀, c) = laser
 
@@ -34,8 +34,7 @@ prob = ODEProblem(
         electron.x[3] => 0
         electron.x[4] => 0
     ],
-    tspan,
-    [],
+    tspan
 )
 
 sol = solve(prob, Vern9(), abstol = 1e-9, reltol = 1e-9)
@@ -54,8 +53,8 @@ eqs = [
     electron.x ~ laser.x
 ]
 
-model = ODESystem(eqs, electron.t; name = :sys, systems = [electron, laser])
-sys = structural_simplify(model)
+model = System(eqs, electron.t; name = :sys, systems = [electron, laser])
+sys = mtkcompile(model)
 
 tspan = (0, 350)
 
@@ -71,8 +70,7 @@ prob = ODEProblem(
         electron.x[3] => 0
         electron.x[4] => 0
     ],
-    tspan,
-    [],
+    tspan
 )
 
 sol = solve(prob, Vern9(), abstol = 1e-9, reltol = 1e-9)

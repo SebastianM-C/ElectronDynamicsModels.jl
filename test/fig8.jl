@@ -1,4 +1,4 @@
-using ModelingToolkit, OrdinaryDiffEq
+using ModelingToolkit, OrdinaryDiffEqVerner, OrdinaryDiffEqNonlinearSolve
 using ElectronDynamicsModels
 using LinearAlgebra
 using Plots
@@ -13,8 +13,8 @@ eqs = [
     electron.t ~ laser.t
 ]
 
-model = ODESystem(eqs, τ; name = :sys, systems = [electron, laser])
-sys = structural_simplify(model)
+model = System(eqs, τ; name = :sys, systems = [electron, laser])
+sys = mtkcompile(model)
 
 (;a₀, c) = laser
 
@@ -33,8 +33,7 @@ prob = ODEProblem(
         electron.u[2] => 0
         # electron.u[3] => 0
     ],
-    tspan,
-    [],
+    tspan
 )
 
 sol = solve(prob, Vern9(), abstol = 1e-9, reltol = 1e-9)

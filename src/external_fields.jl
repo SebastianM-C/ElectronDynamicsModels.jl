@@ -14,7 +14,7 @@
         ],
     ]
 
-    ODESystem(eqs, t; name)
+    System(eqs, t; name)
 end
 
 function GaussLaser(; name)
@@ -72,19 +72,14 @@ function GaussLaser(; name)
             exp(im * ω * t) *
             exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
         )
+        # parameters
+        # ω ~ 2π * c / λ,
+        E₀ ~ a₀ * m * c * ω / abs(q)
+        z_R ~ w₀^2 * k / 2
+        k ~ 2π / λ
     ]
 
-    ODESystem(
-        eqs,
-        τ;
-        name,
-        parameter_dependencies = [
-            ω ~ 2π * c / λ,
-            E₀ ~ a₀ * m * c * ω / abs(q),
-            z_R ~ w₀^2 * k / 2,
-            k ~ 2π / λ,
-        ],
-    )
+    System(eqs, τ; name)
 end
 
 function PlaneWave(; name)
@@ -109,14 +104,13 @@ function PlaneWave(; name)
         B[1] ~ 0
         B[2] ~ 1 / c * E₀ * cos(k * x[4] - ω * t)
         B[3] ~ 0
+        # parameters
+        ω ~ 2π * c / λ
+        k ~ 2π / λ
+        E₀ ~ a₀ * m * c * ω / abs(q)
     ]
 
-    ODESystem(
-        eqs,
-        τ;
-        name,
-        parameter_dependencies = [ω ~ 2π * c / λ, k ~ 2π / λ, E₀ ~ a₀ * m * c * ω / abs(q)],
-    )
+    System(eqs, τ; name)
 end
 
 function PlaneWave2(; name)
@@ -143,12 +137,11 @@ function PlaneWave2(; name)
         B[1] ~ 0
         B[2] ~ 1 / c * E₀ * cos(k * x[4] - ω * t)
         B[3] ~ 0
+        # parameters
+        ω ~ 2π * c / λ
+        k ~ 2π / λ
+        E₀ ~ a₀ * m * c * ω / abs(q)
     ]
 
-    ODESystem(
-        eqs,
-        t;
-        name,
-        parameter_dependencies = [ω ~ 2π * c / λ, k ~ 2π / λ, E₀ ~ a₀ * m * c * ω / abs(q)],
-    )
+    System(eqs, t; name)
 end

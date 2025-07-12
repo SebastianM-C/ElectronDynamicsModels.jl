@@ -1,6 +1,8 @@
 name = "ElectronDynamicsModels"
 uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
-authors = ["Sebastian Micluța-Câmpeanu <sebastian.mc95@proton.me> and contributors"]
+authors = [
+    "Sebastian Micluța-Câmpeanu <sebastian.mc95@proton.me> and contributors",
+]
 version = "0.1.0-DEV"
 
 [deps]
@@ -13,7 +15,7 @@ UnitfulAtomic = "a7773ee8-282e-5fa2-be4e-bd808c38a91a"
 
 [compat]
 LinearAlgebra = "1.11.0"
-ModelingToolkit = "9.50.0"
+ModelingToolkit = "10"
 PhysicalConstants = "0.2.3"
 Symbolics = "6.18.3"
 Unitful = "1.21.0"
