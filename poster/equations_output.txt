@@ -1,0 +1,106 @@
+  Activating project at `/workspace/poster`
+=== Raw System Equations (before mtkcompile) ===
+Number of equations: 37
+
+Position equations (0):
+
+Velocity equations (0):
+
+Force equations (14):
+\begin{equation}
+\mathtt{F\_lorentz}\left( \tau \right) = broadcast\left( *, Ref\left( q \right), \mathtt{plane\_wave.field\_dynamics.field.F\mu\nu}\left( \tau \right) \mathtt{g\mu\nu} u\left( \tau \right) \right)
+\end{equation}
+
+\begin{equation}
+\mathtt{particle.F\_total}\left( \tau \right) = broadcast\left( +, \mathtt{F\_lorentz}\left( \tau \right), \mathtt{radiation.F\_rad}\left( \tau \right) \right)
+\end{equation}
+
+\begin{equation}
+\frac{\mathrm{d} \mathtt{particle.u}\left( \tau \right)}{\mathrm{d}\tau} = broadcast\left( /, \mathtt{particle.F\_total}\left( \tau \right), Ref\left( \mathtt{particle.m} \right) \right)
+\end{equation}
+
+
+Field equations (10):
+\begin{equation}
+\mathtt{plane\_wave.field\_dynamics.field.J}\left( \tau \right) = broadcast\left( *, Ref\left( q \right), u\left( \tau \right) \right)
+\end{equation}
+
+\begin{equation}
+\mathtt{plane\_wave.field\_dynamics.field.F\mu\nu}\left( \tau \right) = \mathtt{radiation.field.F\mu\nu}\left( \tau \right)
+\end{equation}
+
+\begin{equation}
+\mathtt{plane\_wave.field\_dynamics.E}\_{1}\left( \tau \right) = \mathtt{plane\_wave.A} \cos\left( \mathtt{plane\_wave.k}_{1} \mathtt{plane\_wave.x⃗}\_{1}\left( \tau \right) + \mathtt{plane\_wave.k}_{2} \mathtt{plane\_wave.x⃗}\_{2}\left( \tau \right) + \mathtt{plane\_wave.k}_{3} \mathtt{plane\_wave.x⃗}\_{3}\left( \tau \right) - \mathtt{plane\_wave.\omega} \mathtt{plane\_wave.t}\left( \tau \right) \right)
+\end{equation}
+
+
+Other equations (13):
+\begin{equation}
+x\left( \tau \right) = \mathtt{particle.x}\left( \tau \right)
+\end{equation}
+
+\begin{equation}
+u\left( \tau \right) = \mathtt{particle.u}\left( \tau \right)
+\end{equation}
+
+\begin{equation}
+\mathtt{plane\_wave.x}\left( \tau \right) = \mathtt{particle.x}\left( \tau \right)
+\end{equation}
+
+
+
+=== Compiled System Equations (after mtkcompile) ===
+Number of equations: 8
+
+All compiled equations:
+1. \begin{equation}
+\frac{\mathrm{d} \mathtt{particle.u}\_{4}\left( \tau \right)}{\mathrm{d}\tau} = \frac{\mathtt{particle.F\_total}\_{4}\left( \tau \right)}{\mathtt{particle.m}}
+\end{equation}
+
+2. \begin{equation}
+\frac{\mathrm{d} \mathtt{particle.u}\_{3}\left( \tau \right)}{\mathrm{d}\tau} = \frac{\mathtt{particle.F\_total}\_{3}\left( \tau \right)}{\mathtt{particle.m}}
+\end{equation}
+
+3. \begin{equation}
+\frac{\mathrm{d} \mathtt{particle.u}\_{2}\left( \tau \right)}{\mathrm{d}\tau} = \frac{\mathtt{particle.F\_total}\_{2}\left( \tau \right)}{\mathtt{particle.m}}
+\end{equation}
+
+4. \begin{equation}
+\frac{\mathrm{d} \mathtt{particle.u}\_{1}\left( \tau \right)}{\mathrm{d}\tau} = \frac{\mathtt{particle.F\_total}\_{1}\left( \tau \right)}{\mathtt{particle.m}}
+\end{equation}
+
+5. \begin{equation}
+\frac{\mathrm{d} \mathtt{particle.x}\_{4}\left( \tau \right)}{\mathrm{d}\tau} = \mathtt{particle.u}\_{4}\left( \tau \right)
+\end{equation}
+
+6. \begin{equation}
+\frac{\mathrm{d} \mathtt{particle.x}\_{3}\left( \tau \right)}{\mathrm{d}\tau} = \mathtt{particle.u}\_{3}\left( \tau \right)
+\end{equation}
+
+7. \begin{equation}
+\frac{\mathrm{d} \mathtt{particle.x}\_{2}\left( \tau \right)}{\mathrm{d}\tau} = \mathtt{particle.u}\_{2}\left( \tau \right)
+\end{equation}
+
+8. \begin{equation}
+\frac{\mathrm{d} \mathtt{particle.x}\_{1}\left( \tau \right)}{\mathrm{d}\tau} = \mathtt{particle.u}\_{1}\left( \tau \right)
+\end{equation}
+
+
+=== System States ===
+Raw system unknowns (30):
+  x(τ)
+  particle₊x(τ)
+  u(τ)
+  particle₊u(τ)
+  plane_wave₊x(τ)
+  ... and 25 more
+
+Compiled system unknowns (8):
+  (particle₊u(τ))[4]
+  (particle₊u(τ))[3]
+  (particle₊u(τ))[2]
+  (particle₊u(τ))[1]
+  (particle₊x(τ))[4]
+  (particle₊x(τ))[3]
+  (particle₊x(τ))[2]
+  (particle₊x(τ))[1]

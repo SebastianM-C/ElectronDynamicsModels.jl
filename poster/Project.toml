@@ -1,0 +1,14 @@
+[deps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+Colors = "5ae59095-9a9b-59fe-a467-6f913c188581"
+ElectronDynamicsModels = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
+Latexify = "23fbe1c1-3f47-55db-b15f-69d7ec21a316"
+ModelingToolkit = "961ee093-0014-501f-94e3-6117800e7a78"
+OrdinaryDiffEqDefault = "50262376-6c5a-4cf5-baba-aaf4f84d72d7"
+OrdinaryDiffEqTsit5 = "b1df2697-797e-41e3-8120-5422d3b24e4a"
+OrdinaryDiffEqVerner = "79d7bb75-1356-48c1-b8c0-6832512096c2"
+PDFIO = "4d0d745f-9d9a-592e-8d18-1ad8a0f42b92"
+Typst_jll = "eb4b1da6-20f6-5c66-9826-fdb8ad410d0e"
+
+[sources]
+ElectronDynamicsModels = {path = ".."}
