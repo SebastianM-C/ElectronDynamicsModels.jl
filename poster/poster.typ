@@ -222,7 +222,7 @@ end
   = ModelingToolkit Architecture
 
   #figure(
-    image("mtk_schematic.png", width: 100%),
+    image("mtk_schematic.svg", width: 100%),
     caption: [Component-based architecture with swappable models]
   )
 
@@ -402,7 +402,7 @@ end
   ]
 
   #v(15pt)
-  
+
   #align(center)[
     #text(size: 14pt, style: "italic", fill: gray)[
       Poster created with assistance from Claude
@@ -443,7 +443,7 @@ sys = mtkcompile(electron)
 
 # Initial conditions for figure-8 orbit
 v₀_z = -c / ((2/a₀)^2 + 1)
-γ₀ = 1.0 / sqrt(1 - v₀_z^2)
+γ₀ = 1.0 / sqrt(1 - (v₀_z/c)^2)
 u0 = [
     sys.x => [0.0, 0.0, 0.0, 0.0],
     sys.u => [γ₀, 0.0, 0.0, γ₀*v₀_z]
@@ -470,7 +470,7 @@ sol_vern9 = solve(prob, Vern9(),
   )[
     #align(left)[
       #text(size: 20pt)[
-      #text(weight: "bold")[Four-velocity norm:] $u_mu u^mu &= -c^2$ (constant) \
+      #text(weight: "bold")[Four-velocity norm:] $u_mu u^mu &= c^2$ (constant) \
       #text(weight: "bold")[Lightfront momentum:] $p^(-) = p^0 - p^3$ (conserved in plane wave)
       ]
     ]

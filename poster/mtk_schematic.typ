@@ -15,7 +15,7 @@
   rows: (1fr, 1fr),
   row-gutter: 30pt,
   column-gutter: 35pt,
-  
+
   // Top left - External Fields
   rect(
     fill: gradient.linear(julia-green.lighten(95%), julia-green.lighten(90%), angle: 90deg),
@@ -27,9 +27,9 @@
     #v(10pt)
     #text(size: 22pt)[
       PlaneWave, GaussLaser
-      
+
       #v(8pt)
-      
+
       Faraday tensor: $F^(mu nu) = mat(
         0, -E_x slash c, -E_y slash c, -E_z slash c;
         E_x slash c, 0, -B_z, B_y;
@@ -50,14 +50,14 @@
     #v(10pt)
     #text(size: 22pt)[
       $d x^mu slash d tau = u^mu$
-      
+
       #v(8pt)
-      
+
       $m d u^mu slash d tau = F^mu_"total"$
-      
+
       #v(8pt)
-      
-      $u_mu u^mu = -c^2$
+
+      $u_mu u^mu = c^2$
     ]
   ],
 
@@ -72,13 +72,13 @@
     #v(10pt)
     #text(size: 22pt)[
       Abraham-Lorentz, Landau-Lifshitz
-      
+
       #v(8pt)
-      
+
       Abraham-Lorentz: $F^mu_"rad" prop (d^2 u^mu)/(d tau^2)$
     ]
   ],
-  
+
   // Bottom right - Composed System
   rect(
     fill: gradient.linear(accent-blue.lighten(95%), accent-blue.lighten(90%), angle: 90deg),
@@ -90,9 +90,9 @@
     #v(10pt)
     #text(size: 22pt)[
       $F^mu_"Lorentz" = q F^(mu nu) u_nu$
-      
+
       #v(8pt)
-      
+
       $F^mu_"total" = F^mu_"Lorentz" + F^mu_"rad"$
     ]
   ]
