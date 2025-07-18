@@ -1,9 +1,7 @@
 name = "ElectronDynamicsModels"
 uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
-authors = [
-    "Sebastian Micluța-Câmpeanu <sebastian.mc95@proton.me> and contributors",
-]
 version = "0.1.0-DEV"
+authors = ["Sebastian Micluța-Câmpeanu <sebastian.mc95@proton.me> and contributors"]
 
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
@@ -23,6 +21,8 @@ OrdinaryDiffEqRosenbrock = "1.11.0"
 OrdinaryDiffEqVerner = "1.2.0"
 PhysicalConstants = "0.2.3"
 Plots = "1"
+SciMLBase = "2.102.1"
+Statistics = "1"
 Symbolics = "6.43.0"
 Test = "1.11"
 Unitful = "1.21.0"
@@ -36,7 +36,9 @@ OrdinaryDiffEqNonlinearSolve = "127b3ac7-2247-4354-8eb6-78cf4e7c58e8"
 OrdinaryDiffEqRosenbrock = "43230ef6-c299-4910-a778-202eb28ce4ce"
 OrdinaryDiffEqVerner = "79d7bb75-1356-48c1-b8c0-6832512096c2"
 Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
+SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
+Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [targets]
-test = ["Aqua", "JET", "Test", "OrdinaryDiffEqNonlinearSolve", "OrdinaryDiffEqRosenbrock", "OrdinaryDiffEqVerner", "Plots"]
+test = ["Aqua", "JET", "Test", "OrdinaryDiffEqNonlinearSolve", "OrdinaryDiffEqRosenbrock", "OrdinaryDiffEqVerner", "Plots", "SciMLBase", "Statistics"]

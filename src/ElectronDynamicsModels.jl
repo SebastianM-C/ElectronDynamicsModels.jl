@@ -6,22 +6,29 @@ using PhysicalConstants.CODATA2018: e, m_e, c_0, ε_0
 using LinearAlgebra
 using Symbolics
 
-const gμν = [
-    1 0 0 0
-    0 -1 0 0
-    0 0 -1 0
-    0 0 0 -1
-]
+m_dot(x, y) = x[1] * y[1] - x[2] * y[2] - x[3] * y[3] - x[4] * y[4]
 
 @independent_variables τ
 const dτ = Differential(τ)
 
 export τ, dτ
-export ClassicalElectronModel, LandauLifshitzRadiationReaction
-export ElectromagneticField, PlaneWave, GaussLaser
+export GaussLaser
+export Spacetime,
+    UniformField,
+    PlaneWave,
+    ParticleDynamics,
+    LandauLifshitzRadiation,
+    AbrahamLorentzRadiation,
+    ChargedParticle,
+    ClassicalElectron,
+    RadiatingElectron,
+    LandauLifshitzElectron
 
-include("lorentz.jl")
+include("base.jl")
+include("dynamics.jl")
+include("fields.jl")
 include("radiation_reaction.jl")
 include("external_fields.jl")
+include("systems.jl")
 
 end
