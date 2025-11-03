@@ -14,16 +14,16 @@ Parameters:
 @component function GaussLaser(; name, wavelength=1.0, amplitude=10.0, beam_waist=nothing, spacetime=Spacetime(c=1, name=:spacetime))
     # New interface with spacetime
     @named field_dynamics = EMFieldDynamics(; spacetime)
-    
+
     # Get spacetime variables from parent scope
     @unpack c = spacetime
     τ = ParentScope(spacetime.τ)
-    
+
     # Create local position and time variables
     @variables x(τ)[1:4] t(τ)
-    
+
     E, B = field_dynamics.E, field_dynamics.B
-    
+
     @parameters begin
         λ = wavelength
         a₀ = amplitude
@@ -37,16 +37,16 @@ Parameters:
         T0 = 100
         τ0
     end
-    
+
     # Fixed parameters
     ξx = 1.0 + 0im
     ξy = 0
     ϕ₀ = 0
     t₀ = 5T0
     z₀ = 0
-    
+
     @variables wz(τ) z(τ) r(τ)
-    
+
     eqs = [
         # Extract z-coordinate from 4-position
         z ~ x[4]
@@ -54,7 +54,7 @@ Parameters:
         wz ~ w₀ * √(1 + (z / z_R)^2)
         # Radial distance from beam axis
         r ~ hypot(x[2], x[3])
-        
+
         # Electric field components
         E[1] ~ real(
             E₀ * w₀ / wz *
@@ -72,7 +72,7 @@ Parameters:
             exp(im * ω * t) *
             exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
         )
-        
+
         # Magnetic field components
         B[1] ~ 0
         B[2] ~ 0
@@ -83,7 +83,7 @@ Parameters:
             exp(im * ω * t) *
             exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
         )
-        
+
         # Parameter relations
         ω ~ 2π * c / λ
         E₀ ~ a₀ * m * c * ω / abs(q)
@@ -91,7 +91,7 @@ Parameters:
         k ~ 2π / λ
         τ0 ~ 10 / ω
     ]
-    
+
     System(eqs, τ, [x, t, wz, z, r], [λ, a₀, m, q, ω, k, E₀, w₀, z_R, T0, τ0]; name, systems=[field_dynamics, spacetime])
 end
 

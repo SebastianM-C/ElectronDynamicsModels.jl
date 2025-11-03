@@ -7,6 +7,7 @@
     radiation_model = nothing,
 )
     @named particle = ParticleDynamics(; mass, spacetime)
+    @unpack x, u, t, F_total = particle
 
     @unpack gμν = spacetime
     Fμν = ParentScope(external_field.field_dynamics.field.Fμν)
@@ -14,18 +15,14 @@
     τ = ParentScope(spacetime.τ)
 
     @parameters q = charge
-    @variables x(τ)[1:4] u(τ)[1:4] F_lorentz(τ)[1:4]
+    @variables F_lorentz(τ)[1:4]
 
-    systems = [particle, external_field, spacetime]
+    systems = [external_field, spacetime]
 
     eqs = [
-        # shortcuts
-        x ~ particle.x
-        u ~ particle.u
-        
         # Connect particle position and time to external field
-        external_field.x ~ particle.x
-        external_field.t ~ particle.t
+        external_field.x ~ x
+        external_field.t ~ t
 
         # Lorentz force
         F_lorentz ~ q * (Fμν * gμν * u)
@@ -39,18 +36,19 @@
             LandauLifshitzRadiation(; charge, F_lorentz_ref = F_lorentz, spacetime, particle)
         push!(systems, radiation)
         push!(eqs, external_field.field_dynamics.field.Fμν ~ radiation.field.Fμν)
-        push!(eqs, particle.F_total ~ F_lorentz + radiation.F_rad)
+        push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
     elseif radiation_model == :abraham_lorentz
         @named radiation =
             AbrahamLorentzRadiation(; charge, F_lorentz_ref = F_lorentz, spacetime, particle)
         push!(systems, radiation)
-        push!(eqs, particle.F_total ~ F_lorentz + radiation.F_rad)
+        push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
     else
         # No radiation reaction
-        push!(eqs, particle.F_total ~ F_lorentz)
+        push!(eqs, F_total ~ F_lorentz)
     end
 
-    System(eqs, τ; systems, name)
+    sys = System(eqs, τ; systems, name)
+    extend(sys, particle)
 end
 
 # Convenience constructors for backward compatibility

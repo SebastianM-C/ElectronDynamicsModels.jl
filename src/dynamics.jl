@@ -4,8 +4,8 @@
     @variables begin
         t(τ), [description = "Universal time"]
         γ(τ), [description = "Lorentz factor"]
-        x(τ)[1:4], [guess = [c * t, 0, 0, 0], description = "4-position (ct, x, y, z)"]
-        u(τ)[1:4], [guess = [c, 0, 0, 0], description = "4-velocity (u⁰, u¹, u², u³, u⁴)"]
+        x(τ)[1:4], [description = "4-position (ct, x, y, z)"]
+        u(τ)[1:4], [description = "4-velocity (u⁰, u¹, u², u³, u⁴)"]
         p(τ)[1:4]
         F_total(τ)[1:4]
     end
