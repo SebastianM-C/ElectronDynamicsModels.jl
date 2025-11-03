@@ -82,7 +82,7 @@ u0 = [
     (sys.u) => u₀
 ]
 
-prob = ODEProblem{false}(sys, u0, tspan, u0_constructor=SVector{8}, fully_determined=true, initializealg=DiffEqBase.NoInit(), cse=false)
+prob = ODEProblem{false}(sys, u0, tspan, u0_constructor=SVector{8}, fully_determined=true)
 
 # Sunflower pattern for initial positions
 N = 900
@@ -125,7 +125,7 @@ function prob_func(prob, i, repeat)
     γ₀ = 1.0 / sqrt(1 - (vz/c)^2)
 
     # Initial momentum - electron at rest
-    u_new = SVector{4}(γ₀, 0.0, 0.0, γvz)
+    u_new = SVector{4}(c, 0.0, 0.0, 0.0)
 
     # Set new initial conditions
     u0, p = set_x(prob, SVector{8}(x_new..., u_new...))
