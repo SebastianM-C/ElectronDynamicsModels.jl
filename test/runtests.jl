@@ -16,7 +16,7 @@ using JET
     @testset "Radiation Reaction" begin
         include("test_radiation.jl")
     end
-    # @testset "Figure 8" begin
-    #     include("fig8.jl")
-    # end
+    @testset "LaguerreGauss" begin
+        include("test_laguerre_gauss.jl")
+    end
 end
