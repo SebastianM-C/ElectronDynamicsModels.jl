@@ -3,6 +3,7 @@
 
     @unpack c, gμν = spacetime
 
+    # FIXME
     @parameters μ₀ = 1.0 ε₀ = 1.0
     @variables begin
         E(τ)[1:3]         # Electric field (3-vector)

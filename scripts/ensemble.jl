@@ -33,7 +33,7 @@ Rmax = 3.25w₀
 
 # Laser parameters in atomic units
 λ_au = λ
-a₀_au = 0.01
+a₀_au = 0.1
 w₀_au = w₀
 p_index = 2
 m_index = -2
@@ -67,22 +67,17 @@ sys = mtkcompile(lg_elec)
 τf = 8τ
 tspan = (τi, τf)
 
-# Initial conditions: electron at rest
-γ₀ = 1.0
-vz = 0.0
-γvz = 1.0 / sqrt(1 - vz^2 / c^2)
-four_velocity = [γvz*c, 0.0, 0.0, γvz*vz]
-
 # Create base problem with placeholder initial position
-x₀ = [τi*c, 0.0, 0.0, 0.0]
-u₀ = [0.0, 0.0, 0.0, γvz]
+x⁰ = [τi*c, 0.0, 0.0, 0.0]
+u⁰ = [c, 0.0, 0.0, 0.0]
 
 u0 = [
-    (sys.x) => x₀,
-    (sys.u) => u₀
+    (sys.x) => x⁰,
+    (sys.u) => u⁰
 ]
 
 prob = ODEProblem{false}(sys, u0, tspan, u0_constructor=SVector{8}, fully_determined=true)
+sol0 = solve(prob, Vern9())
 
 # Sunflower pattern for initial positions
 N = 900
