@@ -17,7 +17,7 @@ const dτ = Differential(τ)
 
 export τ, dτ
 export GaussLaser, LaguerreGaussLaser
-export Spacetime,
+export ReferenceFrame,
     UniformField,
     PlaneWave,
     ParticleDynamics,

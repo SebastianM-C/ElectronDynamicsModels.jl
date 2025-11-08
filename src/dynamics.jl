@@ -1,5 +1,5 @@
-@component function ParticleDynamics(; name, mass = 1.0, spacetime)
-    @unpack c = spacetime
+@component function ParticleDynamics(; name, mass = 1.0, ref_frame)
+    c = ref_frame.c
 
     @variables begin
         t(τ), [description = "Universal time"]
@@ -25,5 +25,5 @@
         dτ(u) ~ F_total / m
     ]
 
-    System(eqs, τ, [t, γ, x, u, p, F_total], [m]; name, systems = [spacetime])
+    System(eqs, τ, [t, γ, x, u, p, F_total], [m]; name, systems = [ref_frame])
 end

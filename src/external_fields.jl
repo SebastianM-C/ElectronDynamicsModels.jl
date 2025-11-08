@@ -11,18 +11,18 @@ Parameters:
 - T0: pulse duration parameter
 - τ0: temporal width parameter
 """
-@component function GaussLaser(; name, wavelength=1.0, amplitude=10.0, beam_waist=nothing, spacetime=Spacetime(c=1, name=:spacetime))
+@component function GaussLaser(; name, wavelength=1.0, amplitude=10.0, beam_waist=nothing, ref_frame)
     # New interface with spacetime
-    @named field_dynamics = EMFieldDynamics(; spacetime)
+    @named field_dynamics = EMFieldDynamics(; ref_frame)
 
     # Get spacetime variables from parent scope
-    @unpack c = spacetime
-    τ = ParentScope(spacetime.τ)
+    c = ref_frame.c
+    τ = ref_frame.τ
 
     # Create local position and time variables
     @variables x(τ)[1:4] t(τ)
 
-    E, B = field_dynamics.E, field_dynamics.B
+    @unpack E, B = field_dynamics
 
     @parameters begin
         λ = wavelength
@@ -92,7 +92,9 @@ Parameters:
         τ0 ~ 10 / ω
     ]
 
-    System(eqs, τ, [x, t, wz, z, r], [λ, a₀, m, q, ω, k, E₀, w₀, z_R, T0, τ0]; name, systems=[field_dynamics, spacetime])
+    sys = System(eqs, τ, [x, t, wz, z, r], [λ, a₀, m, q, ω, k, E₀, w₀, z_R, T0, τ0]; name, systems=[ref_frame])
+
+    extend(sys, field_dynamics)
 end
 
 
@@ -104,18 +106,18 @@ electrons can exhibit figure-8 motion when a₀ ~ 1.
 
 Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 """
-@component function PlaneWave(; name, amplitude=1.0, frequency=1.0, k_vector=[0,0,1], spacetime=Spacetime(c=1, name=:spacetime))
+@component function PlaneWave(; name, amplitude=1.0, frequency=1.0, k_vector=[0,0,1], ref_frame)
     # New interface with spacetime
-    @named field_dynamics = EMFieldDynamics(; spacetime)
+    @named field_dynamics = EMFieldDynamics(; ref_frame)
 
     # Get spacetime variables from parent scope
-    @unpack c = spacetime
-    τ = ParentScope(spacetime.τ)
+    c = ref_frame.c
+    τ = ref_frame.τ
 
     # Create local position and time variables
     @variables x(τ)[1:4] t(τ)
 
-    E, B = field_dynamics.E, field_dynamics.B
+    @unpack E, B = field_dynamics
 
     @parameters A=amplitude ω=frequency k[1:3]=k_vector λ
     @variables x⃗(τ)[1:3]
@@ -135,7 +137,9 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
         λ ~ (2π * c) / ω
     ]
 
-    System(eqs, τ, [x, t, x⃗], [A, ω, k, λ]; name, systems=[field_dynamics, spacetime])
+    sys = System(eqs, τ, [x, t, x⃗], [A, ω, k, λ]; name, systems=[ref_frame])
+
+    extend(sys, field_dynamics)
 end
 
 """
@@ -146,10 +150,11 @@ particles drift with velocity v_drift = E×B/B²
 
 Reference: Jackson, "Classical Electrodynamics", Section 12.4
 """
-@component function UniformField(; name, E_field=[0,0,1], B_field=[0,0,0], spacetime)
-    @named field_dynamics = EMFieldDynamics(; spacetime)
+@component function UniformField(; name, E_field=[0,0,1], B_field=[0,0,0], ref_frame)
+    @named field_dynamics = EMFieldDynamics(; ref_frame)
+    @unpack E, B = field_dynamics
 
-    τ = ParentScope(spacetime.τ)
+    τ = ref_frame.τ
 
     # Create local position and time variables
     @variables x(τ)[1:4] t(τ)
@@ -161,7 +166,9 @@ Reference: Jackson, "Classical Electrodynamics", Section 12.4
         field_dynamics.B ~ B₀
     ]
 
-    System(eqs, τ, [x, t], [E₀, B₀]; name, systems=[field_dynamics, spacetime])
+    sys = System(eqs, τ, [x, t], [E₀, B₀]; name, systems=[ref_frame])
+
+    extend(sys, field_dynamics)
 end
 
 """
@@ -189,22 +196,22 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     beam_waist=nothing,
     radial_index=0,      # p
     azimuthal_index=1,   # m
-    spacetime=Spacetime(c=1, name=:spacetime),
+    ref_frame,
     temporal_profile=:gaussian,  # :gaussian or :constant
     temporal_width=nothing,      # pulse width (for gaussian profile)
     focus_position=nothing       # focal position along z-axis
 )
     # New interface with spacetime
-    @named field_dynamics = EMFieldDynamics(; spacetime)
+    @named field_dynamics = EMFieldDynamics(; ref_frame)
 
     # Get spacetime variables from parent scope
-    @unpack c = spacetime
-    τ = ParentScope(spacetime.τ)
+    @unpack c = ref_frame
+    τ = ref_frame.τ
 
     # Create local position and time variables
     @variables x(τ)[1:4] t(τ)
 
-    E, B = field_dynamics.E, field_dynamics.B
+    @unpack E, B = field_dynamics
 
     # Helper: compute |m|
     mₐ = abs(azimuthal_index)
@@ -365,6 +372,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         E₀ ~ a₀ * m_e * c * ω / abs(q)
     ]
 
-    return System(eqs, τ, [x, t, z, r, θ, wz, σ, rwz, env], params;
-                     name, systems=[field_dynamics])
+    sys = System(eqs, τ, [x, t, z, r, θ, wz, σ, rwz, env], params;
+                     name)
+    extend(sys, field_dynamics)
 end

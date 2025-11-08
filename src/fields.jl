@@ -1,10 +1,10 @@
-@component function EMFieldDynamics(; name, spacetime)
+@component function EMFieldDynamics(; name, ref_frame)
     @named field = ElectromagneticSystem()
 
-    @unpack c, gμν = spacetime
+    @unpack gμν = ref_frame
 
-    # FIXME
-    @parameters μ₀ = 1.0 ε₀ = 1.0
+    @unpack c, μ₀, ε₀ = ref_frame
+
     @variables begin
         E(τ)[1:3]         # Electric field (3-vector)
         B(τ)[1:3]         # Magnetic field (3-vector)
@@ -30,5 +30,5 @@
         ),
     ]
 
-    System(eqs, τ, [E, B], [μ₀, ε₀]; name, systems=[field])
+    System(eqs, τ, [E, B], [μ₀, ε₀]; name, systems=[field, ref_frame])
 end

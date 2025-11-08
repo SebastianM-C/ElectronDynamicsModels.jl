@@ -24,9 +24,9 @@ using LinearAlgebra
 
         k = 1
         c = 1
-        @named spacetime = Spacetime(; c)
-        external_field = PlaneWave(; spacetime, name = :plane_wave, k_vector = [0, 0, k])
-        @named electron = ChargedParticle(; spacetime, external_field)
+        @named ref_frame = ReferenceFrame(; c, ε₀=1, μ₀=1)
+        external_field = PlaneWave(; ref_frame, name = :plane_wave, k_vector = [0, 0, k])
+        @named electron = ChargedParticle(; ref_frame, external_field)
         sys = mtkcompile(electron)
 
         # In natural units (c=1, m=1, e=1)
@@ -88,9 +88,9 @@ using LinearAlgebra
         E_field = [0.01, 0.0, 0.0]  # Weaker E field to stay non-relativistic
         B_field = [0.0, 0.0, 1.0]  # B in z-direction
 
-        @named spacetime = Spacetime(c = 1)
-        @named uniform_field = UniformField(; E_field, B_field, spacetime)
-        @named electron = ChargedParticle(; spacetime, external_field = uniform_field)
+        @named ref_frame = ReferenceFrame(; c, ε₀=1, μ₀=1)
+        @named uniform_field = UniformField(; E_field, B_field, ref_frame)
+        @named electron = ChargedParticle(; ref_frame, external_field = uniform_field)
 
         sys = mtkcompile(electron, allow_symbolic = true)
 
@@ -133,16 +133,16 @@ using LinearAlgebra
         # Use extremely weak field to minimize radiation effects
         # The radiation force scales as E², so reducing E by 10x reduces radiation by 100x
         E₀ = 0.0001  # Extremely weak field
-        @named spacetime = Spacetime(c = 1)
+        @named ref_frame = ReferenceFrame(; c, ε₀=1, μ₀=1)
         @named weak_field =
-            UniformField(E_field = [0, 0, E₀], B_field = [0, 0, 0]; spacetime)
+            UniformField(E_field = [0, 0, E₀], B_field = [0, 0, 0]; ref_frame)
 
         # Classical electron (no radiation)
-        @named electron_classical = ClassicalElectron(; spacetime, laser = weak_field)
+        @named electron_classical = ClassicalElectron(; ref_frame, laser = weak_field)
         sys_classical = mtkcompile(electron_classical)
 
         # Radiating electron
-        @named electron_radiating = RadiatingElectron(; spacetime, laser = weak_field)
+        @named electron_radiating = RadiatingElectron(; ref_frame, laser = weak_field)
         sys_radiating = mtkcompile(electron_radiating)
 
         # Same initial conditions

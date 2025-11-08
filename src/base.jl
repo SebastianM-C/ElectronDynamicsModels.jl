@@ -1,6 +1,7 @@
-function Spacetime(; name, c)
-    @parameters c=c gμν[1:4, 1:4] = diagm([1, -1, -1, -1])
-    System(Equation[], τ, [], GlobalScope.([c, gμν]); name)
+function ReferenceFrame(; name, c, ε₀, μ₀)
+    @parameters gμν[1:4, 1:4] = diagm([1, -1, -1, -1])
+    constants = @parameters c=c ε₀=ε₀ μ₀=μ₀
+    System(Equation[], GlobalScope(τ), [], GlobalScope.([constants..., gμν]); name)
 end
 
 function ElectromagneticSystem(; name)
@@ -11,4 +12,3 @@ function ElectromagneticSystem(; name)
     end
     System(Equation[], τ, [Fμν, T, J], []; name)
 end
-

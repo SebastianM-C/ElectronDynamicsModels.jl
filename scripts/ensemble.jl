@@ -5,7 +5,7 @@ using SciMLBase
 using StaticArrays
 using SymbolicIndexingInterface
 using LinearAlgebra
-using GLMakie
+# using GLMakie
 using LaTeXStrings
 
 const inch = 96

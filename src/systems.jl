@@ -2,22 +2,22 @@
     name,
     mass = 1.0,
     charge = 1.0,
-    spacetime = Spacetime(c = 1, name = :spacetime),
-    external_field = PlaneWave(; spacetime, name = :laser),
+    ref_frame,
+    external_field,
     radiation_model = nothing,
 )
-    @named particle = ParticleDynamics(; mass, spacetime)
+    @named particle = ParticleDynamics(; mass, ref_frame)
     @unpack x, u, t, F_total = particle
 
-    @unpack gμν = spacetime
-    Fμν = ParentScope(external_field.field_dynamics.field.Fμν)
-    J = ParentScope(external_field.field_dynamics.field.J)
-    τ = ParentScope(spacetime.τ)
+    @unpack gμν = ref_frame
+    Fμν = ParentScope(external_field.field.Fμν)
+    J = ParentScope(external_field.field.J)
+    τ = ParentScope(ref_frame.τ)
 
     @parameters q = charge
     @variables F_lorentz(τ)[1:4]
 
-    systems = [external_field, spacetime]
+    systems = [external_field, ref_frame]
 
     eqs = [
         # Connect particle position and time to external field
@@ -33,13 +33,13 @@
     # Handle radiation reaction if specified
     if radiation_model == :landau_lifshitz
         @named radiation =
-            LandauLifshitzRadiation(; charge, F_lorentz_ref = F_lorentz, spacetime, particle)
+            LandauLifshitzRadiation(; charge, F_lorentz_ref = F_lorentz, ref_frame, particle)
         push!(systems, radiation)
-        push!(eqs, external_field.field_dynamics.field.Fμν ~ radiation.field.Fμν)
+        push!(eqs, external_field.field_dynamics.Fμν ~ radiation.field.Fμν)
         push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
     elseif radiation_model == :abraham_lorentz
         @named radiation =
-            AbrahamLorentzRadiation(; charge, F_lorentz_ref = F_lorentz, spacetime, particle)
+            AbrahamLorentzRadiation(; charge, F_lorentz_ref = F_lorentz, ref_frame, particle)
         push!(systems, radiation)
         push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
     else
@@ -54,20 +54,20 @@ end
 # Convenience constructors for backward compatibility
 @component function ClassicalElectron(;
     name,
-    spacetime = Spacetime(c = 1, name = :spacetime),
-    laser = PlaneWave(; spacetime, name = :laser),
+    ref_frame = ReferenceFrame(c = 1, ε₀ = 1, μ₀ = 1, name = :ref_frame),
+    laser = PlaneWave(; ref_frame, name = :laser),
 )
-    ChargedParticle(; name, spacetime, external_field = laser, radiation_model = nothing)
+    ChargedParticle(; name, ref_frame, external_field = laser, radiation_model = nothing)
 end
 
 @component function RadiatingElectron(;
     name,
-    spacetime = Spacetime(c = 1, name = :spacetime),
-    laser = PlaneWave(; spacetime, name = :laser),
+    ref_frame = ReferenceFrame(c = 1, ε₀ = 1, μ₀ = 1, name = :ref_frame),
+    laser = PlaneWave(; ref_frame, name = :laser),
 )
     ChargedParticle(;
         name,
-        spacetime,
+        ref_frame,
         external_field = laser,
         radiation_model = :abraham_lorentz,
     )
@@ -75,12 +75,12 @@ end
 
 @component function LandauLifshitzElectron(;
     name,
-    spacetime = Spacetime(c = 1, name = :spacetime),
-    laser = PlaneWave(; spacetime, name = :laser),
+    ref_frame = ReferenceFrame(c = 1, ε₀ = 1, μ₀ = 1, name = :ref_frame),
+    laser = PlaneWave(; ref_frame, name = :laser),
 )
     ChargedParticle(;
         name,
-        spacetime,
+        ref_frame,
         external_field = laser,
         radiation_model = :landau_lifshitz,
     )
