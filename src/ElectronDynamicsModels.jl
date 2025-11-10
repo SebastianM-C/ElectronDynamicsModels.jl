@@ -5,7 +5,7 @@ using Unitful, UnitfulAtomic, PhysicalConstants
 using PhysicalConstants.CODATA2018: e, m_e, c_0, ε_0
 using LinearAlgebra
 using Symbolics
-using HypergeometricFunctions
+using HypergeometricFunctions: HypergeometricFunctions, _₁F₁, pochhammer
 
 # Register hypergeometric function for symbolic use
 @register_symbolic HypergeometricFunctions._₁F₁(a, b, z)
@@ -17,7 +17,7 @@ const dτ = Differential(τ)
 
 export τ, dτ
 export GaussLaser, LaguerreGaussLaser
-export ReferenceFrame,
+export ReferenceFrame, ProperFrame, LabFrame,
     UniformField,
     PlaneWave,
     ParticleDynamics,
