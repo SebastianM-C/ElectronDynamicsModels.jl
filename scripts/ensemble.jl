@@ -50,8 +50,10 @@ m_index = -2
 z₀ = 0.0
 
 # Create spacetime and laser using ElectronDynamicsModels
-@named ref_frame = ReferenceFrame(Val(:atomic))
-@named laser = LaguerreGaussLaser(
+@named ref_frame = ProperFrame(:atomic)
+@named ref_frame = LabFrame(:atomic)
+
+@named laser = ElectronDynamicsModels.LaguerreGaussField(
     wavelength=λ_au,
     amplitude=a₀,
     beam_waist=w₀_au,
@@ -66,6 +68,27 @@ z₀ = 0.0
 
 # Create electron system
 @named lg_elec = ClassicalElectron(; laser, ref_frame)
+
+@unpack x, u = lg_elec
+iv = ModelingToolkit.get_iv(lg_elec)
+
+@variables t_r(iv) rⁱ(iv)[1:3] uⁱ(iv)[1:3] u⁰(iv) obs_p(iv)[1:3]
+eqs = [
+    rⁱ[1] ~ x[2]
+    rⁱ[2] ~ x[3]
+    rⁱ[3] ~ x[4]
+    # uⁱ[1] ~ u[2]
+    # uⁱ[2] ~ u[3]
+    # uⁱ[3] ~ u[4]
+    u⁰ ~ u[1]
+    t_r ~ inv(u⁰ - (u[2:4] ⋅ rⁱ) * inv(sqrt((obs_p - rⁱ) ⋅ (obs_p - rⁱ))))
+]
+
+obs_sys = System(eqs, iv, name=:obs_sys)
+
+new_elec = extend(obs_sys, lg_elec)
+
+mtkcompile(new_elec)
 
 # Compile the system
 sys = mtkcompile(lg_elec)
