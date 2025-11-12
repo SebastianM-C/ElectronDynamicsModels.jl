@@ -207,10 +207,15 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
 
     # Get spacetime variables from parent scope
     @unpack c, m_e, q_e = ref_frame
-    τ = ref_frame.τ
+    iv = ModelingToolkit.get_iv(ref_frame)
 
     # Create local position and time variables
-    @variables x(τ)[1:4] t(τ)
+    @variables x(iv)[1:4]
+    if nameof(iv) == :τ
+        @variables t(iv)
+    else
+        t = iv
+    end
 
     @unpack E, B = field_dynamics
 
@@ -256,13 +261,13 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
 
     # Derived variables
     @variables begin
-        wz(τ)      # Beam width
-        z(τ)       # Propagation coordinate
-        r(τ)       # Radial distance
-        θ(τ)       # Azimuthal angle
-        σ(τ)       # Normalized radial coordinate squared
-        rwz(τ)     # Scaled radial coordinate
-        env(τ)     # Temporal envelope factor
+        wz(iv)      # Beam width
+        z(iv)       # Propagation coordinate
+        r(iv)       # Radial distance
+        θ(iv)       # Azimuthal angle
+        σ(iv)       # Normalized radial coordinate squared
+        rwz(iv)     # Scaled radial coordinate
+        env(iv)     # Temporal envelope factor
     end
 
     # Compute temporal envelope expression based on profile type
@@ -365,6 +370,16 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         E₀ ~ a₀ * m_e * c * ω / abs(q_e)
     ]
 
-    sys = System(eqs, τ, [x, t, z, r, θ, wz, σ, rwz, env], params; name)
+    vars = if nameof(iv) == :τ
+        [x, t, z, r, θ, wz, σ, rwz, env]
+    else
+        @variables τ(iv)
+        [x, τ, z, r, θ, wz, σ, rwz, env]
+    end
+
+    sys = System(eqs, iv, vars, params; name, systems=[ref_frame])
+    extend(sys, field_dynamics)
+end
+
     extend(sys, field_dynamics)
 end
