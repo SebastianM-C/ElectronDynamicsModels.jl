@@ -176,8 +176,8 @@ Reference: Jackson, "Classical Electrodynamics", Section 12.4
     @parameters E₀[1:3]=E_field B₀[1:3]=B_field
 
     eqs = [
-        field_dynamics.E ~ E₀,
-        field_dynamics.B ~ B₀
+        E ~ E₀,
+        B ~ B₀
     ]
 
     sys = System(eqs, iv, [x, t], [E₀, B₀]; name, systems=[ref_frame])
