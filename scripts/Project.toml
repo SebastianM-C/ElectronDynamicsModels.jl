@@ -8,3 +8,6 @@ OrdinaryDiffEqVerner = "79d7bb75-1356-48c1-b8c0-6832512096c2"
 SciMLBase = "0bca4576-84f4-4d90-8ffe-ffa030f20462"
 StaticArrays = "90137ffa-7385-5640-81b9-e52037218182"
 SymbolicIndexingInterface = "2efcf032-c050-4f8e-a9bb-153293bab1f5"
+
+[sources]
+ElectronDynamicsModels = {path = ".."}
