@@ -53,7 +53,7 @@ z₀ = 0.0
 @named ref_frame = ProperFrame(:atomic)
 # @named ref_frame = LabFrame(:atomic)
 
-@named laser = ElectronDynamicsModels.LaguerreGaussLaser(
+@named laser = LaguerreGaussLaser(
     wavelength=λ_au,
     amplitude=a₀,
     beam_waist=w₀_au,
