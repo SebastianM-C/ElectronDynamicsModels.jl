@@ -47,7 +47,7 @@
             # Proper time evolution: dτ/dt = 1/γ
             D(τ) ~ 1/γ
             # Time coordinate
-            x[1] ~ c * t
+            # x[1] ~ c * t
             # 4-momentum
             p ~ m * u
             # Timelike component of 4-velocity
