@@ -5,7 +5,7 @@ using SciMLBase
 using StaticArrays
 using SymbolicIndexingInterface
 using LinearAlgebra
-# using GLMakie
+using GLMakie
 using LaTeXStrings
 
 const inch = 96
@@ -40,7 +40,7 @@ Rmax = 3.25w₀
 
 # Laser parameters in atomic units
 λ_au = λ
-a₀ = 10.
+a₀ = 0.1
 w₀_au = w₀
 p_index = 2
 m_index = -2
@@ -51,9 +51,9 @@ z₀ = 0.0
 
 # Create spacetime and laser using ElectronDynamicsModels
 @named ref_frame = ProperFrame(:atomic)
-@named ref_frame = LabFrame(:atomic)
+# @named ref_frame = LabFrame(:atomic)
 
-@named laser = ElectronDynamicsModels.LaguerreGaussField(
+@named laser = ElectronDynamicsModels.LaguerreGaussLaser(
     wavelength=λ_au,
     amplitude=a₀,
     beam_waist=w₀_au,
@@ -69,26 +69,6 @@ z₀ = 0.0
 # Create electron system
 @named lg_elec = ClassicalElectron(; laser, ref_frame)
 
-@unpack x, u = lg_elec
-iv = ModelingToolkit.get_iv(lg_elec)
-
-@variables t_r(iv) rⁱ(iv)[1:3] uⁱ(iv)[1:3] u⁰(iv) obs_p(iv)[1:3]
-eqs = [
-    rⁱ[1] ~ x[2]
-    rⁱ[2] ~ x[3]
-    rⁱ[3] ~ x[4]
-    # uⁱ[1] ~ u[2]
-    # uⁱ[2] ~ u[3]
-    # uⁱ[3] ~ u[4]
-    u⁰ ~ u[1]
-    t_r ~ inv(u⁰ - (u[2:4] ⋅ rⁱ) * inv(sqrt((obs_p - rⁱ) ⋅ (obs_p - rⁱ))))
-]
-
-obs_sys = System(eqs, iv, name=:obs_sys)
-
-new_elec = extend(obs_sys, lg_elec)
-
-mtkcompile(new_elec)
 
 # Compile the system
 sys = mtkcompile(lg_elec)
@@ -108,10 +88,10 @@ u0 = [
 ]
 
 prob = ODEProblem{false, SciMLBase.FullSpecialize}(sys, u0, tspan, u0_constructor=SVector{8}, fully_determined=true)
-sol0 = solve(prob, Vern9())
+sol0 = solve(prob, Vern9(), reltol = 1e-15, abstol = 1e-12)
 
 # Sunflower pattern for initial positions
-N = 300
+N = 900
 
 const ϕ = (1 + √5)/2
 
@@ -174,6 +154,8 @@ solution = solve(ensemble, Vern9(), EnsembleThreads();
                     reltol=1e-12, abstol=abserr(a₀),
                     trajectories=N)
 
+# ru = solution.u[1](range(τi, τf, 1001), idxs = [sys.x; sys.u])
+
 # Solve single trajectory for visualization (electron #1)
 x_single = SVector{8}(xμ[1]..., u⁰...)
 u0_single, p_single = set_x(prob, x_single)
@@ -195,13 +177,15 @@ all_eqs = Symbolics.fixpoint_sub(equations(laser), merge(defaults(laser), Dict(e
 eq_dict = Dict(map(eq->eq.lhs=>eq.rhs, all_eqs[setdiff(1:19, 10:15)]))
 Symbolics.fixpoint_sub(all_eqs, eq_dict)
 
-using CairoMakie
+# using CairoMakie
 # Visualization
 fig = Figure(fontsize=14pt)
-ax = Axis3(fig[1, 1], aspect=:data)
+# ax = Axis3(fig[1, 1], aspect=:data)
+ax = Axis3(fig[1, 1], aspect=(1, 1, 1))
+
 
 # Extract trajectory
-t_range = range(τi, τf, length=1001)
+t_range = range(τi, τf, length=10001)
 x_traj = [sol(t, idxs=sys.x[2]) for t in t_range]
 y_traj = [sol(t, idxs=sys.x[3]) for t in t_range]
 z_traj = [sol(t, idxs=sys.x[4]) for t in t_range]
