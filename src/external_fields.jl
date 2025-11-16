@@ -11,16 +11,16 @@ Parameters:
 - T0: pulse duration parameter
 - τ0: temporal width parameter
 """
-@component function GaussLaser(; name, wavelength=1.0, amplitude=10.0, beam_waist=nothing, ref_frame)
+@component function GaussLaser(; name, wavelength=1.0, amplitude=10.0, beam_waist=nothing, polarization = :linear, ref_frame)
     # New interface with spacetime
     @named field_dynamics = EMFieldDynamics(; ref_frame)
 
     # Get spacetime variables and constants from parent scope
     @unpack c, m_e, q_e = ref_frame
-    τ = ref_frame.τ
+    iv = ModelingToolkit.get_iv(ref_frame)
 
     # Create local position and time variables
-    @variables x(τ)[1:4] t(τ)
+    @variables x(iv)[1:4] t(iv)
 
     @unpack E, B = field_dynamics
 
@@ -37,13 +37,20 @@ Parameters:
     end
 
     # Fixed parameters
-    ξx = 1.0 + 0im
-    ξy = 0
+    if polarization == :linear
+        ξx = 1.0 + 0im
+        ξy = 0 + 0im
+    elseif polarization == :circular
+        ξx, ξy = (1/√2, im/√2) .|> complex
+    else
+        error("polarization $polarization not supported.")
+    end
+
     ϕ₀ = 0
     t₀ = 5T0
     z₀ = 0
 
-    @variables wz(τ) z(τ) r(τ)
+    @variables wz(iv) z(iv) r(iv)
 
     eqs = [
         # Extract z-coordinate from 4-position
@@ -55,14 +62,21 @@ Parameters:
 
         # Electric field components
         E[1] ~ real(
-            E₀ * w₀ / wz *
+            ξx * E₀ * w₀ / wz *
             exp(
                 -(r / wz)^2 + im * (-(r^2 * z) / (z_R * wz^2) + atan(z, z_R) - k * z + ϕ₀),
             ) *
             exp(im * ω * t) *
             exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
         )
-        E[2] ~ 0
+        E[2] ~ real(
+            ξy * E₀ * w₀ / wz *
+            exp(
+                -(r / wz)^2 + im * (-(r^2 * z) / (z_R * wz^2) + atan(z, z_R) - k * z + ϕ₀),
+            ) *
+            exp(im * ω * t) *
+            exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
+        )
         E[3] ~ real(
             2im / (k * wz^2) *
             (1 + im * (z / z_R)) *
@@ -72,8 +86,8 @@ Parameters:
         )
 
         # Magnetic field components
-        B[1] ~ 0
-        B[2] ~ 0
+        B[1] ~ -E[2] / c
+        B[2] ~ E[1] / c
         B[3] ~ real(
             2im / (k * c * wz^2) *
             (1 + im * (z / z_R)) *
@@ -90,7 +104,7 @@ Parameters:
         τ0 ~ 10 / ω
     ]
 
-    sys = System(eqs, τ, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0]; name, systems=[ref_frame])
+    sys = System(eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0]; name, systems=[ref_frame])
 
     extend(sys, field_dynamics)
 end
