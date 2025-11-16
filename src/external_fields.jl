@@ -124,15 +124,15 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 
     # Get spacetime variables and constants from parent scope
     @unpack c, m_e, q_e = ref_frame
-    τ = ref_frame.τ
+    iv = ModelingToolkit.get_iv(ref_frame)
 
     # Create local position and time variables
-    @variables x(τ)[1:4] t(τ)
+    @variables x(iv)[1:4] t(iv)
 
     @unpack E, B = field_dynamics
 
     @parameters A=amplitude ω=frequency k[1:3]=k_vector λ
-    @variables x⃗(τ)[1:3]
+    @variables x⃗(iv)[1:3]
 
     eqs = [
         # Define spatial position from 4-position
@@ -149,7 +149,7 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
         λ ~ (2π * c) / ω
     ]
 
-    sys = System(eqs, τ, [x, t, x⃗], [A, ω, k, λ]; name, systems=[ref_frame])
+    sys = System(eqs, iv, [x, t, x⃗], [A, ω, k, λ]; name, systems=[ref_frame])
 
     extend(sys, field_dynamics)
 end
@@ -168,10 +168,10 @@ Reference: Jackson, "Classical Electrodynamics", Section 12.4
 
     # Get spacetime variables and constants from parent scope
     @unpack c, m_e, q_e = ref_frame
-    τ = ref_frame.τ
+    iv = ModelingToolkit.get_iv(ref_frame)
 
     # Create local position and time variables
-    @variables x(τ)[1:4] t(τ)
+    @variables x(iv)[1:4] t(iv)
 
     @parameters E₀[1:3]=E_field B₀[1:3]=B_field
 
@@ -180,7 +180,7 @@ Reference: Jackson, "Classical Electrodynamics", Section 12.4
         field_dynamics.B ~ B₀
     ]
 
-    sys = System(eqs, τ, [x, t], [E₀, B₀]; name, systems=[ref_frame])
+    sys = System(eqs, iv, [x, t], [E₀, B₀]; name, systems=[ref_frame])
 
     extend(sys, field_dynamics)
 end
