@@ -27,16 +27,16 @@ function ReferenceFrame(iv, units::Symbol; name)
         ε₀ = q_e^2 / (2α * h * c) # vacuum permittivity in a.u.
         μ₀ = 1 / (ε₀ * c^2)       # vacuum permeability in a.u.
     elseif units == :natural
-        # Natural units (c = ℏ = 1)
-        c = 1.0                   # speed of light in natural units
-        m_e = 0.51099895000       # MeV/c² - electron mass in natural units
-        q_e = -1.0                # elementary charge (dimensionless)
+        # Natural units (c = ℏ = m_e = e = 1)
+        c = 1.0                   # speed of light
+        m_e = 1.0                 # electron mass
+        q_e = -1.0                # electron charge (negative for electron)
 
         # Derived constants in natural units
-        # α = e²/(4πε₀ℏc) ≈ 1/137 (fine structure constant)
+        # α = e²/(4πε₀) ≈ 1/137 (with c = ℏ = 1)
         α = 1/137.03599908330932  # fine structure constant
-        ε₀ = q_e^2 / (4π * α)     # vacuum permittivity in natural units
-        μ₀ = 1 / (ε₀ * c^2)       # vacuum permeability in natural units
+        ε₀ = abs(q_e)^2 / (4π * α)  # vacuum permittivity
+        μ₀ = 1 / (ε₀ * c^2)       # vacuum permeability (= 1 with c=1)
     else
         error("$units not supported!")
     end
