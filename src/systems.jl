@@ -1,8 +1,8 @@
 @component function ChargedParticle(;
     name,
-    mass = 1.0,
-    charge = 1.0,
     ref_frame,
+    mass = ref_frame.m_e,
+    charge = abs(ref_frame.q_e),
     external_field,
     radiation_model = nothing,
 )
