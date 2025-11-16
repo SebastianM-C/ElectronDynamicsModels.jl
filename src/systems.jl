@@ -46,6 +46,7 @@
         @named radiation =
             AbrahamLorentzRadiation(; charge, F_lorentz_ref = F_lorentz, ref_frame, particle)
         push!(systems, radiation)
+        push!(eqs, u ~ radiation.u)
         push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
     else
         # No radiation reaction
