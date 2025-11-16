@@ -60,7 +60,7 @@ end
 # Convenience constructors for backward compatibility
 @component function ClassicalElectron(;
     name,
-    ref_frame = ReferenceFrame(c = 1, ε₀ = 1, μ₀ = 1, name = :ref_frame),
+    ref_frame,
     laser = PlaneWave(; ref_frame, name = :laser),
 )
     ChargedParticle(; name, ref_frame, external_field = laser, radiation_model = nothing)
@@ -68,7 +68,7 @@ end
 
 @component function RadiatingElectron(;
     name,
-    ref_frame = ReferenceFrame(c = 1, ε₀ = 1, μ₀ = 1, name = :ref_frame),
+    ref_frame,
     laser = PlaneWave(; ref_frame, name = :laser),
 )
     ChargedParticle(;
@@ -81,7 +81,7 @@ end
 
 @component function LandauLifshitzElectron(;
     name,
-    ref_frame = ReferenceFrame(c = 1, ε₀ = 1, μ₀ = 1, name = :ref_frame),
+    ref_frame,
     laser = PlaneWave(; ref_frame, name = :laser),
 )
     ChargedParticle(;
