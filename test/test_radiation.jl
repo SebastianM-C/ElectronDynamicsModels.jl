@@ -8,7 +8,8 @@ using Statistics
 
 @testset "Radiation Reaction System" begin
     # Create a radiating electron system
-    @named electron = RadiatingElectron()
+    @named ref_frame = ProperFrame(:natural)
+    @named electron = RadiatingElectron(; ref_frame)
     sys = mtkcompile(electron)
 
     # Test system structure
@@ -55,10 +56,10 @@ using Statistics
         # Test 1: Free particle motion (no fields)
         @testset "Free Particle" begin
             # Create system with zero fields
-            @named spacetime = Spacetime(c = 1)
+            @named ref_frame = ProperFrame(:natural)
             @named uniform_field =
-                UniformField(E_field = [0, 0, 0], B_field = [0, 0, 0]; spacetime)
-            @named electron_free = RadiatingElectron(; spacetime, laser = uniform_field)
+                UniformField(E_field = [0, 0, 0], B_field = [0, 0, 0]; ref_frame)
+            @named electron_free = RadiatingElectron(; ref_frame, laser = uniform_field)
 
             sys_free = mtkcompile(electron_free, allow_symbolic = true)
 
@@ -89,10 +90,10 @@ using Statistics
             # Reference: Jackson, "Classical Electrodynamics", Section 12.3
 
             E₀ = 0.01  # Small field to stay in non-relativistic regime
-            @named spacetime = Spacetime(c = 1)
+            @named ref_frame = ProperFrame(:natural)
             @named uniform_field =
-                UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], spacetime)
-            @named electron_E = RadiatingElectron(; spacetime, laser = uniform_field)
+                UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], ref_frame)
+            @named electron_E = RadiatingElectron(; ref_frame, laser = uniform_field)
 
             sys_E = mtkcompile(electron_E, allow_symbolic = true)
 
@@ -137,22 +138,22 @@ using Statistics
             E₁ = 0.01
             E₂ = 0.02  # Double the field
 
-            @named spacetime1 = Spacetime(c = 1)
+            @named ref_frame1 = ProperFrame(:natural)
             @named field1 = UniformField(
                 E_field = [0, 0, E₁],
                 B_field = [0, 0, 0];
-                spacetime = spacetime1,
+                ref_frame = ref_frame1,
             )
-            @named electron1 = RadiatingElectron(spacetime = spacetime1, laser = field1)
+            @named electron1 = RadiatingElectron(ref_frame = ref_frame1, laser = field1)
             sys1 = mtkcompile(electron1, allow_symbolic = true)
 
-            @named spacetime2 = Spacetime(c = 1)
+            @named ref_frame2 = ProperFrame(:natural)
             @named field2 = UniformField(
                 E_field = [0, 0, E₂],
                 B_field = [0, 0, 0];
-                spacetime = spacetime2,
+                ref_frame = ref_frame2,
             )
-            @named electron2 = RadiatingElectron(spacetime = spacetime2, laser = field2)
+            @named electron2 = RadiatingElectron(ref_frame = ref_frame2, laser = field2)
             sys2 = mtkcompile(electron2, allow_symbolic = true)
 
             # Same initial conditions (start from rest)
@@ -188,10 +189,10 @@ using Statistics
             # In a magnetic field: qvB = γmv²/R, so R = γmv/(qB)
 
             B₀ = 0.1  # Magnetic field strength
-            @named spacetime = Spacetime(c = 1)
+            @named ref_frame = ProperFrame(:natural)
             @named mag_field =
-                UniformField(; E_field = [0, 0, 0], B_field = [0, 0, B₀], spacetime)
-            @named electron_B = RadiatingElectron(; spacetime, laser = mag_field)
+                UniformField(; E_field = [0, 0, 0], B_field = [0, 0, B₀], ref_frame)
+            @named electron_B = RadiatingElectron(; ref_frame, laser = mag_field)
             sys_B = mtkcompile(electron_B, allow_symbolic = true)
 
             # Initial velocity in x-direction
@@ -232,10 +233,10 @@ using Statistics
             # So P = (2q⁴E²)/(3*4πε₀m²c³)
 
             E₀ = 0.001  # Very weak field for non-relativistic motion
-            @named spacetime = Spacetime(c = 1)
+            @named ref_frame = ProperFrame(:natural)
             @named weak_field =
-                UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], spacetime)
-            @named electron_nr = RadiatingElectron(; spacetime, laser = weak_field)
+                UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], ref_frame)
+            @named electron_nr = RadiatingElectron(; ref_frame, laser = weak_field)
             sys_nr = mtkcompile(electron_nr, allow_symbolic = true)
 
             u0 = [

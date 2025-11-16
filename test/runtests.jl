@@ -8,7 +8,7 @@ using JET
         Aqua.test_all(ElectronDynamicsModels)
     end
     @testset "Code linting (JET.jl)" begin
-        JET.test_package(ElectronDynamicsModels; target_defined_modules = true)
+        JET.test_package(ElectronDynamicsModels; target_defined_modules = (ElectronDynamicsModels,))
     end
     @testset "Classical Electron" begin
         include("test_classical_electron.jl")

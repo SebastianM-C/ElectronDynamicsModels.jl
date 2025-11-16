@@ -31,19 +31,19 @@ using LaserTypes: LaserTypes
     )
 
     # Setup MTK system with matching parameters
-    @named spacetime = Spacetime(c=c_test)
+    @named ref_frame = ProperFrame(:SI)
     @named laser = LaguerreGaussLaser(
         wavelength=λ_test,
         amplitude=a₀_test,
         beam_waist=w₀_test,
         radial_index=p_test,
         azimuthal_index=m_test,
-        spacetime=spacetime,
+        ref_frame=ref_frame,
         temporal_profile=:constant  # Match LaserTypes ConstantProfile
     )
 
     # Create electron system
-    @named lg_elec = ClassicalElectron(; laser, spacetime)
+    @named lg_elec = ClassicalElectron(; laser, ref_frame)
 
     # Compile the system
     sys = mtkcompile(lg_elec)
@@ -79,12 +79,12 @@ using LaserTypes: LaserTypes
         prob_i = ODEProblem(sys, u0, tspan)
         sol = solve(prob_i, Vern9())
 
-        edm_Ex = sol[sys.laser.field_dynamics.E[1]][1]
-        edm_Ey = sol[sys.laser.field_dynamics.E[2]][1]
-        edm_Ez = sol[sys.laser.field_dynamics.E[3]][1]
-        edm_Bx = sol[sys.laser.field_dynamics.B[1]][1]
-        edm_By = sol[sys.laser.field_dynamics.B[2]][1]
-        edm_Bz = sol[sys.laser.field_dynamics.B[3]][1]
+        edm_Ex = sol[sys.laser.E[1]][1]
+        edm_Ey = sol[sys.laser.E[2]][1]
+        edm_Ez = sol[sys.laser.E[3]][1]
+        edm_Bx = sol[sys.laser.B[1]][1]
+        edm_By = sol[sys.laser.B[2]][1]
+        edm_Bz = sol[sys.laser.B[3]][1]
 
         # Test Ex, Ez, Bz (main field components)
         # Allow for numerical precision (relative tolerance ~1e-8)
@@ -109,16 +109,16 @@ end
     w₀ = 10e-6
     c = 299792458.0
 
-    @named spacetime = Spacetime(c=c)
+    @named ref_frame = ProperFrame(:SI)
     @named laser = LaguerreGaussLaser(
         wavelength=λ,
         amplitude=a₀,
         beam_waist=w₀,
         radial_index=0,
         azimuthal_index=1,
-        spacetime=spacetime
+        ref_frame=ref_frame
     )
-    @named elec = ClassicalElectron(; laser, spacetime)
+    @named elec = ClassicalElectron(; laser, ref_frame)
     sys = mtkcompile(elec)
 
     u0 = [sys.x => [0.0, 0.0, 0.0, 0.0], sys.u => [0.0, 0.0, 0.0, 1.0]]
@@ -128,7 +128,10 @@ end
     ω_expected = 2π * c / λ
     k_expected = 2π / λ
     z_R_expected = π * w₀^2 / λ
-    E₀_expected = a₀ * 9.10938356e-31 * c * ω_expected / 1.602176634e-19
+    # Use the CODATA 2018 value that matches src/base.jl
+    m_e_SI = 9.1093837015e-31  # kg - electron mass (CODATA 2018)
+    q_e_SI = 1.602176634e-19   # C - electron charge magnitude
+    E₀_expected = a₀ * m_e_SI * c * ω_expected / q_e_SI
 
     @test isapprox(prob.ps[sys.laser.ω], ω_expected, rtol=1e-10)
     @test isapprox(prob.ps[sys.laser.k], k_expected, rtol=1e-10)
