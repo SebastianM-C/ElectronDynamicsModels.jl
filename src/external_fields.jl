@@ -95,16 +95,18 @@ Parameters:
             exp(im * ω * t) *
             exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
         )
-
-        # Parameter relations
-        ω ~ 2π * c / λ
-        E₀ ~ a₀ * m_e * c * ω / abs(q_e)
-        z_R ~ w₀^2 * k / 2
-        k ~ 2π / λ
-        τ0 ~ 10 / ω
     ]
 
-    sys = System(eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0]; name, systems=[ref_frame])
+    # Parameter bindings (derived parameters as functions of other parameters)
+    param_bindings = [
+        k => 2π / λ,
+        ω => 2π * c / λ,
+        z_R => w₀^2 * k / 2,
+        τ0 => 10 / ω,
+        E₀ => a₀ * m_e * c * ω / abs(q_e),
+    ]
+
+    sys = System(eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0]; name, systems=[ref_frame], bindings=param_bindings)
 
     extend(sys, field_dynamics)
 end
@@ -145,11 +147,12 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
         B[1] ~ 0
         B[2] ~ A/c * cos(dot(k, x⃗) - ω * t)
         B[3] ~ 0
-        # parameters
-        λ ~ (2π * c) / ω
     ]
 
-    sys = System(eqs, iv, [x, t, x⃗], [A, ω, k, λ]; name, systems=[ref_frame])
+    # Parameter bindings
+    param_bindings = [λ => (2π * c) / ω]
+
+    sys = System(eqs, iv, [x, t, x⃗], [A, ω, k, λ]; name, systems=[ref_frame], bindings=param_bindings)
 
     extend(sys, field_dynamics)
 end
@@ -376,12 +379,14 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
                 )
             )
         )
+    ]
 
-        # Parameter relations
-        ω ~ 2π * c / λ
-        k ~ 2π / λ
-        z_R ~ π * w₀^2 / λ
-        E₀ ~ a₀ * m_e * c * ω / abs(q_e)
+    # Parameter bindings (derived parameters as functions of other parameters)
+    param_bindings = [
+        k => 2π / λ,
+        ω => 2π * c / λ,
+        z_R => π * w₀^2 / λ,
+        E₀ => a₀ * m_e * c * ω / abs(q_e),
     ]
 
     vars = if nameof(iv) == :τ
@@ -391,6 +396,6 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         [x, τ, z, r, θ, wz, σ, rwz, env]
     end
 
-    sys = System(eqs, iv, vars, params; name, systems=[ref_frame])
+    sys = System(eqs, iv, vars, params; name, systems=[ref_frame], bindings=param_bindings)
     extend(sys, field_dynamics)
 end
