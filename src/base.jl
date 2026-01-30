@@ -4,6 +4,16 @@ function ReferenceFrame(iv; name, c, ε₀, μ₀, m_e, q_e)
     System(Equation[], iv, [], GlobalScope.([constants..., gμν]); name)
 end
 
+# struct Constants{T <: Real}
+#     c::T
+#     ε₀::T
+#     μ₀::T
+#     m_e::T
+#     q_e::T
+# end
+
+# @symstruct Constants{T}
+
 function ReferenceFrame(iv, units::Symbol; name)
 
     if units == :SI
@@ -40,6 +50,11 @@ function ReferenceFrame(iv, units::Symbol; name)
     else
         error("$units not supported!")
     end
+
+    # @parameters gμν[1:4, 1:4] = diagm([1, -1, -1, -1])
+    # @parameters constants = Constants(c, ε₀, μ₀, m_e, q_e)
+
+    # System(Equation[], iv, [], GlobalScope.([constants, gμν]); name)
 
     ReferenceFrame(iv; name, c, ε₀, μ₀, m_e, q_e)
 end
