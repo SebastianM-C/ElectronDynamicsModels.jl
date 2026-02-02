@@ -1,8 +1,8 @@
 module ElectronDynamicsModels
 
 using ModelingToolkit
-using Unitful, UnitfulAtomic, PhysicalConstants
-using PhysicalConstants.CODATA2018: e, m_e, c_0, ε_0
+using PhysicalConstants, Unitful, UnitfulAtomic
+using PhysicalConstants.CODATA2018: c_0, e, m_e, ε_0
 using LinearAlgebra
 using Symbolics
 using HypergeometricFunctions: HypergeometricFunctions, _₁F₁, pochhammer
