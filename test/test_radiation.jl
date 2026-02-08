@@ -255,10 +255,11 @@ using Statistics
             v_max = maximum(sqrt.(sum(u_spatial .^ 2, dims = 2)) ./ u_0)
             @test v_max < 0.1  # v < 0.1c
 
-            # In natural units (q=1, m=1, ε₀=1, c=1):
-            # P_expected = (2/3) * (1/(6π)) * E₀²
-            # where τ₀ = 1/(6π) is the classical electron radius time scale
-            τ₀ = 1.0 / (6π)
+            # In natural units (q=1, m=1, c=1), with ε₀ = 1/(4πα):
+            # τ₀ = q²/(6πε₀mc³) = 2α/3 where α ≈ 1/137
+            # P_expected = (2/3) * τ₀ * E₀²
+            # Get τ₀ directly from the system to ensure consistency
+            τ₀ = sol[sys_nr.radiation.τ₀, end]
             P_expected = (2 / 3) * τ₀ * E₀^2
 
             # Check power at end of simulation

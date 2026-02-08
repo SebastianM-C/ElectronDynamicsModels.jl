@@ -91,10 +91,10 @@ This is valid when ω << m*c²/ℏ (classical regime).
     iv = ModelingToolkit.get_iv(ref_frame)
     @named field = ElectromagneticSystem(iv)
 
-    @unpack c, gμν = ref_frame
+    @unpack c, gμν, ε₀ = ref_frame
     @unpack u = particle
 
-    @parameters m=1.0 ε₀=1.0 q=charge
+    @parameters m=1.0 q=charge
     @variables begin
         F_rad(iv)[1:4]     # 4-force from radiation reaction
         P_rad(iv)          # Radiated power (invariant)

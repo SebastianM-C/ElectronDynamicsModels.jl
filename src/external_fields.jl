@@ -95,16 +95,34 @@ Parameters:
             exp(im * ω * t) *
             exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
         )
+    ]
 
-        # Parameter relations
+    initialization_eqs = [
         ω ~ 2π * c / λ
         E₀ ~ a₀ * m_e * c * ω / abs(q_e)
         z_R ~ w₀^2 * k / 2
         k ~ 2π / λ
-        τ0 ~ 10 / ω
+    ]
+    bindings = [
+        ω => missing
+        λ => missing
+        k => missing
+        E₀ => missing
+        z_R => missing
+        w₀ => missing
     ]
 
-    sys = System(eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0]; name, systems=[ref_frame])
+    initial_conditions = [
+        τ0 => 10 / ω
+    ]
+
+    sys = System(eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0];
+        name,
+        systems=[ref_frame],
+        initial_conditions,
+        initialization_eqs,
+        bindings
+    )
 
     extend(sys, field_dynamics)
 end
@@ -118,7 +136,7 @@ electrons can exhibit figure-8 motion when a₀ ~ 1.
 
 Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 """
-@component function PlaneWave(; name, amplitude=1.0, frequency=1.0, k_vector=[0,0,1], ref_frame)
+@component function PlaneWave(; name, amplitude=1.0, frequency=1.0, k_direction=[0,0,1], polarization=[1,0,0], ref_frame)
     # New interface with spacetime
     @named field_dynamics = EMFieldDynamics(; ref_frame)
 
@@ -127,29 +145,58 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
     iv = ModelingToolkit.get_iv(ref_frame)
 
     # Create local position and time variables
-    @variables x(iv)[1:4] t(iv)
+    @variables x(iv)[1:4]
+    if nameof(iv) == :τ
+        @variables t(iv)
+    else
+        t = iv
+    end
 
     @unpack E, B = field_dynamics
 
-    @parameters A=amplitude ω=frequency k[1:3]=k_vector λ
-    @variables x⃗(iv)[1:3]
+    @parameters A=amplitude ω=frequency k_dir[1:3]=k_direction pol[1:3]=polarization λ
 
-    eqs = [
-        # Define spatial position from 4-position
-        x⃗[1] ~ x[2]
-        x⃗[2] ~ x[3]
-        x⃗[3] ~ x[4]
-        E[1] ~ A * cos(dot(k, x⃗) - ω * t)
-        E[2] ~ 0
-        E[3] ~ 0
-        B[1] ~ 0
-        B[2] ~ A/c * cos(dot(k, x⃗) - ω * t)
-        B[3] ~ 0
-        # parameters
-        λ ~ (2π * c) / ω
+    # Normalize k direction to get unit vector k̂
+    k_norm = sqrt(k_dir[1]^2 + k_dir[2]^2 + k_dir[3]^2)
+    k̂ = [k_dir[1] / k_norm, k_dir[2] / k_norm, k_dir[3] / k_norm]
+
+    # Normalize polarization vector (user must ensure it's perpendicular to k)
+    pol_norm = sqrt(pol[1]^2 + pol[2]^2 + pol[3]^2)
+    ê = [pol[1] / pol_norm, pol[2] / pol_norm, pol[3] / pol_norm]
+
+    # B-field direction: k̂ × ê
+    b̂ = [
+        k̂[2] * ê[3] - k̂[3] * ê[2],
+        k̂[3] * ê[1] - k̂[1] * ê[3],
+        k̂[1] * ê[2] - k̂[2] * ê[1]
     ]
 
-    sys = System(eqs, iv, [x, t, x⃗], [A, ω, k, λ]; name, systems=[ref_frame])
+    # Spatial position from 4-position (x = [ct, x, y, z] or [t, x, y, z])
+    x⃗ = [x[2], x[3], x[4]]
+
+    # Phase: k·r - ωt where |k| = ω/c (dispersion relation)
+    phase = (ω / c) * (k̂[1] * x⃗[1] + k̂[2] * x⃗[2] + k̂[3] * x⃗[3]) - ω * t
+
+    eqs = [
+        E[1] ~ A * ê[1] * cos(phase)
+        E[2] ~ A * ê[2] * cos(phase)
+        E[3] ~ A * ê[3] * cos(phase)
+        B[1] ~ (A / c) * b̂[1] * cos(phase)
+        B[2] ~ (A / c) * b̂[2] * cos(phase)
+        B[3] ~ (A / c) * b̂[3] * cos(phase)
+    ]
+
+    initialization_eqs = [
+        λ ~ (2π * c) / ω
+    ]
+    bindings = [
+        λ => missing
+        ω => missing
+    ]
+
+    vars = nameof(iv) == :τ ? [x, t] : [x]
+
+    sys = System(eqs, iv, vars, [A, ω, k_dir, pol, λ]; name, systems=[ref_frame], initialization_eqs, bindings)
 
     extend(sys, field_dynamics)
 end
@@ -376,12 +423,20 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
                 )
             )
         )
-
-        # Parameter relations
+    ]
+    initialization_eqs = [
         ω ~ 2π * c / λ
         k ~ 2π / λ
         z_R ~ π * w₀^2 / λ
         E₀ ~ a₀ * m_e * c * ω / abs(q_e)
+    ]
+    bindings = [
+        ω => missing
+        λ => missing
+        k => missing
+        E₀ => missing
+        z_R => missing
+        w₀ => missing
     ]
 
     vars = if nameof(iv) == :τ
@@ -391,6 +446,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         [x, τ, z, r, θ, wz, σ, rwz, env]
     end
 
-    sys = System(eqs, iv, vars, params; name, systems=[ref_frame])
+    sys = System(eqs, iv, vars, params;
+        name, systems=[ref_frame], initialization_eqs, bindings)
     extend(sys, field_dynamics)
 end

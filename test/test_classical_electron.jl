@@ -26,7 +26,7 @@ using LinearAlgebra
         c = 1
         @independent_variables τ
         @named ref_frame = ReferenceFrame(τ; c, ε₀=1, μ₀=1, m_e=1, q_e=1)
-        external_field = PlaneWave(; ref_frame, name = :plane_wave, k_vector = [0, 0, k])
+        external_field = PlaneWave(; ref_frame, name = :plane_wave, k_direction = [0, 0, k])
         @named electron = ChargedParticle(; ref_frame, external_field)
         sys = mtkcompile(electron)
 

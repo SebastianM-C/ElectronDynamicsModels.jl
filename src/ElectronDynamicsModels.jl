@@ -1,14 +1,11 @@
 module ElectronDynamicsModels
 
 using ModelingToolkit
-using Unitful, UnitfulAtomic, PhysicalConstants
-using PhysicalConstants.CODATA2018: e, m_e, c_0, ε_0
+using PhysicalConstants, Unitful, UnitfulAtomic
+using PhysicalConstants.CODATA2018: c_0, e, m_e, ε_0
 using LinearAlgebra
 using Symbolics
 using HypergeometricFunctions: HypergeometricFunctions, _₁F₁, pochhammer
-
-# Register hypergeometric function for symbolic use
-@register_symbolic HypergeometricFunctions._₁F₁(a, b, z)
 
 m_dot(x, y) = x[1] * y[1] - x[2] * y[2] - x[3] * y[3] - x[4] * y[4]
 
