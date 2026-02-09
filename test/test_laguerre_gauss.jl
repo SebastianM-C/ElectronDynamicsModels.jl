@@ -34,7 +34,7 @@ using LaserTypes: LaserTypes
     @named ref_frame = ProperFrame(:SI)
     @named laser = LaguerreGaussLaser(
         wavelength=λ_test,
-        amplitude=a₀_test,
+        a0=a₀_test,
         beam_waist=w₀_test,
         radial_index=p_test,
         azimuthal_index=m_test,
@@ -112,7 +112,7 @@ end
     @named ref_frame = ProperFrame(:SI)
     @named laser = LaguerreGaussLaser(
         wavelength=λ,
-        amplitude=a₀,
+        a0=a₀,
         beam_waist=w₀,
         radial_index=0,
         azimuthal_index=1,

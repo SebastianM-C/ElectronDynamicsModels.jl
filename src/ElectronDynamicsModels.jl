@@ -1,6 +1,7 @@
 module ElectronDynamicsModels
 
 using ModelingToolkit
+using ModelingToolkit: SymbolicT
 using PhysicalConstants, Unitful, UnitfulAtomic
 using PhysicalConstants.CODATA2018: c_0, e, m_e, ε_0
 using LinearAlgebra
