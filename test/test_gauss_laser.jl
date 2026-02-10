@@ -52,3 +52,51 @@ using SciMLBase
     # Test error when both are specified
     @test_throws ErrorException GaussLaser(; wavelength=1.0, frequency=1.0, ref_frame, name=:bad)
 end
+
+@testset "GaussLaser field values at origin" begin
+    # Atomic units
+    c = 137.03599908330932
+    m_e = 1.0
+    q_e = -1.0
+
+    λ_val = 1.0
+    a0_val = 1.0
+    ω_val = 2π * c / λ_val
+
+    @named ref_frame = ProperFrame(:atomic)
+    @named laser = GaussLaser(; wavelength=λ_val, a0=a0_val, ref_frame)
+
+    fe = FieldEvaluator(laser, ref_frame)
+
+    # Read initialized parameters from the problem
+    E₀ = fe.prob.ps[fe.prob.f.sys.laser.E₀]
+    τ0 = fe.prob.ps[fe.prob.f.sys.laser.τ0]
+    T0_val = fe.prob.ps[fe.prob.f.sys.laser.T0]
+
+    # Verify E₀ is computed correctly: a₀ * m_e * c * ω / |q_e|
+    E₀_expected = a0_val * m_e * c * ω_val / abs(q_e)
+    @test E₀ ≈ E₀_expected rtol=1e-10
+
+    # Evaluate at origin, at the pulse center time t₀ = 5*T0
+    t₀ = 5 * T0_val
+
+    result = fe([t₀, 0.0, 0.0, 0.0])
+
+    # At origin (r=0, z=0):
+    # - wz = w₀ (beam width at z=0)
+    # - Gaussian beam factor: w₀/wz * exp(-r²/wz²) = 1
+    # - Spatial phase: atan(0, z_R) - k*0 = 0
+    # - Temporal envelope: exp(-((t₀ - t₀)/τ0)²) = 1
+    # So E[1] = E₀ * cos(ω*t₀) for linear polarization (ξx=1, ξy=0)
+    phase = ω_val * t₀
+    E_expected = E₀ * cos(phase)
+
+    @test result.E[1] ≈ E_expected rtol=1e-10
+    @test result.E[2] ≈ 0 atol=1e-10
+    @test result.E[3] ≈ 0 atol=1e-10
+
+    # B field: B[1] = -E[2]/c = 0, B[2] = E[1]/c, B[3] depends on Ez (0 at origin)
+    @test result.B[1] ≈ 0 atol=1e-10
+    @test result.B[2] ≈ E_expected / c rtol=1e-10
+    @test result.B[3] ≈ 0 atol=1e-10
+end
