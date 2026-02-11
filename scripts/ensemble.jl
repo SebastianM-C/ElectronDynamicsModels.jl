@@ -55,7 +55,7 @@ z₀ = 0.0
 
 @named laser = LaguerreGaussLaser(
     wavelength=λ_au,
-    amplitude=a₀,
+    a0=a₀,
     beam_waist=w₀_au,
     radial_index=p_index,
     azimuthal_index=m_index,
@@ -173,7 +173,7 @@ _x = sol[sys.x, 500]
 x_sub = map(x->EvalAt(_t)(x[1])=>x[2], collect(sys.x .=> _x))
 eval_point = [laser.τ=>0; x_sub; sys.t => EvalAt(_t)(sys.x[1]) / c]
 
-all_eqs = Symbolics.fixpoint_sub(equations(laser), merge(defaults(laser), Dict(eval_point)))
+all_eqs = Symbolics.fixpoint_sub(equations(laser), merge(initial_conditions(laser), initial_conditions(eval_point)))
 eq_dict = Dict(map(eq->eq.lhs=>eq.rhs, all_eqs[setdiff(1:19, 10:15)]))
 Symbolics.fixpoint_sub(all_eqs, eq_dict)
 

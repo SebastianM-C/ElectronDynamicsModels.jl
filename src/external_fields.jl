@@ -6,12 +6,19 @@ The beam propagates along the z-direction with waist w₀ at z=0.
 
 Parameters:
 - λ: wavelength
-- a₀: normalized vector potential amplitude
+- a₀: normalized vector potential (a0 kwarg)
 - w₀: beam waist (defaults to 75λ)
 - T0: pulse duration parameter
 - τ0: temporal width parameter
 """
-@component function GaussLaser(; name, wavelength=1.0, amplitude=10.0, beam_waist=nothing, polarization = :linear, ref_frame)
+@component function GaussLaser(; name, wavelength=nothing, frequency=nothing, a0=10.0, beam_waist=nothing, polarization = :linear, ref_frame)
+    if wavelength === nothing && frequency === nothing
+        wavelength = 1.0
+    end
+    if wavelength !== nothing && frequency !== nothing
+        error("Specify either wavelength or frequency, not both")
+    end
+
     # New interface with spacetime
     @named field_dynamics = EMFieldDynamics(; ref_frame)
 
@@ -25,12 +32,12 @@ Parameters:
     @unpack E, B = field_dynamics
 
     @parameters begin
-        λ = wavelength
-        a₀ = amplitude
-        ω
+        λ, [guess = 1.0]
+        a₀ = a0
+        ω, [guess = 1.0]
         k
         E₀
-        w₀ = beam_waist === nothing ? 75λ : beam_waist
+        w₀
         z_R
         T0 = 100
         τ0
@@ -112,9 +119,14 @@ Parameters:
         w₀ => missing
     ]
 
-    initial_conditions = [
-        τ0 => 10 / ω
-    ]
+    initial_conditions = Pair{SymbolicT,Any}[τ0 => 10 / ω]
+    push!(initial_conditions, w₀ => (beam_waist === nothing ? 75λ : beam_waist))
+    if wavelength !== nothing
+        push!(initial_conditions, λ => wavelength)
+    end
+    if frequency !== nothing
+        push!(initial_conditions, ω => frequency)
+    end
 
     sys = System(eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0];
         name,
@@ -136,7 +148,14 @@ electrons can exhibit figure-8 motion when a₀ ~ 1.
 
 Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 """
-@component function PlaneWave(; name, amplitude=1.0, frequency=1.0, k_direction=[0,0,1], polarization=[1,0,0], ref_frame)
+@component function PlaneWave(; name, amplitude=1.0, wavelength=nothing, frequency=nothing, k_direction=[0,0,1], polarization=[1,0,0], ref_frame)
+    if wavelength === nothing && frequency === nothing
+        frequency = 1.0
+    end
+    if wavelength !== nothing && frequency !== nothing
+        error("Specify either wavelength or frequency, not both")
+    end
+
     # New interface with spacetime
     @named field_dynamics = EMFieldDynamics(; ref_frame)
 
@@ -154,7 +173,13 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 
     @unpack E, B = field_dynamics
 
-    @parameters A=amplitude ω=frequency k_dir[1:3]=k_direction pol[1:3]=polarization λ
+    @parameters begin
+        A = amplitude
+        ω, [guess = 1.0]
+        k_dir[1:3] = k_direction
+        pol[1:3] = polarization
+        λ, [guess = 1.0]
+    end
 
     # Normalize k direction to get unit vector k̂
     k_norm = sqrt(k_dir[1]^2 + k_dir[2]^2 + k_dir[3]^2)
@@ -194,9 +219,17 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
         ω => missing
     ]
 
+    initial_conditions = Pair{SymbolicT,Any}[]
+    if wavelength !== nothing
+        push!(initial_conditions, λ => wavelength)
+    end
+    if frequency !== nothing
+        push!(initial_conditions, ω => frequency)
+    end
+
     vars = nameof(iv) == :τ ? [x, t] : [x]
 
-    sys = System(eqs, iv, vars, [A, ω, k_dir, pol, λ]; name, systems=[ref_frame], initialization_eqs, bindings)
+    sys = System(eqs, iv, vars, [A, ω, k_dir, pol, λ]; name, systems=[ref_frame], initialization_eqs, bindings, initial_conditions)
 
     extend(sys, field_dynamics)
 end
@@ -240,7 +273,7 @@ The beam is characterized by radial index p and azimuthal index m.
 
 Parameters:
 - λ: wavelength
-- a₀: normalized vector potential amplitude
+- a₀: normalized vector potential (a0 kwarg)
 - w₀: beam waist (defaults to 75λ)
 - radial_index (p): radial mode number, p ≥ 0
 - azimuthal_index (m): azimuthal mode number (orbital angular momentum)
@@ -252,8 +285,9 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
 """
 @component function LaguerreGaussLaser(;
     name,
-    wavelength=1.0,
-    amplitude=10.0,
+    wavelength=nothing,
+    frequency=nothing,
+    a0=10.0,
     beam_waist=nothing,
     radial_index=0,      # p
     azimuthal_index=1,   # m
@@ -263,6 +297,13 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     focus_position=nothing,       # focal position along z-axis
     polarization = :linear
 )
+    if wavelength === nothing && frequency === nothing
+        wavelength = 1.0
+    end
+    if wavelength !== nothing && frequency !== nothing
+        error("Specify either wavelength or frequency, not both")
+    end
+
     # New interface with spacetime
     @named field_dynamics = EMFieldDynamics(; ref_frame)
 
@@ -289,12 +330,12 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     Npm_val = sqrt(pochhammer(radial_index + 1, mₐ))
 
     params = @parameters begin
-        λ = wavelength
-        a₀ = amplitude
-        ω
+        λ, [guess = 1.0]
+        a₀ = a0
+        ω, [guess = 1.0]
         k
         E₀
-        w₀ = beam_waist === nothing ? 75λ : beam_waist
+        w₀
         z_R
         τ0 = temporal_width === nothing ? 100.0 : temporal_width
 
@@ -439,6 +480,15 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         w₀ => missing
     ]
 
+    initial_conditions = Pair{SymbolicT,Any}[]
+    push!(initial_conditions, w₀ => (beam_waist === nothing ? 75λ : beam_waist))
+    if wavelength !== nothing
+        push!(initial_conditions, λ => wavelength)
+    end
+    if frequency !== nothing
+        push!(initial_conditions, ω => frequency)
+    end
+
     vars = if nameof(iv) == :τ
         [x, t, z, r, θ, wz, σ, rwz, env]
     else
@@ -447,6 +497,6 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     end
 
     sys = System(eqs, iv, vars, params;
-        name, systems=[ref_frame], initialization_eqs, bindings)
+        name, systems=[ref_frame], initialization_eqs, bindings, initial_conditions)
     extend(sys, field_dynamics)
 end
