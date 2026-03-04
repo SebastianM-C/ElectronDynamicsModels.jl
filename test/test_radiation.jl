@@ -9,7 +9,8 @@ using Statistics
 @testset "Radiation Reaction System" begin
     # Create a radiating electron system
     @named ref_frame = ProperFrame(:natural)
-    @named electron = RadiatingElectron(; ref_frame)
+    @named laser = PlaneWave(; ref_frame)
+    @named electron = RadiatingElectron(; laser)
     sys = mtkcompile(electron)
 
     # Test system structure
@@ -59,7 +60,7 @@ using Statistics
             @named ref_frame = ProperFrame(:natural)
             @named uniform_field =
                 UniformField(E_field = [0, 0, 0], B_field = [0, 0, 0]; ref_frame)
-            @named electron_free = RadiatingElectron(; ref_frame, laser = uniform_field)
+            @named electron_free = RadiatingElectron(; laser = uniform_field)
 
             sys_free = mtkcompile(electron_free, allow_symbolic = true)
 
@@ -93,7 +94,7 @@ using Statistics
             @named ref_frame = ProperFrame(:natural)
             @named uniform_field =
                 UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], ref_frame)
-            @named electron_E = RadiatingElectron(; ref_frame, laser = uniform_field)
+            @named electron_E = RadiatingElectron(; laser = uniform_field)
 
             sys_E = mtkcompile(electron_E, allow_symbolic = true)
 
@@ -144,7 +145,7 @@ using Statistics
                 B_field = [0, 0, 0];
                 ref_frame = ref_frame1,
             )
-            @named electron1 = RadiatingElectron(ref_frame = ref_frame1, laser = field1)
+            @named electron1 = RadiatingElectron(; laser = field1)
             sys1 = mtkcompile(electron1, allow_symbolic = true)
 
             @named ref_frame2 = ProperFrame(:natural)
@@ -153,7 +154,7 @@ using Statistics
                 B_field = [0, 0, 0];
                 ref_frame = ref_frame2,
             )
-            @named electron2 = RadiatingElectron(ref_frame = ref_frame2, laser = field2)
+            @named electron2 = RadiatingElectron(; laser = field2)
             sys2 = mtkcompile(electron2, allow_symbolic = true)
 
             # Same initial conditions (start from rest)
@@ -192,7 +193,7 @@ using Statistics
             @named ref_frame = ProperFrame(:natural)
             @named mag_field =
                 UniformField(; E_field = [0, 0, 0], B_field = [0, 0, B₀], ref_frame)
-            @named electron_B = RadiatingElectron(; ref_frame, laser = mag_field)
+            @named electron_B = RadiatingElectron(; laser = mag_field)
             sys_B = mtkcompile(electron_B, allow_symbolic = true)
 
             # Initial velocity in x-direction
@@ -236,7 +237,7 @@ using Statistics
             @named ref_frame = ProperFrame(:natural)
             @named weak_field =
                 UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], ref_frame)
-            @named electron_nr = RadiatingElectron(; ref_frame, laser = weak_field)
+            @named electron_nr = RadiatingElectron(; laser = weak_field)
             sys_nr = mtkcompile(electron_nr, allow_symbolic = true)
 
             u0 = [

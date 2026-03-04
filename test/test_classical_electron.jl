@@ -8,7 +8,9 @@ using LinearAlgebra
 @testset "Classical Electron Tests" begin
     # Test system structure
     @testset "System Structure" begin
-        @named electron = ClassicalElectron(ref_frame=ProperFrame(:natural, name=:ref_frame))
+        ref_frame = ProperFrame(:natural, name = :ref_frame)
+        @named laser = PlaneWave(; ref_frame)
+        @named electron = ClassicalElectron(; laser)
         sys = mtkcompile(electron)
 
         # We expect 8 equations for the covariant formulation
@@ -25,9 +27,9 @@ using LinearAlgebra
         k = 1
         c = 1
         @independent_variables τ
-        @named ref_frame = ReferenceFrame(τ; c, ε₀=1, μ₀=1, m_e=1, q_e=1)
+        @named ref_frame = ReferenceFrame(τ; c, ε₀ = 1, μ₀ = 1, m_e = 1, q_e = 1)
         external_field = PlaneWave(; ref_frame, name = :plane_wave, k_direction = [0, 0, k])
-        @named electron = ChargedParticle(; ref_frame, external_field)
+        @named electron = ChargedParticle(; external_field)
         sys = mtkcompile(electron)
 
         # In natural units (c=1, m=1, e=1)
@@ -37,7 +39,7 @@ using LinearAlgebra
         # Initial velocity for figure-8 orbit
         # v₀ = -c / ((2/a₀)² + 1)
         v₀_z = -c / ((2 / a₀)^2 + 1)  # velocity in z-direction
-        γ₀ = 1.0 / sqrt(1 - (v₀_z/c)^2)
+        γ₀ = 1.0 / sqrt(1 - (v₀_z / c)^2)
 
         # Initial 4-velocity
         u₀ = [γ₀, 0.0, 0.0, γ₀ * v₀_z]
@@ -51,14 +53,14 @@ using LinearAlgebra
         # analytic expression for the trajectory
         f(x, z) = 16 * k^2 * z^2 + k * x * (k * x - 2a₀)^2 * (k * x - 4a₀)
         # analytic expression for the velocity
-        v_r(x) = sqrt(c^2 * (1-4(1-2a₀^2)/(2+2*a₀^2-k^2*x^2)^2))
+        v_r(x) = sqrt(c^2 * (1 - 4(1 - 2a₀^2) / (2 + 2 * a₀^2 - k^2 * x^2)^2))
         # TODO: add more rigurous tests on the figure 8 trajectory based on
         # the analytic solution
 
         tspan = (0.0, 50.0)
 
         prob = ODEProblem(sys, u0, tspan)
-        sol = solve(prob, Vern9(), abstol = 1e-9, reltol = 1e-9)
+        sol = solve(prob, Vern9(), abstol = 1.0e-9, reltol = 1.0e-9)
 
         @test SciMLBase.successful_retcode(sol)
 
@@ -71,10 +73,10 @@ using LinearAlgebra
         @test maximum(abs.(z_traj)) < 0.09  # Adjusted for new structure
 
         # Check 4-velocity normalization is preserved
-        for i = 1:10:length(sol.t)
+        for i in 1:10:length(sol.t)
             u = sol[sys.u, i]
             u_norm = u[1]^2 - u[2]^2 - u[3]^2 - u[4]^2
-            @test abs(u_norm - 1.0) < 1e-8
+            @test abs(u_norm - 1.0) < 1.0e-8
         end
     end
 
@@ -91,7 +93,7 @@ using LinearAlgebra
 
         @named ref_frame = ProperFrame(:natural)
         @named uniform_field = UniformField(; E_field, B_field, ref_frame)
-        @named electron = ChargedParticle(; ref_frame, external_field = uniform_field)
+        @named electron = ChargedParticle(; external_field = uniform_field)
 
         sys = mtkcompile(electron, allow_symbolic = true)
 
@@ -103,13 +105,13 @@ using LinearAlgebra
 
         tspan = (0.0, 50.0)  # Longer time for steady state
         prob = ODEProblem(sys, u0, tspan)
-        sol = solve(prob, Vern9(), abstol = 1e-10, reltol = 1e-10)
+        sol = solve(prob, Vern9(), abstol = 1.0e-10, reltol = 1.0e-10)
 
         @test SciMLBase.successful_retcode(sol)
 
         # Expected drift velocity: v_drift = E×B/B² = -0.01 ŷ
         v_drift_expected = cross(E_field, B_field) / dot(B_field, B_field)
-        @test abs(v_drift_expected[2] + 0.01) < 1e-10  # -0.01 in y-direction
+        @test abs(v_drift_expected[2] + 0.01) < 1.0e-10  # -0.01 in y-direction
 
         # After sufficient time, particle should drift in y-direction
         # Check average velocity in last quarter of simulation
@@ -139,11 +141,11 @@ using LinearAlgebra
             UniformField(E_field = [0, 0, E₀], B_field = [0, 0, 0]; ref_frame)
 
         # Classical electron (no radiation)
-        @named electron_classical = ClassicalElectron(; ref_frame, laser = weak_field)
+        @named electron_classical = ClassicalElectron(; laser = weak_field)
         sys_classical = mtkcompile(electron_classical)
 
         # Radiating electron
-        @named electron_radiating = RadiatingElectron(; ref_frame, laser = weak_field)
+        @named electron_radiating = RadiatingElectron(; laser = weak_field)
         sys_radiating = mtkcompile(electron_radiating)
 
         # Same initial conditions
@@ -156,14 +158,14 @@ using LinearAlgebra
 
         # Solve both
         prob_classical = ODEProblem(sys_classical, u0, tspan)
-        sol_classical = solve(prob_classical, Vern9(), abstol = 1e-14, reltol = 1e-14)
+        sol_classical = solve(prob_classical, Vern9(), abstol = 1.0e-14, reltol = 1.0e-14)
 
         u0_rad = [
             sys_radiating.x => [0.0, 0.0, 0.0, 0.0],
             sys_radiating.u => [1.0, 0.0, 0.0, 0.0],
         ]
         prob_radiating = ODEProblem(sys_radiating, u0_rad, tspan)
-        sol_radiating = solve(prob_radiating, Vern9(), abstol = 1e-14, reltol = 1e-14)
+        sol_radiating = solve(prob_radiating, Vern9(), abstol = 1.0e-14, reltol = 1.0e-14)
 
         # Compare final positions only
         x_classical_final = sol_classical[sys_classical.x, end]
@@ -174,15 +176,15 @@ using LinearAlgebra
         # Over time t = 0.1, this causes displacement differences ~ 5e-10
         # But in practice, the effect accumulates to be larger
 
-        for j = 1:4
+        for j in 1:4
             abs_diff = abs(x_classical_final[j] - x_radiating_final[j])
             # For the time component (j=1), we expect larger values
             if j == 1
                 # Time component should be close to ct ≈ 0.1
-                @test abs_diff < 1e-10
+                @test abs_diff < 1.0e-10
             else
                 # Spatial components: radiation causes differences on order of 1e-6
-                @test abs_diff < 2e-6
+                @test abs_diff < 2.0e-6
             end
         end
 
@@ -190,14 +192,14 @@ using LinearAlgebra
         u_classical_final = sol_classical[sys_classical.u, end]
         u_radiating_final = sol_radiating[sys_radiating.u, end]
 
-        for j = 1:4
+        for j in 1:4
             abs_diff = abs(u_classical_final[j] - u_radiating_final[j])
             # For the time component (γ), we expect it to be close to 1
             if j == 1
-                @test abs_diff < 1e-10
+                @test abs_diff < 1.0e-10
             else
                 # Spatial velocity components: radiation causes differences ~ 2e-5
-                @test abs_diff < 3e-5
+                @test abs_diff < 3.0e-5
             end
         end
     end

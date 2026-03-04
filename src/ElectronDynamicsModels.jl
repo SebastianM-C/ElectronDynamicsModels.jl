@@ -1,8 +1,8 @@
 module ElectronDynamicsModels
 
 using ModelingToolkit
-using ModelingToolkit: SymbolicT, build_explicit_observed_function
-using SymbolicIndexingInterface: setsym_oop
+using ModelingToolkitBase: AbstractSystem, SymbolicT, build_explicit_observed_function, get_systems
+using SymbolicIndexingInterface: getname, setsym_oop
 using PhysicalConstants, Unitful, UnitfulAtomic
 using PhysicalConstants.CODATA2018: c_0, e, m_e, ε_0
 using LinearAlgebra

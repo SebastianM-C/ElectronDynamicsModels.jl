@@ -1,5 +1,5 @@
 """
-    FieldEvaluator(laser, ref_frame)
+    FieldEvaluator(laser)
 
 Evaluate electromagnetic fields E(x,y,z,t) and B(x,y,z,t) at arbitrary spacetime
 points without running an ODE solver. Internally wraps the laser in a ClassicalElectron
@@ -13,20 +13,20 @@ obtained from the reference frame and applied internally.
 ```julia
 @named ref_frame = ProperFrame(:atomic)
 @named laser = GaussLaser(; wavelength=1.0, a0=1.0, ref_frame)
-fe = FieldEvaluator(laser, ref_frame)
+fe = FieldEvaluator(laser)
 result = fe([t, x, y, z])  # (E = [...], B = [...])
 ```
 """
-struct FieldEvaluator{F,S,P,T}
+struct FieldEvaluator{F, S, P, T}
     h::F           # compiled observed function for [E; B]
     set_x::S       # out-of-place setter for x coordinates
     prob::P        # reference problem (holds initialized parameters)
     c::T           # speed of light from the reference frame
 end
 
-function FieldEvaluator(laser, ref_frame)
+function FieldEvaluator(laser)
     # Internally create a minimal electron system — just for compilation
-    @named _probe = ClassicalElectron(; laser, ref_frame)
+    @named _probe = ClassicalElectron(; laser)
     sys = mtkcompile(_probe)
 
     laser_name = nameof(laser)
@@ -46,7 +46,7 @@ function FieldEvaluator(laser, ref_frame)
     # Extract speed of light from the system constants
     c_val = prob.ps[sys.c]
 
-    FieldEvaluator(h, set_x, prob, c_val)
+    return FieldEvaluator(h, set_x, prob, c_val)
 end
 
 function Base.show(io::IO, ::MIME"text/plain", fe::FieldEvaluator)
@@ -61,11 +61,11 @@ function Base.show(io::IO, ::MIME"text/plain", fe::FieldEvaluator)
         val = fe.prob.ps[p]
         println(cio, "  ", name, " = ", val)
     end
-    print(cio, "  c = ", fe.c)
+    return print(cio, "  c = ", fe.c)
 end
 
 function Base.show(io::IO, fe::FieldEvaluator)
-    print(io, "FieldEvaluator(...)")
+    return print(io, "FieldEvaluator(...)")
 end
 
 function (fe::FieldEvaluator)(txyz)

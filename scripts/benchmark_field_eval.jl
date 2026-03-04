@@ -16,16 +16,19 @@ m_val = 1
 
 # --- FieldEvaluator setup ---
 @named ref_frame = ProperFrame(:atomic)
-@named laser = LaguerreGaussLaser(
-    wavelength=λ_val, a0=a₀_val, beam_waist=w₀_val,
-    radial_index=p_val, azimuthal_index=m_val,
-    ref_frame=ref_frame, temporal_profile=:constant)
+@named laser = LaguerreGaussLaser(;
+    wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
+    radial_index = p_val, azimuthal_index = m_val,
+    ref_frame, temporal_profile = :constant
+)
 
-fe = FieldEvaluator(laser, ref_frame)
+fe = FieldEvaluator(laser)
 
 # --- LaserTypes setup ---
-lt_laser = LaserTypes.LaguerreGaussLaser(:atomic;
-    λ=λ_val, a₀=a₀_val, w₀=w₀_val, p=p_val, m=m_val)
+lt_laser = LaserTypes.LaguerreGaussLaser(
+    :atomic;
+    λ = λ_val, a₀ = a₀_val, w₀ = w₀_val, p = p_val, m = m_val
+)
 
 # Test point
 x, y, z = 0.3w₀_val, 0.1w₀_val, 0.5w₀_val
@@ -60,8 +63,10 @@ display(@benchmark LaserTypes.B($pos, $t_val, $lt_laser))
 println()
 
 println("=== LaserTypes E + B ===")
-display(@benchmark begin
-    LaserTypes.E($pos, $t_val, $lt_laser)
-    LaserTypes.B($pos, $t_val, $lt_laser)
-end)
+display(
+    @benchmark begin
+        LaserTypes.E($pos, $t_val, $lt_laser)
+        LaserTypes.B($pos, $t_val, $lt_laser)
+    end
+)
 println()

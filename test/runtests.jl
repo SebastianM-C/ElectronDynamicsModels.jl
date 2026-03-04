@@ -3,7 +3,7 @@ using Test
 using Aqua
 using JET
 
-@testset "ElectronDynamicsModels.jl" begin
+@testset "ElectronDynamicsModels.jl" verbose = true begin
     @testset "Code quality (Aqua.jl)" begin
         Aqua.test_all(ElectronDynamicsModels)
     end

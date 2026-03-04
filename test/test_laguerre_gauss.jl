@@ -10,34 +10,37 @@ using CSV
 
 @testset "LaguerreGaussLaser vs LaserTypes" begin
     # Common parameters (SI units)
-    λ_test = 800e-9      # wavelength in meters
+    λ_test = 800.0e-9      # wavelength in meters
     a₀_test = 1.0        # normalized amplitude
-    w₀_test = 10e-6      # beam waist
+    w₀_test = 10.0e-6      # beam waist
     c_SI = 299792458.0
 
     # Test multiple (p, m) combinations
     pm_combos = [(0, 0), (0, 1), (1, 0), (1, 1), (0, 2), (2, 1)]
 
     test_points = [
-        (r=1e-6, θ=π/4, z=0.0),
-        (r=5e-6, θ=π/2, z=10e-6),
-        (r=2e-6, θ=π, z=-5e-6),
-        (r=3e-6, θ=0.0, z=5e-6),
+        (r = 1.0e-6, θ = π / 4, z = 0.0),
+        (r = 5.0e-6, θ = π / 2, z = 10.0e-6),
+        (r = 2.0e-6, θ = π, z = -5.0e-6),
+        (r = 3.0e-6, θ = 0.0, z = 5.0e-6),
     ]
 
     @testset "p=$p_val, m=$m_val" for (p_val, m_val) in pm_combos
         # LaserTypes reference
-        lt_laser = LaserTypes.LaguerreGaussLaser(:SI;
-            λ=λ_test, a₀=a₀_test, w₀=w₀_test, p=p_val, m=m_val)
+        lt_laser = LaserTypes.LaguerreGaussLaser(
+            :SI;
+            λ = λ_test, a₀ = a₀_test, w₀ = w₀_test, p = p_val, m = m_val
+        )
 
         # ElectronDynamicsModels
         @named ref_frame = ProperFrame(:SI)
         @named laser = LaguerreGaussLaser(
-            wavelength=λ_test, a0=a₀_test, beam_waist=w₀_test,
-            radial_index=p_val, azimuthal_index=m_val,
-            ref_frame=ref_frame, temporal_profile=:constant)
+            wavelength = λ_test, a0 = a₀_test, beam_waist = w₀_test,
+            radial_index = p_val, azimuthal_index = m_val,
+            ref_frame = ref_frame, temporal_profile = :constant
+        )
 
-        fe = FieldEvaluator(laser, ref_frame)
+        fe = FieldEvaluator(laser)
 
         for pt in test_points
             x = pt.r * cos(pt.θ); y = pt.r * sin(pt.θ); z = pt.z
@@ -46,11 +49,11 @@ using CSV
             lt_B = LaserTypes.B([x, y, z], 0.0, lt_laser)
 
             for i in 1:3
-                if abs(lt_E[i]) > 1e-10
-                    @test isapprox(result.E[i], lt_E[i], rtol=1e-7)
+                if abs(lt_E[i]) > 1.0e-10
+                    @test isapprox(result.E[i], lt_E[i], rtol = 1.0e-7)
                 end
-                if abs(lt_B[i]) > 1e-10
-                    @test isapprox(result.B[i], lt_B[i], rtol=1e-7)
+                if abs(lt_B[i]) > 1.0e-10
+                    @test isapprox(result.B[i], lt_B[i], rtol = 1.0e-7)
                 end
             end
         end
@@ -70,11 +73,12 @@ end
 
     @named ref_frame = ProperFrame(:atomic)
     @named laser = LaguerreGaussLaser(
-        wavelength=1.0, a0=1.0, beam_waist=nothing,
-        radial_index=1, azimuthal_index=1,
-        ref_frame=ref_frame, temporal_profile=:constant)
+        wavelength = 1.0, a0 = 1.0, beam_waist = nothing,
+        radial_index = 1, azimuthal_index = 1,
+        ref_frame = ref_frame, temporal_profile = :constant
+    )
 
-    fe = FieldEvaluator(laser, ref_frame)
+    fe = FieldEvaluator(laser)
 
     # Extract parameters
     sys = fe.prob.f.sys
@@ -114,14 +118,15 @@ end
 
     @named ref_frame = ProperFrame(:atomic)
     @named lg_laser = LaguerreGaussLaser(
-        wavelength=λ_val, a0=a₀_val, beam_waist=w₀_val,
-        radial_index=0, azimuthal_index=0,
-        ref_frame=ref_frame, temporal_profile=:constant)
+        wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
+        radial_index = 0, azimuthal_index = 0,
+        ref_frame = ref_frame, temporal_profile = :constant
+    )
 
-    fe_lg = FieldEvaluator(lg_laser, ref_frame)
+    fe_lg = FieldEvaluator(lg_laser)
 
     # LaserTypes GaussLaser with matching parameters (constant profile)
-    lt_gauss = LaserTypes.GaussLaser(:atomic; λ=λ_val, a₀=a₀_val, w₀=w₀_val)
+    lt_gauss = LaserTypes.GaussLaser(:atomic; λ = λ_val, a₀ = a₀_val, w₀ = w₀_val)
 
     # 100 random points in the beam volume
     rng = Xoshiro(42)  # reproducible
@@ -137,11 +142,11 @@ end
         lt_B = LaserTypes.B([x, y, z], t_val, lt_gauss)
 
         for i in 1:3
-            if abs(lt_E[i]) > 1e-10
-                @test isapprox(result_lg.E[i], lt_E[i], rtol=1e-8)
+            if abs(lt_E[i]) > 1.0e-10
+                @test isapprox(result_lg.E[i], lt_E[i], rtol = 1.0e-8)
             end
-            if abs(lt_B[i]) > 1e-10
-                @test isapprox(result_lg.B[i], lt_B[i], rtol=1e-8)
+            if abs(lt_B[i]) > 1.0e-10
+                @test isapprox(result_lg.B[i], lt_B[i], rtol = 1.0e-8)
             end
         end
     end
@@ -159,11 +164,12 @@ end
 
     @named ref_frame = ProperFrame(:atomic)
     @named laser = LaguerreGaussLaser(
-        wavelength=λ_val, a0=a₀_val, beam_waist=w₀_val,
-        radial_index=1, azimuthal_index=1,
-        ref_frame=ref_frame, temporal_profile=:constant)
+        wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
+        radial_index = 1, azimuthal_index = 1,
+        ref_frame = ref_frame, temporal_profile = :constant
+    )
 
-    fe = FieldEvaluator(laser, ref_frame)
+    fe = FieldEvaluator(laser)
 
     # Evaluate energy density |E|² + c²|B|² over a grid at z=0, t=0
     # Use coarser grid than LaserTypes (they use step=λ over [-4w₀, 4w₀])
@@ -177,7 +183,7 @@ end
         wMax = max(wMax, w)
     end
 
-    @test wMax < 1e6
+    @test wMax < 1.0e6
 end
 
 @testset "Field values vs reference" begin
@@ -205,11 +211,12 @@ end
 
         @named ref_frame = ProperFrame(:atomic)
         @named laser = LaguerreGaussLaser(
-            wavelength=λ_val, a0=1.0, beam_waist=w₀_val,
-            radial_index=p_val, azimuthal_index=m_val,
-            ref_frame=ref_frame, temporal_profile=:constant)
+            wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val,
+            radial_index = p_val, azimuthal_index = m_val,
+            ref_frame = ref_frame, temporal_profile = :constant
+        )
 
-        fe = FieldEvaluator(laser, ref_frame)
+        fe = FieldEvaluator(laser)
 
         # Extract normalization parameters
         sys = fe.prob.f.sys
@@ -217,7 +224,7 @@ end
         Nₚₘ = fe.prob.ps[sys.laser.Nₚₘ]
         norm = factorial(p_val) / pochhammer(abs(m_val) + 1, p_val) * E₀ * Nₚₘ
 
-        for row in CSV.File(joinpath(csv_folder, file), header=false)
+        for row in CSV.File(joinpath(csv_folder, file), header = false)
             x = row[1]
             y = row[2]
             z = row[3]
@@ -238,37 +245,37 @@ end
             # Our model computes real(complex_expr), so compare against real part.
             # Use rtol=1e-6 to account for numerical differences between
             # Mathematica reference data and our compiled symbolic evaluation.
-            @test result.E[1] ≈ real(norm * EX) rtol=1e-6
-            @test result.E[2] ≈ real(norm * EY) rtol=1e-6
-            @test result.E[3] ≈ real(norm * EZ) rtol=1e-6
-            @test result.B[1] ≈ real(norm * BX) rtol=1e-6
-            @test result.B[2] ≈ real(norm * BY) rtol=1e-6
-            @test result.B[3] ≈ real(norm * BZ) rtol=1e-6
+            @test result.E[1] ≈ real(norm * EX) rtol = 1.0e-6
+            @test result.E[2] ≈ real(norm * EY) rtol = 1.0e-6
+            @test result.E[3] ≈ real(norm * EZ) rtol = 1.0e-6
+            @test result.B[1] ≈ real(norm * BX) rtol = 1.0e-6
+            @test result.B[2] ≈ real(norm * BY) rtol = 1.0e-6
+            @test result.B[3] ≈ real(norm * BZ) rtol = 1.0e-6
         end
     end
 end
 
 @testset "LaguerreGaussLaser Parameters" begin
     # Test parameter computation
-    λ = 800e-9
+    λ = 800.0e-9
     a₀ = 1.0
-    w₀ = 10e-6
+    w₀ = 10.0e-6
     c = 299792458.0
 
     @named ref_frame = ProperFrame(:SI)
     @named laser = LaguerreGaussLaser(
-        wavelength=λ,
-        a0=a₀,
-        beam_waist=w₀,
-        radial_index=0,
-        azimuthal_index=1,
-        ref_frame=ref_frame
+        wavelength = λ,
+        a0 = a₀,
+        beam_waist = w₀,
+        radial_index = 0,
+        azimuthal_index = 1,
+        ref_frame = ref_frame
     )
-    @named elec = ClassicalElectron(; laser, ref_frame)
+    @named elec = ClassicalElectron(; laser)
     sys = mtkcompile(elec)
 
     u0 = [sys.x => [0.0, 0.0, 0.0, 0.0], sys.u => [0.0, 0.0, 0.0, 1.0]]
-    prob = ODEProblem(sys, u0, (0.0, 1e-15))
+    prob = ODEProblem(sys, u0, (0.0, 1.0e-15))
 
     # Check derived parameters
     ω_expected = 2π * c / λ
@@ -279,9 +286,9 @@ end
     q_e_SI = 1.602176634e-19   # C - electron charge magnitude
     E₀_expected = a₀ * m_e_SI * c * ω_expected / q_e_SI
 
-    @test isapprox(prob.ps[sys.laser.ω], ω_expected, rtol=1e-10)
-    @test isapprox(prob.ps[sys.laser.k], k_expected, rtol=1e-10)
-    @test isapprox(prob.ps[sys.laser.z_R], z_R_expected, rtol=1e-10)
-    @test isapprox(prob.ps[sys.laser.E₀], E₀_expected, rtol=1e-10)
-    @test isapprox(prob.ps[sys.laser.Nₚₘ], 1.0, rtol=1e-10)  # For p=0, m=1
+    @test isapprox(prob.ps[sys.laser.ω], ω_expected, rtol = 1.0e-10)
+    @test isapprox(prob.ps[sys.laser.k], k_expected, rtol = 1.0e-10)
+    @test isapprox(prob.ps[sys.laser.z_R], z_R_expected, rtol = 1.0e-10)
+    @test isapprox(prob.ps[sys.laser.E₀], E₀_expected, rtol = 1.0e-10)
+    @test isapprox(prob.ps[sys.laser.Nₚₘ], 1.0, rtol = 1.0e-10)  # For p=0, m=1
 end
