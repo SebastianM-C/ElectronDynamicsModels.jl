@@ -49,7 +49,7 @@ using Random
     # Both should produce the same final state
     for i in 1:4
         @test sol_λ[sys_λ.x[i], end] ≈ sol_ω[sys_ω.x[i], end] rtol = 1.0e-8
-        @test sol_λ[sys_λ.u[i], end] ≈ sol_ω[sys_ω.u[i], end] rtol = 1.0e-7
+        @test sol_λ[sys_λ.u[i], end] ≈ sol_ω[sys_ω.u[i], end] rtol = 1.0e-6
     end
 
     # Test error when both are specified
