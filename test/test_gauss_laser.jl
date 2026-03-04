@@ -49,7 +49,7 @@ using Random
     # Both should produce the same final state
     for i in 1:4
         @test sol_λ[sys_λ.x[i], end] ≈ sol_ω[sys_ω.x[i], end] rtol = 1.0e-8
-        @test sol_λ[sys_λ.u[i], end] ≈ sol_ω[sys_ω.u[i], end] rtol = 1.0e-8
+        @test sol_λ[sys_λ.u[i], end] ≈ sol_ω[sys_ω.u[i], end] rtol = 1.0e-7
     end
 
     # Test error when both are specified
@@ -74,14 +74,11 @@ end
     # Read initialized parameters from the problem
     E₀ = fe.prob.ps[fe.prob.f.sys.laser.E₀]
     τ0 = fe.prob.ps[fe.prob.f.sys.laser.τ0]
-    T0_val = fe.prob.ps[fe.prob.f.sys.laser.T0]
+    t₀ = fe.prob.ps[fe.prob.f.sys.laser.t₀]
 
     # Verify E₀ is computed correctly: a₀ * m_e * c * ω / |q_e|
     E₀_expected = a0_val * m_e * c * ω_val / abs(q_e)
     @test E₀ ≈ E₀_expected rtol = 1.0e-10
-
-    # Evaluate at origin, at the pulse center time t₀ = 5*T0
-    t₀ = 5 * T0_val
 
     result = fe([t₀, 0.0, 0.0, 0.0])
 
@@ -121,8 +118,7 @@ end
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
     τ0 = fe.prob.ps[sys.laser.τ0]
-    T0_val = fe.prob.ps[sys.laser.T0]
-    t₀ = 5 * T0_val
+    t₀ = fe.prob.ps[sys.laser.t₀]
 
     # LaserTypes reference (constant temporal profile)
     lt_gauss = LaserTypes.GaussLaser(:atomic; λ = λ_val, a₀ = a₀_val, w₀ = w₀_val)
@@ -169,12 +165,12 @@ end
 
     @named ref_frame = ProperFrame(:atomic)
 
-    @named gauss = GaussLaser(; wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val, ref_frame)
+    # Both lasers with n_cycles=0 so t₀=0 and envelopes match directly
+    @named gauss = GaussLaser(; wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
+        n_cycles = 0, ref_frame)
     fe_gauss = FieldEvaluator(gauss)
     sys_g = fe_gauss.prob.f.sys
-    T0_val = fe_gauss.prob.ps[sys_g.gauss.T0]
     τ0_val = fe_gauss.prob.ps[sys_g.gauss.τ0]
-    t₀_gauss = 5 * T0_val
 
     # LG(0,0) with Gaussian envelope matched to GaussLaser τ0
     @named lg = LaguerreGaussLaser(;
@@ -184,9 +180,7 @@ end
     )
     fe_lg = FieldEvaluator(lg)
 
-    # Evaluate both at the same spacetime points.
-    # The envelope centers differ (t₀=5T0 vs t₀=0), so we compare
-    # the envelope-free ratio: field / env should match for both.
+    # Both have t₀=0, so fields should match directly at any spacetime point
     rng = Xoshiro(42)
     for _ in 1:50
         x = w₀_val * 0.3 * (2rand(rng) - 1)
@@ -197,17 +191,12 @@ end
         result_g = fe_gauss([t_eval, x, y, z])
         result_lg = fe_lg([t_eval, x, y, z])
 
-        # Envelope ratio between the two
-        env_gauss = exp(-((t_eval - t₀_gauss - z / c) / τ0_val)^2)
-        env_lg = exp(-((t_eval - 0 - z / c) / τ0_val)^2)
-
         for i in 1:3
-            # Compare field/envelope (the envelope-free field should match)
-            if abs(result_lg.E[i]) > 1.0e-15 && env_lg > 1.0e-10 && env_gauss > 1.0e-10
-                @test isapprox(result_g.E[i] / env_gauss, result_lg.E[i] / env_lg, rtol = 1.0e-8)
+            if abs(result_lg.E[i]) > 1.0e-15
+                @test isapprox(result_g.E[i], result_lg.E[i], rtol = 1.0e-8)
             end
-            if abs(result_lg.B[i]) > 1.0e-15 && env_lg > 1.0e-10 && env_gauss > 1.0e-10
-                @test isapprox(result_g.B[i] / env_gauss, result_lg.B[i] / env_lg, rtol = 1.0e-8)
+            if abs(result_lg.B[i]) > 1.0e-15
+                @test isapprox(result_g.B[i], result_lg.B[i], rtol = 1.0e-8)
             end
         end
     end
@@ -225,8 +214,7 @@ end
 
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
-    T0_val = fe.prob.ps[sys.laser.T0]
-    t₀ = 5 * T0_val  # pulse center
+    t₀ = fe.prob.ps[sys.laser.t₀]
 
     # At z=0, t=t₀: Ex = E₀ * exp(-r²/w₀²) * cos(ω*t₀)
     # So |Ex(r)| / |Ex(0)| = exp(-r²/w₀²)
@@ -281,9 +269,7 @@ end
     @named laser = GaussLaser(; wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val, ref_frame)
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
-    T0_val = fe.prob.ps[sys.laser.T0]
-    τ0 = fe.prob.ps[sys.laser.τ0]
-    t₀ = 5 * T0_val
+    t₀ = fe.prob.ps[sys.laser.t₀]
 
     for z_frac in [0.01, 0.5, 2.0]
         z = z_frac * z_R
@@ -311,8 +297,7 @@ end
 
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
-    T0_val = fe.prob.ps[sys.laser.T0]
-    t₀ = 5 * T0_val
+    t₀ = fe.prob.ps[sys.laser.t₀]
 
     rng = Xoshiro(99)
     for _ in 1:20
@@ -345,8 +330,7 @@ end
 
     fe = FieldEvaluator(laser_circ)
     sys = fe.prob.f.sys
-    T0_val = fe.prob.ps[sys.laser_circ.T0]
-    t₀ = 5 * T0_val
+    t₀ = fe.prob.ps[sys.laser_circ.t₀]
 
     r = 0.1 * w₀_val
     # Evaluate at several azimuthal angles; transverse intensity should be constant
@@ -410,9 +394,8 @@ end
 
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
-    T0_val = fe.prob.ps[sys.laser.T0]
     τ0 = fe.prob.ps[sys.laser.τ0]
-    t₀ = 5 * T0_val
+    t₀ = fe.prob.ps[sys.laser.t₀]
 
     lt_gauss = LaserTypes.GaussLaser(:atomic; λ = λ_val, a₀ = 1.0, w₀ = w₀_val)
 

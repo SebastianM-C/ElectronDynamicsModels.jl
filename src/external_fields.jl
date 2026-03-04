@@ -2,16 +2,20 @@
 Gaussian laser pulse electromagnetic field.
 
 Represents a focused Gaussian beam with a temporal envelope.
-The beam propagates along the z-direction with waist w₀ at z=0.
+The beam propagates along the z-direction with waist w₀ at focus.
 
 Parameters:
 - λ: wavelength
 - a₀: normalized vector potential (a0 kwarg)
 - w₀: beam waist (defaults to 75λ)
-- T0: pulse duration parameter
-- τ0: temporal width parameter
+- n_cycles: number of optical cycles to pulse center (determines t₀)
+- τ0: temporal envelope half-width
+- t₀: pulse center time (= n_cycles × 2π/ω)
+- z₀: focus position along z-axis
 """
-@component function GaussLaser(; name, wavelength = nothing, frequency = nothing, a0 = 10.0, beam_waist = nothing, polarization = :linear, ref_frame)
+@component function GaussLaser(; name, wavelength = nothing, frequency = nothing,
+        a0 = 10.0, beam_waist = nothing, polarization = :linear,
+        n_cycles = 5, focus_position = nothing, ref_frame)
     if wavelength === nothing && frequency === nothing
         wavelength = 1.0
     end
@@ -32,15 +36,17 @@ Parameters:
     @unpack E, B = field_dynamics
 
     @parameters begin
-        λ, [guess = 1.0]
-        a₀ = a0
-        ω, [guess = 1.0]
-        k
-        E₀
-        w₀
-        z_R
-        T0 = 100
-        τ0
+        λ, [guess = 1.0, description = "Wavelength"]
+        a₀ = a0, [description = "Normalized vector potential"]
+        ω, [guess = 1.0, description = "Angular frequency"]
+        k, [description = "Wave number (2π/λ)"]
+        E₀, [description = "Peak electric field amplitude"]
+        w₀, [description = "Beam waist radius at focus"]
+        z_R, [description = "Rayleigh length"]
+        τ0, [description = "Temporal envelope half-width"]
+        n_cycles = n_cycles, [description = "Number of optical cycles to pulse center"]
+        t₀, [guess = 1.0, description = "Pulse center time"]
+        z₀ = 0, [description = "Focus position along z-axis"]
     end
 
     # Fixed parameters
@@ -54,8 +60,6 @@ Parameters:
     end
 
     ϕ₀ = 0
-    t₀ = 5T0
-    z₀ = 0
 
     @variables wz(iv) z(iv) r(iv)
 
@@ -98,6 +102,7 @@ Parameters:
         E₀ ~ a₀ * m_e * c * ω / abs(q_e)
         z_R ~ w₀^2 * k / 2
         k ~ 2π / λ
+        t₀ ~ n_cycles * 2π / ω
     ]
     bindings = [
         ω => missing
@@ -106,10 +111,14 @@ Parameters:
         E₀ => missing
         z_R => missing
         w₀ => missing
+        t₀ => missing
     ]
 
     initial_conditions = Pair{SymbolicT, Any}[τ0 => 10 / ω]
     push!(initial_conditions, w₀ => (beam_waist === nothing ? 75λ : beam_waist))
+    if focus_position !== nothing
+        push!(initial_conditions, z₀ => focus_position)
+    end
     if wavelength !== nothing
         push!(initial_conditions, λ => wavelength)
     end
@@ -118,7 +127,7 @@ Parameters:
     end
 
     sys = System(
-        eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0];
+        eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, τ0, n_cycles, t₀, z₀];
         name,
         systems = [ref_frame],
         initial_conditions,
@@ -164,11 +173,11 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
     @unpack E, B = field_dynamics
 
     @parameters begin
-        A = amplitude
-        ω, [guess = 1.0]
-        k_dir[1:3] = k_direction
-        pol[1:3] = polarization
-        λ, [guess = 1.0]
+        A = amplitude, [description = "Field amplitude"]
+        ω, [guess = 1.0, description = "Angular frequency"]
+        k_dir[1:3] = k_direction, [description = "Wave vector direction"]
+        pol[1:3] = polarization, [description = "Polarization direction"]
+        λ, [guess = 1.0, description = "Wavelength"]
     end
 
     # Normalize k direction to get unit vector k̂
@@ -243,7 +252,10 @@ Reference: Jackson, "Classical Electrodynamics", Section 12.4
     # Create local position and time variables
     @variables x(iv)[1:4] t(iv)
 
-    @parameters E₀[1:3] = E_field B₀[1:3] = B_field
+    @parameters begin
+        E₀[1:3] = E_field, [description = "Electric field vector"]
+        B₀[1:3] = B_field, [description = "Magnetic field vector"]
+    end
 
     eqs = [
         E ~ E₀,
@@ -284,6 +296,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         ref_frame,
         temporal_profile = :gaussian,  # :gaussian or :constant
         temporal_width = nothing,      # pulse width (for gaussian profile)
+        n_cycles = 0,                  # number of optical cycles to pulse center
         focus_position = nothing,       # focal position along z-axis
         polarization = :linear
     )
@@ -320,21 +333,25 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     Npm_val = sqrt(pochhammer(radial_index + 1, mₐ))
 
     params = @parameters begin
-        λ, [guess = 1.0]
-        a₀ = a0
-        ω, [guess = 1.0]
-        k
-        E₀
-        w₀
-        z_R
-        τ0 = temporal_width === nothing ? 100.0 : temporal_width
+        λ, [guess = 1.0, description = "Wavelength"]
+        a₀ = a0, [description = "Normalized vector potential"]
+        ω, [guess = 1.0, description = "Angular frequency"]
+        k, [description = "Wave number (2π/λ)"]
+        E₀, [description = "Peak electric field amplitude"]
+        w₀, [description = "Beam waist radius at focus"]
+        z_R, [description = "Rayleigh length"]
+        τ0 = temporal_width === nothing ? 100.0 : temporal_width, [description = "Temporal envelope half-width"]
 
         # Laguerre-Gauss quantum numbers
-        p = radial_index
-        m = azimuthal_index
+        p = radial_index, [description = "Radial mode index"]
+        m = azimuthal_index, [description = "Azimuthal mode index (orbital angular momentum)"]
 
         # Normalization factor (computed from p and m)
-        Nₚₘ = Npm_val
+        Nₚₘ = Npm_val, [description = "Normalization factor √((p+1)_{|m|})"]
+
+        n_cycles = n_cycles, [description = "Number of optical cycles to pulse center"]
+        t₀, [guess = 1.0, description = "Pulse center time"]
+        z₀ = 0, [description = "Focus position along z-axis"]
     end
 
     if polarization == :linear
@@ -346,10 +363,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         error("polarization $polarization not supported.")
     end
 
-    # Fixed parameters (computed values, not symbolic parameters)
     ϕ₀ = 0
-    t₀ = 0  # Center pulse at t=0
-    z₀ = focus_position === nothing ? 0.0 : focus_position
 
     # Derived variables
     @variables begin
@@ -464,6 +478,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         k ~ 2π / λ
         z_R ~ π * w₀^2 / λ
         E₀ ~ a₀ * m_e * c * ω / abs(q_e)
+        t₀ ~ n_cycles * 2π / ω
     ]
     bindings = [
         ω => missing
@@ -472,10 +487,13 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         E₀ => missing
         z_R => missing
         w₀ => missing
+        t₀ => missing
+        z₀ => missing
     ]
 
     initial_conditions = Pair{SymbolicT, Any}[]
     push!(initial_conditions, w₀ => (beam_waist === nothing ? 75λ : beam_waist))
+    push!(initial_conditions, z₀ => (focus_position === nothing ? 0.0 : focus_position))
     if wavelength !== nothing
         push!(initial_conditions, λ => wavelength)
     end
