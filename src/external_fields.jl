@@ -59,6 +59,13 @@ Parameters:
 
     @variables wz(iv) z(iv) r(iv)
 
+    env = exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2)
+
+    E_g = E₀ * w₀ / wz *
+        exp(-(r / wz)^2) *
+        exp(im * (-(r^2 * z) / (z_R * wz^2) + atan(z, z_R) - k * z + ϕ₀)) *
+        exp(im * ω * t) * env
+
     eqs = [
         # Extract z-coordinate from 4-position
         z ~ x[4]
@@ -68,28 +75,12 @@ Parameters:
         r ~ hypot(x[2], x[3])
 
         # Electric field components
-        E[1] ~ real(
-            ξx * E₀ * w₀ / wz *
-            exp(
-                -(r / wz)^2 + im * (-(r^2 * z) / (z_R * wz^2) + atan(z, z_R) - k * z + ϕ₀),
-            ) *
-            exp(im * ω * t) *
-            exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
-        )
-        E[2] ~ real(
-            ξy * E₀ * w₀ / wz *
-            exp(
-                -(r / wz)^2 + im * (-(r^2 * z) / (z_R * wz^2) + atan(z, z_R) - k * z + ϕ₀),
-            ) *
-            exp(im * ω * t) *
-            exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
-        )
+        E[1] ~ real(ξx * E_g)
+        E[2] ~ real(ξy * E_g)
         E[3] ~ real(
             2im / (k * wz^2) *
-            (1 + im * (z / z_R)) *
-            (x[2] * E[1] + x[3] * E[2]) *
-            exp(im * ω * t) *
-            exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
+                (1 + im * (z / z_R)) *
+                (x[2] * (ξx * E_g) + x[3] * (ξy * E_g)),
         )
 
         # Magnetic field components
@@ -97,10 +88,8 @@ Parameters:
         B[2] ~ E[1] / c
         B[3] ~ real(
             2im / (k * c * wz^2) *
-            (1 + im * (z / z_R)) *
-            (x[3] * E[1] - x[2] * E[2]) *
-            exp(im * ω * t) *
-            exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2),
+                (1 + im * (z / z_R)) *
+                (x[3] * (ξx * E_g) - x[2] * (ξy * E_g)),
         )
     ]
 
