@@ -11,7 +11,7 @@ Parameters:
 - T0: pulse duration parameter
 - τ0: temporal width parameter
 """
-@component function GaussLaser(; name, wavelength=nothing, frequency=nothing, a0=10.0, beam_waist=nothing, polarization = :linear, ref_frame)
+@component function GaussLaser(; name, wavelength = nothing, frequency = nothing, a0 = 10.0, beam_waist = nothing, polarization = :linear, ref_frame)
     if wavelength === nothing && frequency === nothing
         wavelength = 1.0
     end
@@ -48,7 +48,7 @@ Parameters:
         ξx = 1.0 + 0im
         ξy = 0 + 0im
     elseif polarization == :circular
-        ξx, ξy = (1/√2, im/√2) .|> complex
+        ξx, ξy = (1 / √2, im / √2) .|> complex
     else
         error("polarization $polarization not supported.")
     end
@@ -108,7 +108,7 @@ Parameters:
         w₀ => missing
     ]
 
-    initial_conditions = Pair{SymbolicT,Any}[τ0 => 10 / ω]
+    initial_conditions = Pair{SymbolicT, Any}[τ0 => 10 / ω]
     push!(initial_conditions, w₀ => (beam_waist === nothing ? 75λ : beam_waist))
     if wavelength !== nothing
         push!(initial_conditions, λ => wavelength)
@@ -117,9 +117,10 @@ Parameters:
         push!(initial_conditions, ω => frequency)
     end
 
-    sys = System(eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0];
+    sys = System(
+        eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, T0, τ0];
         name,
-        systems=[ref_frame],
+        systems = [ref_frame],
         initial_conditions,
         initialization_eqs,
         bindings
@@ -137,7 +138,7 @@ electrons can exhibit figure-8 motion when a₀ ~ 1.
 
 Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 """
-@component function PlaneWave(; name, amplitude=1.0, wavelength=nothing, frequency=nothing, k_direction=[0,0,1], polarization=[1,0,0], ref_frame)
+@component function PlaneWave(; name, amplitude = 1.0, wavelength = nothing, frequency = nothing, k_direction = [0, 0, 1], polarization = [1, 0, 0], ref_frame)
     if wavelength === nothing && frequency === nothing
         frequency = 1.0
     end
@@ -182,7 +183,7 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
     b̂ = [
         k̂[2] * ê[3] - k̂[3] * ê[2],
         k̂[3] * ê[1] - k̂[1] * ê[3],
-        k̂[1] * ê[2] - k̂[2] * ê[1]
+        k̂[1] * ê[2] - k̂[2] * ê[1],
     ]
 
     # Spatial position from 4-position (x = [ct, x, y, z] or [t, x, y, z])
@@ -201,14 +202,14 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
     ]
 
     initialization_eqs = [
-        λ ~ (2π * c) / ω
+        λ ~ (2π * c) / ω,
     ]
     bindings = [
         λ => missing
         ω => missing
     ]
 
-    initial_conditions = Pair{SymbolicT,Any}[]
+    initial_conditions = Pair{SymbolicT, Any}[]
     if wavelength !== nothing
         push!(initial_conditions, λ => wavelength)
     end
@@ -218,7 +219,7 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 
     vars = nameof(iv) == :τ ? [x, t] : [x]
 
-    sys = System(eqs, iv, vars, [A, ω, k_dir, pol, λ]; name, systems=[ref_frame], initialization_eqs, bindings, initial_conditions)
+    sys = System(eqs, iv, vars, [A, ω, k_dir, pol, λ]; name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions)
 
     extend(sys, field_dynamics)
 end
@@ -231,7 +232,7 @@ particles drift with velocity v_drift = E×B/B²
 
 Reference: Jackson, "Classical Electrodynamics", Section 12.4
 """
-@component function UniformField(; name, E_field=[0,0,1], B_field=[0,0,0], ref_frame)
+@component function UniformField(; name, E_field = [0, 0, 1], B_field = [0, 0, 0], ref_frame)
     @named field_dynamics = EMFieldDynamics(; ref_frame)
     @unpack E, B = field_dynamics
 
@@ -242,14 +243,14 @@ Reference: Jackson, "Classical Electrodynamics", Section 12.4
     # Create local position and time variables
     @variables x(iv)[1:4] t(iv)
 
-    @parameters E₀[1:3]=E_field B₀[1:3]=B_field
+    @parameters E₀[1:3] = E_field B₀[1:3] = B_field
 
     eqs = [
         E ~ E₀,
-        B ~ B₀
+        B ~ B₀,
     ]
 
-    sys = System(eqs, iv, [x, t], [E₀, B₀]; name, systems=[ref_frame])
+    sys = System(eqs, iv, [x, t], [E₀, B₀]; name, systems = [ref_frame])
 
     extend(sys, field_dynamics)
 end
@@ -273,19 +274,19 @@ Parameters:
 Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
 """
 @component function LaguerreGaussLaser(;
-    name,
-    wavelength=nothing,
-    frequency=nothing,
-    a0=10.0,
-    beam_waist=nothing,
-    radial_index=0,      # p
-    azimuthal_index=1,   # m
-    ref_frame,
-    temporal_profile=:gaussian,  # :gaussian or :constant
-    temporal_width=nothing,      # pulse width (for gaussian profile)
-    focus_position=nothing,       # focal position along z-axis
-    polarization = :linear
-)
+        name,
+        wavelength = nothing,
+        frequency = nothing,
+        a0 = 10.0,
+        beam_waist = nothing,
+        radial_index = 0,      # p
+        azimuthal_index = 1,   # m
+        ref_frame,
+        temporal_profile = :gaussian,  # :gaussian or :constant
+        temporal_width = nothing,      # pulse width (for gaussian profile)
+        focus_position = nothing,       # focal position along z-axis
+        polarization = :linear
+    )
     if wavelength === nothing && frequency === nothing
         wavelength = 1.0
     end
@@ -340,7 +341,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         ξx = 1.0 + 0im
         ξy = 0 + 0im
     elseif polarization == :circular
-        ξx, ξy = (1/√2, im/√2) .|> complex
+        ξx, ξy = (1 / √2, im / √2) .|> complex
     else
         error("polarization $polarization not supported.")
     end
@@ -415,17 +416,19 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         E[3] ~ real(
             -im / k * (
                 # Term 1: m-dependent term
-                (azimuthal_index == 0 ? 0.0 :
-                    mₐ * (ξx - im * sgn * ξy) *
-                    (√2 / wz)^mₐ * r^(mₐ - 1) * _₁F₁(-p, mₐ + 1, 2σ) *
-                    NEgexp * exp(im * sgn * θ)
+                (
+                    azimuthal_index == 0 ? 0.0 :
+                        mₐ * (ξx - im * sgn * ξy) *
+                        (√2 / wz)^mₐ * r^(mₐ - 1) * _₁F₁(-p, mₐ + 1, 2σ) *
+                        NEgexp * exp(im * sgn * θ)
                 ) -
-                # Term 2: transverse field coupling
-                2 / (wz^2) * (1 + im * z / z_R) * (x[2] * Ex_complex + x[3] * Ey_complex) -
-                # Term 3: p-dependent term
-                (radial_index == 0 ? 0.0 :
-                    4 * p / ((mₐ + 1) * wz^2) * (x[2] * ξx + x[3] * ξy) *
-                    rwz^mₐ * _₁F₁(-p + 1, mₐ + 2, 2σ) * NEgexp
+                    # Term 2: transverse field coupling
+                    2 / (wz^2) * (1 + im * z / z_R) * (x[2] * Ex_complex + x[3] * Ey_complex) -
+                    # Term 3: p-dependent term
+                    (
+                    radial_index == 0 ? 0.0 :
+                        4 * p / ((mₐ + 1) * wz^2) * (x[2] * ξx + x[3] * ξy) *
+                        rwz^mₐ * _₁F₁(-p + 1, mₐ + 2, 2σ) * NEgexp
                 )
             )
         )
@@ -439,17 +442,19 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         B[3] ~ real(
             -im / ω * (
                 # Term 1: m-dependent term
-                -(azimuthal_index == 0 ? 0.0 :
-                    mₐ * (ξy + im * sgn * ξx) *
-                    (√2 / wz)^mₐ * r^(mₐ - 1) * _₁F₁(-p, mₐ + 1, 2σ) *
-                    NEgexp * exp(im * sgn * θ)
+                -(
+                    azimuthal_index == 0 ? 0.0 :
+                        mₐ * (ξy + im * sgn * ξx) *
+                        (√2 / wz)^mₐ * r^(mₐ - 1) * _₁F₁(-p, mₐ + 1, 2σ) *
+                        NEgexp * exp(im * sgn * θ)
                 ) +
-                # Term 2: transverse field coupling
-                2 / (wz^2) * (1 + im * z / z_R) * (x[2] * Ey_complex - x[3] * Ex_complex) +
-                # Term 3: p-dependent term
-                (radial_index == 0 ? 0.0 :
-                    4 * p / ((mₐ + 1) * wz^2) * (x[2] * ξy - x[3] * ξx) *
-                    rwz^mₐ * _₁F₁(-p + 1, mₐ + 2, 2σ) * NEgexp
+                    # Term 2: transverse field coupling
+                    2 / (wz^2) * (1 + im * z / z_R) * (x[2] * Ey_complex - x[3] * Ex_complex) +
+                    # Term 3: p-dependent term
+                    (
+                    radial_index == 0 ? 0.0 :
+                        4 * p / ((mₐ + 1) * wz^2) * (x[2] * ξy - x[3] * ξx) *
+                        rwz^mₐ * _₁F₁(-p + 1, mₐ + 2, 2σ) * NEgexp
                 )
             )
         )
@@ -469,7 +474,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         w₀ => missing
     ]
 
-    initial_conditions = Pair{SymbolicT,Any}[]
+    initial_conditions = Pair{SymbolicT, Any}[]
     push!(initial_conditions, w₀ => (beam_waist === nothing ? 75λ : beam_waist))
     if wavelength !== nothing
         push!(initial_conditions, λ => wavelength)
@@ -485,7 +490,9 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         [x, τ, z, r, θ, wz, σ, rwz, env]
     end
 
-    sys = System(eqs, iv, vars, params;
-        name, systems=[ref_frame], initialization_eqs, bindings, initial_conditions)
+    sys = System(
+        eqs, iv, vars, params;
+        name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions
+    )
     extend(sys, field_dynamics)
 end
