@@ -1,4 +1,5 @@
 @component function ParticleDynamics(; name, mass, ref_frame)
+    @unpack c = ref_frame
     iv = ModelingToolkit.get_iv(ref_frame)
     D = Differential(iv)
 
@@ -12,7 +13,6 @@
 
     if nameof(iv) == :τ
         τ = iv
-        c = ref_frame.c
 
         @variables begin
             t(iv), [description = "Universal time"]
@@ -36,7 +36,6 @@
         System(eqs, iv, [t, γ, x, u, p, F_total], [m]; name, systems = [ref_frame])
     elseif nameof(iv) == :t
         t = iv
-        c = ref_frame.c
 
         @variables begin
             τ(t), [description = "Proper time"]

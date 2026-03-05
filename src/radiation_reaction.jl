@@ -15,13 +15,13 @@ For uniform fields (∂_ν F^μλ = 0), this reduces to:
 dp^μ/dτ = q F^μν u_ν + (2q³/3m²c³)[F^μν F_νλ u^λ - (1/4)F_αβ F^αβ u^μ]
 """
 @component function LandauLifshitzRadiation(; name, charge=1.0, F_lorentz_ref, ref_frame, particle)
+    @unpack c, gμν, ε₀ = ref_frame
     iv = ModelingToolkit.get_iv(ref_frame)
     @named field = ElectromagneticSystem(iv)
 
-    @unpack c, gμν = ref_frame
     u = ParentScope(particle.u)
 
-    @parameters m=1.0 ε₀=1.0 q=charge
+    @parameters m=1.0 q=charge
     @variables begin
         F_rad(iv)[1:4]      # Radiation reaction 4-force
         P_rad(iv)           # Radiated power (invariant)
@@ -67,7 +67,7 @@ dp^μ/dτ = q F^μν u_ν + (2q³/3m²c³)[F^μν F_νλ u^λ - (1/4)F_αβ F^α
     ]
 
     System(eqs, iv, [F_rad, P_rad, τ₀, F_sq, F_dot_u, FF_dot_u], [m, ε₀, q];
-           name, systems=[field, ref_frame])
+           name, systems=[field])
 end
 
 """
@@ -88,10 +88,9 @@ We use the Schott term approximation to avoid runaway solutions.
 This is valid when ω << m*c²/ℏ (classical regime).
 """
 @component function AbrahamLorentzRadiation(; name, charge=1.0, F_lorentz_ref, ref_frame, particle)
-    iv = ModelingToolkit.get_iv(ref_frame)
-    @named field = ElectromagneticSystem(iv)
-
     @unpack c, gμν, ε₀ = ref_frame
+    iv = ModelingToolkit.get_iv(ref_frame)
+
     @unpack u = particle
 
     @parameters m=1.0 q=charge
@@ -124,5 +123,5 @@ This is valid when ω << m*c²/ℏ (classical regime).
     ]
 
     System(eqs, iv, [u, F_rad, P_rad, τ₀, F_ext_squared], [m, ε₀, q];
-           name, systems=[ref_frame])
+           name)
 end

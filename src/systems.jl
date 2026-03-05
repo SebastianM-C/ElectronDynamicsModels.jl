@@ -1,23 +1,48 @@
+"""
+    _find_ref_frame(external_field)
+
+Find the reference frame subsystem within an external field by checking for
+the metric tensor `gμν` and electron mass `m_e` parameters.
+"""
+function _find_ref_frame(external_field::AbstractSystem)
+    for s in get_systems(external_field)
+        s isa AbstractSystem || continue
+        names = getname.(parameters(s))
+        if :gμν ∈ names && :m_e ∈ names
+            return s
+        end
+    end
+    error("No reference frame found in $(nameof(external_field))")
+end
+
 @component function ChargedParticle(;
-    name,
-    ref_frame,
-    mass = ref_frame.m_e,
-    charge = abs(ref_frame.q_e),
-    external_field,
-    radiation_model = nothing,
-)
+        name,
+        external_field,
+        mass = nothing,
+        charge = nothing,
+        radiation_model = nothing,
+    )
+    ref_frame = _find_ref_frame(external_field)
+    @unpack c, m_e, q_e, gμν, ε₀ = ref_frame
     iv = ModelingToolkit.get_iv(ref_frame)
+
+    if isnothing(mass)
+        mass = m_e
+    end
+    if isnothing(charge)
+        charge = abs(q_e)
+    end
+
     @named particle = ParticleDynamics(; mass, ref_frame)
     @unpack x, u, F_total = particle
 
-    @unpack gμν = ref_frame
     Fμν = ParentScope(external_field.field.Fμν)
     J = ParentScope(external_field.field.J)
 
     @parameters q = charge
     @variables F_lorentz(iv)[1:4]
 
-    systems = [external_field, ref_frame]
+    systems = [external_field]
 
     eqs = [
         # Connect particle position and time to external field
@@ -40,7 +65,7 @@
         @named radiation =
             LandauLifshitzRadiation(; charge, F_lorentz_ref = F_lorentz, ref_frame, particle)
         push!(systems, radiation)
-        push!(eqs, external_field.field_dynamics.Fμν ~ radiation.field.Fμν)
+        push!(eqs, external_field.field.Fμν ~ radiation.field.Fμν)
         push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
     elseif radiation_model == :abraham_lorentz
         @named radiation =
@@ -57,36 +82,31 @@
     extend(sys, particle)
 end
 
-# Convenience constructors for backward compatibility
+# Convenience constructors
 @component function ClassicalElectron(;
-    name,
-    ref_frame,
-    laser = PlaneWave(; ref_frame, name = :laser),
-)
-    ChargedParticle(; name, ref_frame, external_field = laser, radiation_model = nothing)
+        name,
+        laser,
+    )
+    ChargedParticle(; name, external_field = laser, radiation_model = nothing)
 end
 
 @component function RadiatingElectron(;
-    name,
-    ref_frame,
-    laser = PlaneWave(; ref_frame, name = :laser),
-)
+        name,
+        laser,
+    )
     ChargedParticle(;
         name,
-        ref_frame,
         external_field = laser,
         radiation_model = :abraham_lorentz,
     )
 end
 
 @component function LandauLifshitzElectron(;
-    name,
-    ref_frame,
-    laser = PlaneWave(; ref_frame, name = :laser),
-)
+        name,
+        laser,
+    )
     ChargedParticle(;
         name,
-        ref_frame,
         external_field = laser,
         radiation_model = :landau_lifshitz,
     )
