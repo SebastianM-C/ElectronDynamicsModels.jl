@@ -8,18 +8,25 @@ using JET
         Aqua.test_all(ElectronDynamicsModels)
     end
     @testset "Code linting (JET.jl)" begin
-        JET.test_package(ElectronDynamicsModels; target_modules = (ElectronDynamicsModels,))
+        if VERSION < v"1.12"
+            JET.test_package(ElectronDynamicsModels; target_modules = (ElectronDynamicsModels,))
+        else
+            @test_broken false  # JET causes CI termination on 1.12
+        end
     end
     @testset "Classical Electron" begin
-        include("test_classical_electron.jl")
+        include("classical_electron.jl")
+    end
+    @testset "Radiation Emission" begin
+        include("thomson_scattering.jl")
     end
     @testset "Radiation Reaction" begin
-        include("test_radiation.jl")
+        include("radiation.jl")
     end
     @testset "GaussLaser" begin
-        include("test_gauss_laser.jl")
+        include("gauss_laser.jl")
     end
     @testset "LaguerreGauss" begin
-        include("test_laguerre_gauss.jl")
+        include("laguerre_gauss.jl")
     end
 end

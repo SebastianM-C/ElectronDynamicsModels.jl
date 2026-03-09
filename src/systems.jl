@@ -1,18 +1,23 @@
 """
-    _find_ref_frame(external_field)
+    _find_ref_frame(sys)
 
 Find the reference frame subsystem within an external field by checking for
 the metric tensor `gμν` and electron mass `m_e` parameters.
 """
-function _find_ref_frame(external_field::AbstractSystem)
-    for s in get_systems(external_field)
+function _find_ref_frame(sys::AbstractSystem)
+    if isempty(get_systems(sys)) && ModelingToolkitBase.has_parent(sys)
+        return _find_ref_frame(ModelingToolkitBase.get_parent(sys))
+    end
+    for s in get_systems(sys)
         s isa AbstractSystem || continue
         names = getname.(parameters(s))
         if :gμν ∈ names && :m_e ∈ names
             return s
+        elseif !isempty(get_systems(s))
+            return _find_ref_frame(s)
         end
     end
-    error("No reference frame found in $(nameof(external_field))")
+    error("No reference frame found in $(nameof(sys))")
 end
 
 @component function ChargedParticle(;

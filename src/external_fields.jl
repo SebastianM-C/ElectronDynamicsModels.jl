@@ -13,9 +13,11 @@ Parameters:
 - t₀: pulse center time (= n_cycles × 2π/ω)
 - z₀: focus position along z-axis
 """
-@component function GaussLaser(; name, wavelength = nothing, frequency = nothing,
+@component function GaussLaser(;
+        name, wavelength = nothing, frequency = nothing,
         a0 = 10.0, beam_waist = nothing, polarization = :linear,
-        n_cycles = 5, focus_position = nothing, ref_frame)
+        n_cycles = 5, focus_position = nothing, ref_frame
+    )
     if wavelength === nothing && frequency === nothing
         wavelength = 1.0
     end
@@ -82,8 +84,7 @@ Parameters:
         E[1] ~ real(ξx * E_g)
         E[2] ~ real(ξy * E_g)
         E[3] ~ real(
-            2im / (k * wz^2) *
-                (1 + im * (z / z_R)) *
+            2im / (k * wz^2) * (1 + im * (z / z_R)) *
                 (x[2] * (ξx * E_g) + x[3] * (ξy * E_g)),
         )
 
@@ -228,7 +229,7 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 
     vars = nameof(iv) == :τ ? [x, t] : [x]
 
-    sys = System(eqs, iv, vars, [A, ω, k_dir, pol, λ]; name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions)
+    sys = System(eqs, iv; name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions)
 
     extend(sys, field_dynamics)
 end
