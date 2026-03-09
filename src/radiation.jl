@@ -1,26 +1,26 @@
 # Trajectory access (thread-safe interpolation wrapper)
 struct TrajectoryInterpolant{I, R, U, T}
-    itp::I          # DataInterpolations interpolant (SVector{8} → SVector{8})
-    r_idxs::R       # SVector{4, Int} for x⁰, x¹, x², x³
-    u_idxs::U       # SVector{4, Int} for u⁰, u¹, u², u³
+    itp::I          # DataInterpolations interpolant → SVector{8}
+    x_idxs::R       # SVector{4, Int} indices for xμ = (x⁰, x¹, x², x³)
+    u_idxs::U       # SVector{4, Int} indices for uμ = (u⁰, u¹, u², u³)
     K::T            # q_e / (4π ε₀ c) — Liénard-Wiechert prefactor
 end
 
 function TrajectoryInterpolant(sol::SciMLBase.AbstractODESolution, x_syms, u_syms)
-    r_idxs = SVector{4, Int}(variable_index.((sol,), collect(x_syms)))
+    x_idxs = SVector{4, Int}(variable_index.((sol,), collect(x_syms)))
     u_idxs = SVector{4, Int}(variable_index.((sol,), collect(u_syms)))
     itp = CubicSpline(sol.u, sol.t; extrapolation = ExtrapolationType.Extension)
     sys = sol.prob.f.sys
     _ref_frame = _find_ref_frame(sys)
     K = sol.ps[_ref_frame.q_e / (4π * _ref_frame.ε₀ * _ref_frame.c)]
-    return TrajectoryInterpolant(itp, r_idxs, u_idxs, K)
+    return TrajectoryInterpolant(itp, x_idxs, u_idxs, K)
 end
 
 function (t::TrajectoryInterpolant)(τ)
     v = t.itp(τ)
-    rμ = v[t.r_idxs]
+    xμ = v[t.x_idxs]
     uμ = v[t.u_idxs]
-    return (rμ, uμ)
+    return (xμ, uμ)
 end
 
 """
@@ -39,7 +39,7 @@ struct ObserverScreen{G, T, R}
     x_grid::G       # e.g., LinRange for x
     y_grid::G       # e.g., LinRange for y
     z::T            # screen distance
-    x⁰_samples::R  # uniform observer-time sampling grid
+    x⁰_samples::R   # uniform observer-time sampling grid
 end
 
 function Base.show(io::IO, s::ObserverScreen)
@@ -66,15 +66,15 @@ end
 # dτᵣ/dt = 1/(u⁰(τᵣ) - u⃗(τᵣ)·n̂(τᵣ, r_obs))
 function retarded_time_rhs(τᵣ, p, t)
     traj, r_obs = p
-    rμ, uμ = traj(τᵣ)
-    rⁱ = rμ[SA[2, 3, 4]]
-    n̂ = (r_obs - rⁱ) * inv(norm(r_obs - rⁱ))
+    xμ, uμ = traj(τᵣ)
+    xⁱ = xμ[SA[2, 3, 4]]
+    n̂ = (r_obs - xⁱ) * inv(norm(r_obs - xⁱ))
     return inv(uμ[1] - uμ[SA[2, 3, 4]] ⋅ n̂)
 end
 
-function advanced_time(traj, τ, x_obs)
-    rμ, _ = traj(τ)
-    return rμ[1] + norm(x_obs - rμ[SA[2, 3, 4]])
+function advanced_time(traj, τ, r_obs)
+    xμ, _ = traj(τ)
+    return xμ[1] + norm(r_obs - xμ[SA[2, 3, 4]])
 end
 
 function retarded_time_problem(traj::TrajectoryInterpolant, screen::ObserverScreen)
@@ -110,7 +110,7 @@ end
 Compute the Liénard-Wiechert 4-potential on `screen` from electron `trajs`.
 
 For each electron trajectory, solves the retarded-time ODE to map observer time to
-proper time, then evaluates `Aμ = K u^μ / (X^R · u)` at uniform observer-time samples.
+proper time, then evaluates `Aμ = K uμ / (xr · u)` at uniform observer-time samples.
 Returns `A[k, μ, ix, iy]` — the time-domain 4-potential ready for FFT.
 
 The two-argument `alg` form uses a `reinit!`-based integrator pool for efficient CPU
@@ -198,10 +198,10 @@ end
 function _accumulate_pixel!(A, traj, screen, τ_samples, ix, iy)
     r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
     for (k, τ) in enumerate(τ_samples)
-        rμ, uμ = traj(τ)
-        disp = r_obs - rμ[SA[2, 3, 4]]
-        xR = SVector{4}(norm(disp), disp[1], disp[2], disp[3])
-        @views A[k, :, ix, iy] .+= traj.K * uμ ./ m_dot(xR, uμ)
+        xμ, uμ = traj(τ)
+        disp = r_obs - xμ[SA[2, 3, 4]]
+        xr = SVector{4}(norm(disp), disp[1], disp[2], disp[3])
+        @views A[k, :, ix, iy] .+= traj.K * uμ ./ m_dot(xr, uμ)
     end
     return
 end
