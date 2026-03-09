@@ -128,9 +128,10 @@ screen = ObserverScreen(
     x⁰_samples
 )
 
-K = sol0.ps[ref_frame.q_e / (4π * ref_frame.ε₀ * c)]
+A_s = accumulate_potential(trajs, screen, Tsit5())
 
-A_s = accumulate_potential(trajs, screen, K, alg = Tsit5())
+# GPU
+# accumulate_potential(trajs, screen, GPUTsit5(), EnsembleGPUKernel(CUDA.CUDABackend()))
 A_ω = rfft(A_s, 1)
 
 # Find fundamental frequency bin
