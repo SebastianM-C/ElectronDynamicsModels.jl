@@ -229,7 +229,7 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 
     vars = nameof(iv) == :τ ? [x, t] : [x]
 
-    sys = System(eqs, iv, vars, [A, ω, k_dir, pol, λ]; name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions)
+    sys = System(eqs, iv; name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions)
 
     extend(sys, field_dynamics)
 end
