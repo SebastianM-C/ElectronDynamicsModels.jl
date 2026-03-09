@@ -1,15 +1,19 @@
 # Trajectory access (thread-safe interpolation wrapper)
-struct TrajectoryInterpolant{I, R, U}
+struct TrajectoryInterpolant{I, R, U, T}
     itp::I          # DataInterpolations interpolant (SVector{8} → SVector{8})
     r_idxs::R       # SVector{4, Int} for x⁰, x¹, x², x³
     u_idxs::U       # SVector{4, Int} for u⁰, u¹, u², u³
+    K::T            # q_e / (4π ε₀ c) — Liénard-Wiechert prefactor
 end
 
 function TrajectoryInterpolant(sol::SciMLBase.AbstractODESolution, x_syms, u_syms)
     r_idxs = SVector{4, Int}(variable_index.((sol,), collect(x_syms)))
     u_idxs = SVector{4, Int}(variable_index.((sol,), collect(u_syms)))
     itp = CubicSpline(sol.u, sol.t; extrapolation = ExtrapolationType.Extension)
-    return TrajectoryInterpolant(itp, r_idxs, u_idxs)
+    sys = sol.prob.f.sys
+    _ref_frame = _find_ref_frame(sys)
+    K = sol.ps[_ref_frame.q_e / (4π * _ref_frame.ε₀ * _ref_frame.c)]
+    return TrajectoryInterpolant(itp, r_idxs, u_idxs, K)
 end
 
 function (t::TrajectoryInterpolant)(τ)
@@ -36,6 +40,27 @@ struct ObserverScreen{G, T, R}
     y_grid::G       # e.g., LinRange for y
     z::T            # screen distance
     x⁰_samples::R  # uniform observer-time sampling grid
+end
+
+function Base.show(io::IO, s::ObserverScreen)
+    Nx, Ny = length(s.x_grid), length(s.y_grid)
+    N = length(s.x⁰_samples)
+    δx⁰ = N > 1 ? step(s.x⁰_samples) : 0.0
+    return print(io, "ObserverScreen($(Nx)×$(Ny) pixels, z=$(s.z), $(N) time samples, Δx⁰=$(δx⁰))")
+end
+
+function Base.show(io::IO, ::MIME"text/plain", s::ObserverScreen)
+    Nx, Ny = length(s.x_grid), length(s.y_grid)
+    N = length(s.x⁰_samples)
+    δx⁰ = N > 1 ? step(s.x⁰_samples) : 0.0
+    println(io, "ObserverScreen")
+    println(io, "  pixels:       $(Nx) × $(Ny)")
+    println(io, "  x range:      [$(first(s.x_grid)), $(last(s.x_grid))]")
+    println(io, "  y range:      [$(first(s.y_grid)), $(last(s.y_grid))]")
+    println(io, "  z:            $(s.z)")
+    println(io, "  time samples: $(N)")
+    println(io, "  x⁰ range:     [$(first(s.x⁰_samples)), $(last(s.x⁰_samples))]")
+    return print(io, "  Δx⁰:          $(δx⁰)")
 end
 
 # dτᵣ/dt = 1/(u⁰(τᵣ) - u⃗(τᵣ)·n̂(τᵣ, r_obs))
@@ -78,7 +103,28 @@ function retarded_time_problem(traj::TrajectoryInterpolant, screen::ObserverScre
     return EnsembleProblem(prob; prob_func = set_pixel, safetycopy = false)
 end
 
-function accumulate_potential(trajs, screen, K; alg, ensemblealg = nothing, solve_kwargs...)
+"""
+    accumulate_potential(trajs, screen, alg; solve_kwargs...)
+    accumulate_potential(trajs, screen, alg, ensemblealg; solve_kwargs...)
+
+Compute the Liénard-Wiechert 4-potential on `screen` from electron `trajs`.
+
+For each electron trajectory, solves the retarded-time ODE to map observer time to
+proper time, then evaluates `Aμ = K u^μ / (X^R · u)` at uniform observer-time samples.
+Returns `A[k, μ, ix, iy]` — the time-domain 4-potential ready for FFT.
+
+The two-argument `alg` form uses a `reinit!`-based integrator pool for efficient CPU
+threading. The four-argument form with `ensemblealg` uses `EnsembleProblem` for
+compatibility with GPU backends (e.g., `EnsembleGPUKernel`).
+
+# Arguments
+- `trajs`: vector of `TrajectoryInterpolant` from [`trajectory_interpolants`](@ref)
+- `screen`: `ObserverScreen` defining pixel grid and observer-time samples
+- `alg`: ODE solver algorithm for the retarded-time problem (e.g., `Tsit5()`)
+- `ensemblealg`: (optional) ensemble algorithm (e.g., `EnsembleGPUKernel(backend)`)
+- `solve_kwargs...`: additional keyword arguments passed to the ODE solver
+"""
+function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::ObserverScreen, alg; solve_kwargs...)
     x⁰_samples = screen.x⁰_samples
     N_samples = length(x⁰_samples)
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
@@ -89,50 +135,59 @@ function accumulate_potential(trajs, screen, K; alg, ensemblealg = nothing, solv
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
 
-        if ensemblealg !== nothing
-            # GPU / custom ensemble path
-            rt_prob = retarded_time_problem(traj, screen)
-            N_pixels = Nx * Ny
-            rt_sol = solve(
-                rt_prob, alg, ensemblealg;
-                trajectories = N_pixels, saveat = x⁰_samples, solve_kwargs...
-            )
-            LI = LinearIndices((Nx, Ny))
+        r_obs_0 = SVector{3}(screen.x_grid[1], screen.y_grid[1], screen.z)
+        x⁰_i_0 = advanced_time(traj, τi, r_obs_0)
+        x⁰_f_0 = advanced_time(traj, τf, r_obs_0)
+        proto_prob = ODEProblem{false, SciMLBase.FullSpecialize}(
+            retarded_time_rhs, τi, (x⁰_i_0, x⁰_f_0), (traj, r_obs_0)
+        )
 
-            Threads.@threads for ix in Base.OneTo(Nx)
-                for iy in Base.OneTo(Ny)
-                    _accumulate_pixel!(A, traj, screen, K, rt_sol.u[LI[ix, iy]].u, ix, iy)
-                end
+        nworkers = Threads.nthreads()
+        integ_pool = Channel{Any}(nworkers)
+        for _ in 1:nworkers
+            put!(integ_pool, init(proto_prob, alg; saveat = x⁰_samples, solve_kwargs...))
+        end
+
+        Threads.@threads for ix in Base.OneTo(Nx)
+            integ = take!(integ_pool)
+            for iy in Base.OneTo(Ny)
+                r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
+                x⁰_i = advanced_time(traj, τi, r_obs)
+                x⁰_f = advanced_time(traj, τf, r_obs)
+
+                integ.p = (traj, r_obs)
+                reinit!(integ, τi; t0 = x⁰_i, tf = x⁰_f)
+                solve!(integ)
+
+                _accumulate_pixel!(A, traj, screen, integ.sol.u, ix, iy)
             end
-        else
-            # CPU path: reinit! to avoid repeated solver initialization
-            r_obs_0 = SVector{3}(screen.x_grid[1], screen.y_grid[1], screen.z)
-            x⁰_i_0 = advanced_time(traj, τi, r_obs_0)
-            x⁰_f_0 = advanced_time(traj, τf, r_obs_0)
-            proto_prob = ODEProblem{false, SciMLBase.FullSpecialize}(
-                retarded_time_rhs, τi, (x⁰_i_0, x⁰_f_0), (traj, r_obs_0)
-            )
+            put!(integ_pool, integ)
+        end
+    end
 
-            nworkers = Threads.nthreads()
-            integ_pool = Channel{Any}(nworkers)
-            for _ in 1:nworkers
-                put!(integ_pool, init(proto_prob, alg; saveat = x⁰_samples, solve_kwargs...))
-            end
+    return A
+end
 
-            Threads.@threads for ix in Base.OneTo(Nx)
-                integ = take!(integ_pool)
-                for iy in Base.OneTo(Ny)
-                    r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
-                    x⁰_i = advanced_time(traj, τi, r_obs)
-                    x⁰_f = advanced_time(traj, τf, r_obs)
+# Ensemble path (for GPU / custom ensemble algorithms)
+function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::ObserverScreen, alg, ensemblealg; solve_kwargs...)
+    x⁰_samples = screen.x⁰_samples
+    N_samples = length(x⁰_samples)
+    Nx, Ny = length(screen.x_grid), length(screen.y_grid)
 
-                    integ.p = (traj, r_obs)
-                    reinit!(integ, τi; t0 = x⁰_i, tf = x⁰_f)
-                    solve!(integ)
+    A = zeros(N_samples, 4, Nx, Ny)
 
-                    _accumulate_pixel!(A, traj, screen, K, integ.sol.u, ix, iy)
-                end
-                put!(integ_pool, integ)
+    for (j, traj) in enumerate(trajs)
+        rt_prob = retarded_time_problem(traj, screen)
+        N_pixels = Nx * Ny
+        rt_sol = solve(
+            rt_prob, alg, ensemblealg;
+            trajectories = N_pixels, saveat = x⁰_samples, solve_kwargs...
+        )
+        LI = LinearIndices((Nx, Ny))
+
+        Threads.@threads for ix in Base.OneTo(Nx)
+            for iy in Base.OneTo(Ny)
+                _accumulate_pixel!(A, traj, screen, rt_sol.u[LI[ix, iy]].u, ix, iy)
             end
         end
     end
@@ -140,13 +195,13 @@ function accumulate_potential(trajs, screen, K; alg, ensemblealg = nothing, solv
     return A
 end
 
-function _accumulate_pixel!(A, traj, screen, K, τ_samples, ix, iy)
+function _accumulate_pixel!(A, traj, screen, τ_samples, ix, iy)
     r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
     for (k, τ) in enumerate(τ_samples)
         rμ, uμ = traj(τ)
         disp = r_obs - rμ[SA[2, 3, 4]]
         xR = SVector{4}(norm(disp), disp[1], disp[2], disp[3])
-        @views A[k, :, ix, iy] .+= K * uμ ./ m_dot(xR, uμ)
+        @views A[k, :, ix, iy] .+= traj.K * uμ ./ m_dot(xR, uμ)
     end
     return
 end
