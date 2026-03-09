@@ -8,7 +8,11 @@ using JET
         Aqua.test_all(ElectronDynamicsModels)
     end
     @testset "Code linting (JET.jl)" begin
-        JET.test_package(ElectronDynamicsModels; target_modules = (ElectronDynamicsModels,))
+        if VERSION < v"1.12"
+            JET.test_package(ElectronDynamicsModels; target_modules = (ElectronDynamicsModels,))
+        else
+            @test_broken false  # JET causes CI termination on 1.12
+        end
     end
     @testset "Classical Electron" begin
         include("classical_electron.jl")

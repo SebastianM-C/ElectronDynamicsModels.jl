@@ -41,8 +41,6 @@ jobs:
         if: always()
         run: free -h
       - uses: julia-actions/julia-runtest@v1
-        env:
-          JULIA_NUM_PRECOMPILE_TASKS: 1
       - uses: julia-actions/julia-processcoverage@v1
       - uses: codecov/codecov-action@v5
         with:
