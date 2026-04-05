@@ -1,13 +1,14 @@
 using ElectronDynamicsModels
-using ElectronDynamicsModels: retarded_time_rhs, advanced_time, _accumulate_pixel!
 using ModelingToolkit
 using OrdinaryDiffEqVerner, OrdinaryDiffEqTsit5
 using SciMLBase
 using StaticArrays
 using SymbolicIndexingInterface
 using LinearAlgebra
+using CUDA
+using AcceleratedKernels
 
-# ── Setup (same as thomson_scattering.jl but smaller) ──────────────
+# ── Setup (same as thomson_scattering.jl but single electron) ───────
 
 const c = 137.03599908330932
 ω = 0.057
@@ -37,91 +38,25 @@ prob = ODEProblem{false, SciMLBase.FullSpecialize}(
 sol = solve(prob, Vern9(), reltol = 1e-12, abstol = 1e-12)
 trajs = trajectory_interpolants(SciMLBase.EnsembleSolution([sol], 0.0, true, sol))
 
-# Screen
+# Screen parameters
 const Z = 2.0e5λ
 const δt = 2π / ω / 4
 const N_samples = floor(Int, (τf - τi) / δt)
 const x⁰_start = c * τi + hypot(Z, 25w₀)
 
-Nx = 50
-Ny = 50
-
 x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
-screen = ObserverScreen(
-    LinRange(-25w₀, 25w₀, Nx),
-    LinRange(-25w₀, 25w₀, Ny),
-    Z,
-    x⁰_samples
-)
-
-# ── Benchmark: retarded-time solve only ─────────────────────────────
-
-function bench_retarded_time_solve(traj, screen, alg; solve_kwargs...)
-    x⁰_samples = screen.x⁰_samples
-    Nx, Ny = length(screen.x_grid), length(screen.y_grid)
-
-    τi = first(traj.itp.t)
-    τf = last(traj.itp.t)
-
-    r_obs_0 = SVector{3}(screen.x_grid[1], screen.y_grid[1], screen.z)
-    x⁰_i_0 = advanced_time(traj, τi, r_obs_0)
-    x⁰_f_0 = advanced_time(traj, τf, r_obs_0)
-    proto_prob = ODEProblem{false, SciMLBase.FullSpecialize}(
-        retarded_time_rhs, τi, (x⁰_i_0, x⁰_f_0), (traj, r_obs_0)
-    )
-
-    # Store retarded time solutions
-    τ_solutions = Matrix{Vector{Float64}}(undef, Nx, Ny)
-
-    nworkers = Threads.nthreads()
-    integ_pool = Channel{Any}(nworkers)
-    for _ in 1:nworkers
-        put!(integ_pool, init(proto_prob, alg; saveat = x⁰_samples, solve_kwargs...))
-    end
-
-    Threads.@threads for ix in Base.OneTo(Nx)
-        integ = take!(integ_pool)
-        for iy in Base.OneTo(Ny)
-            r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
-            x⁰_i = advanced_time(traj, τi, r_obs)
-            x⁰_f = advanced_time(traj, τf, r_obs)
-
-            integ.p = (traj, r_obs)
-            reinit!(integ, τi; t0 = x⁰_i, tf = x⁰_f)
-            solve!(integ)
-
-            τ_solutions[ix, iy] = copy(integ.sol.u)
-        end
-        put!(integ_pool, integ)
-    end
-
-    return τ_solutions
-end
-
-# ── Benchmark: accumulation only ────────────────────────────────────
-
-function bench_accumulate_only(traj, screen, τ_solutions)
-    N_samples = length(screen.x⁰_samples)
-    Nx, Ny = length(screen.x_grid), length(screen.y_grid)
-    A = zeros(N_samples, 4, Nx, Ny)
-
-    Threads.@threads for ix in Base.OneTo(Nx)
-        for iy in Base.OneTo(Ny)
-            _accumulate_pixel!(A, traj, screen, τ_solutions[ix, iy], ix, iy)
-        end
-    end
-
-    return A
-end
 
 # ── Run benchmarks ──────────────────────────────────────────────────
 
-traj = trajs[1]
+backend = CUDA.CUDABackend()
 
 println("Threads: $(Threads.nthreads())")
 println("Time samples: $(N_samples)")
+println("GPU: $(CUDA.name(CUDA.device()))")
 println()
 
+# ── Scaling with screen size (1 electron) ───────────────────────────
+println("=== Screen size scaling (1 electron) ===")
 for Npx in [10, 50, 100, 200, 300]
     sc = ObserverScreen(
         LinRange(-25w₀, 25w₀, Npx),
@@ -131,23 +66,57 @@ for Npx in [10, 50, 100, 200, 300]
     )
 
     # Warmup
-    τ_sol = bench_retarded_time_solve(traj, sc, Tsit5())
-    bench_accumulate_only(traj, sc, τ_sol)
+    accumulate_potential(trajs, sc, Tsit5())
+    accumulate_potential(trajs, sc, Tsit5(), backend)
 
     nruns = Npx ≤ 100 ? 3 : 1
 
-    t_solve = @elapsed for _ in 1:nruns
-        bench_retarded_time_solve(traj, sc, Tsit5())
+    t_cpu = @elapsed for _ in 1:nruns
+        accumulate_potential(trajs, sc, Tsit5())
     end
-    t_solve /= nruns
+    t_cpu /= nruns
 
-    τ_sol = bench_retarded_time_solve(traj, sc, Tsit5())
-
-    t_accum = @elapsed for _ in 1:nruns
-        bench_accumulate_only(traj, sc, τ_sol)
+    t_gpu = @elapsed for _ in 1:nruns
+        accumulate_potential(trajs, sc, Tsit5(), backend)
     end
-    t_accum /= nruns
+    t_gpu /= nruns
 
-    pct = round(t_accum / (t_solve + t_accum) * 100, digits=1)
-    println("$(lpad(Npx, 3))×$(rpad(Npx, 3))  solve=$(lpad(round(t_solve, digits=4), 8))s  accum=$(lpad(round(t_accum, digits=4), 8))s  accum=$(lpad(pct, 5))%")
+    speedup = round(t_cpu / t_gpu, digits=1)
+    println("$(lpad(Npx, 3))×$(rpad(Npx, 3))  cpu=$(lpad(round(t_cpu, digits=3), 7))s  gpu=$(lpad(round(t_gpu, digits=3), 7))s  speedup=$(lpad(speedup, 5))×")
+end
+
+# ── Scaling with electron count (50×50 screen) ──────────────────────
+println()
+println("=== Electron count scaling (50×50 screen) ===")
+sc = ObserverScreen(
+    LinRange(-25w₀, 25w₀, 50),
+    LinRange(-25w₀, 25w₀, 50),
+    Z,
+    x⁰_samples
+)
+
+# Create multiple copies of the trajectory to simulate many electrons
+for Ne in [1, 10, 50, 100, 300]
+    multi_trajs = repeat(trajs, Ne)
+
+    # Warmup (small)
+    if Ne ≤ 10
+        accumulate_potential(multi_trajs, sc, Tsit5())
+        accumulate_potential(multi_trajs, sc, Tsit5(), backend)
+    end
+
+    nruns = Ne ≤ 50 ? 2 : 1
+
+    t_cpu = @elapsed for _ in 1:nruns
+        accumulate_potential(multi_trajs, sc, Tsit5())
+    end
+    t_cpu /= nruns
+
+    t_gpu = @elapsed for _ in 1:nruns
+        accumulate_potential(multi_trajs, sc, Tsit5(), backend)
+    end
+    t_gpu /= nruns
+
+    speedup = round(t_cpu / t_gpu, digits=1)
+    println("$(lpad(Ne, 3)) e⁻  cpu=$(lpad(round(t_cpu, digits=3), 7))s  gpu=$(lpad(round(t_gpu, digits=3), 7))s  speedup=$(lpad(speedup, 5))×")
 end
