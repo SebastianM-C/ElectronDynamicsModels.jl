@@ -205,19 +205,18 @@ function accumulate_potential(
             put!(integ_pool, integ)
         end
 
-        # ── Phase 2: GPU accumulation ──
-        _gpu_accumulate!(A, gpu_traj, screen, τ_all, τ_buf, A_buf, backend)
+        # ── Phase 2: GPU accumulation (accumulates in A_buf across electrons) ──
+        _gpu_accumulate_kernel!(gpu_traj, screen, τ_all, τ_buf, A_buf, backend)
     end
 
+    # Single D2H transfer at the end
+    copyto!(A, Array(A_buf))
     return A
 end
 
-function _gpu_accumulate!(A, gpu_traj, screen, τ_all_cpu, τ_buf, A_buf, backend)
-    # Copy retarded times to pre-allocated GPU buffer
+function _gpu_accumulate_kernel!(gpu_traj, screen, τ_all_cpu, τ_buf, A_buf, backend)
+    # Copy retarded times to pre-allocated GPU buffer (H2D)
     copyto!(τ_buf, τ_all_cpu)
-
-    # Zero the accumulation buffer
-    fill!(A_buf, zero(eltype(A_buf)))
 
     # Capture screen grids (isbits LinRange — no adaptation needed)
     x_grid = screen.x_grid
@@ -233,6 +232,7 @@ function _gpu_accumulate!(A, gpu_traj, screen, τ_all_cpu, τ_buf, A_buf, backen
     # Pre-compute CartesianIndices outside closure
     CI = CartesianIndices(τ_buf)
 
+    # Kernel accumulates into A_buf (no zeroing — accumulates across electrons)
     AK.foreachindex(τ_buf, backend) do i
         k, ix, iy = Tuple(CI[i])
 
@@ -252,8 +252,5 @@ function _gpu_accumulate!(A, gpu_traj, screen, τ_all_cpu, τ_buf, A_buf, backen
             @inbounds A_buf[k, j, ix, iy] += coeff * uμ[j]
         end
     end
-
-    # Transfer back and accumulate into CPU array
-    A .+= Adapt.adapt(Array, A_buf)
     return
 end
