@@ -8,6 +8,8 @@ using SymbolicIndexingInterface
 using LinearAlgebra
 using FFTW
 using CairoMakie
+using AcceleratedKernels
+using CUDA
 
 # Atomic units
 const c = 137.03599908330932
@@ -128,10 +130,15 @@ screen = ObserverScreen(
     x⁰_samples
 )
 
-A_s = accumulate_potential(trajs, screen, Tsit5())
+@time A_s = accumulate_potential(trajs, screen, Tsit5())
 
 # GPU
 # accumulate_potential(trajs, screen, GPUTsit5(), EnsembleGPUKernel(CUDA.CUDABackend()))
+# gpu_trajs = gpu_trajectory_interpolants(solution);
+@time A_gpu = accumulate_potential(trajs, screen, Tsit5(), CUDA.CUDABackend());
+
+@info norm(A_s - A_gpu) / norm(A_s)
+
 A_ω = rfft(A_s, 1)
 
 # Find fundamental frequency bin
