@@ -131,22 +131,27 @@ function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::Ob
 
     A = zeros(N_samples, 4, Nx, Ny)
 
-    for (j, traj) in enumerate(trajs)
+    # Create typed integrator pool once (reused across all electrons)
+    traj0 = first(trajs)
+    τi0 = first(traj0.itp.t)
+    τf0 = last(traj0.itp.t)
+    r_obs_0 = SVector{3}(screen.x_grid[1], screen.y_grid[1], screen.z)
+    proto_prob = ODEProblem{false, SciMLBase.FullSpecialize}(
+        retarded_time_rhs, τi0,
+        (advanced_time(traj0, τi0, r_obs_0), advanced_time(traj0, τf0, r_obs_0)),
+        (traj0, r_obs_0)
+    )
+    proto_integ = init(proto_prob, alg; saveat = x⁰_samples, solve_kwargs...)
+    nworkers = Threads.nthreads()
+    integ_pool = Channel{typeof(proto_integ)}(nworkers)
+    put!(integ_pool, proto_integ)
+    for _ in 2:nworkers
+        put!(integ_pool, init(proto_prob, alg; saveat = x⁰_samples, solve_kwargs...))
+    end
+
+    for traj in trajs
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
-
-        r_obs_0 = SVector{3}(screen.x_grid[1], screen.y_grid[1], screen.z)
-        x⁰_i_0 = advanced_time(traj, τi, r_obs_0)
-        x⁰_f_0 = advanced_time(traj, τf, r_obs_0)
-        proto_prob = ODEProblem{false, SciMLBase.FullSpecialize}(
-            retarded_time_rhs, τi, (x⁰_i_0, x⁰_f_0), (traj, r_obs_0)
-        )
-
-        nworkers = Threads.nthreads()
-        integ_pool = Channel{Any}(nworkers)
-        for _ in 1:nworkers
-            put!(integ_pool, init(proto_prob, alg; saveat = x⁰_samples, solve_kwargs...))
-        end
 
         Threads.@threads for ix in Base.OneTo(Nx)
             integ = take!(integ_pool)
