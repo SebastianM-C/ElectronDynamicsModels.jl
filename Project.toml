@@ -7,9 +7,12 @@ authors = ["Sebastian Micluța-Câmpeanu <sebastian.mc95@proton.me> and contribu
 projects = ["test", "docs", "scripts"]
 
 [deps]
+AcceleratedKernels = "6a4ca0a5-0e36-4168-a932-d9be78d558f1"
+Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
 DataInterpolations = "82cc6244-b520-54b8-b5a6-8a565e85f1d0"
 FunctionWrappersWrappers = "77dc65aa-8811-40c2-897b-53d922fa7daf"
 HypergeometricFunctions = "34004b35-14d8-5ef3-9330-4cdb6864b03a"
+KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 ModelingToolkit = "961ee093-0014-501f-94e3-6117800e7a78"
 ModelingToolkitBase = "7771a370-6774-4173-bd38-47e70ca0b839"
@@ -24,9 +27,12 @@ Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 UnitfulAtomic = "a7773ee8-282e-5fa2-be4e-bd808c38a91a"
 
 [compat]
+AcceleratedKernels = "0.4.3"
+Adapt = "4.5.0"
 DataInterpolations = "8.9.0"
 FunctionWrappersWrappers = "0.1.3"
 HypergeometricFunctions = "0.3.28"
+KernelAbstractions = "0.9.41"
 LinearAlgebra = "1.11"
 ModelingToolkit = "11"
 ModelingToolkitBase = "1.20.0"
