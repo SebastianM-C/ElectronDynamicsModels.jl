@@ -199,7 +199,7 @@ function accumulate_potential(
 
                 sol_u = integ.sol.u::Vector{Float64}
                 for k in eachindex(sol_u)
-                    τ_all[k, ix, iy] = sol_u[k]
+                    @inbounds τ_all[k, ix, iy] = sol_u[k]
                 end
             end
             put!(integ_pool, integ)
