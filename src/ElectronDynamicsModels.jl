@@ -22,7 +22,8 @@ export ReferenceFrame, ProperFrame, LabFrame,
     ChargedParticle,
     ClassicalElectron, RadiatingElectron, LandauLifshitzElectron,
     FieldEvaluator,
-    ObserverScreen, trajectory_interpolants, TrajectoryInterpolant, accumulate_potential
+    ObserverScreen, trajectory_interpolants, TrajectoryInterpolant, accumulate_potential,
+    gpu_trajectory_interpolants, GPUCubicSpline, retarded_time_problem
 
 include("base.jl")
 include("dynamics.jl")
@@ -32,5 +33,6 @@ include("radiation_reaction.jl")
 include("external_fields.jl")
 include("systems.jl")
 include("field_evaluator.jl")
+include("gpu_interp.jl")
 
 end
