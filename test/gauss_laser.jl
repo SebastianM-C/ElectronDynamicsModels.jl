@@ -11,19 +11,19 @@ using Random
 @testset "GaussLaser wavelength/frequency interface" begin
     c = 137.03599908330932  # speed of light in atomic units
 
-    @named ref_frame = ProperFrame(:atomic)
+    @named world = Worldline(:τ,:atomic)
 
     # Choose a test wavelength and compute the corresponding frequency
     λ_val = 1.0
     ω_val = 2π * c / λ_val
 
     # Build system using wavelength kwarg
-    @named laser_λ = GaussLaser(; wavelength = λ_val, a0 = 1.0, ref_frame)
+    @named laser_λ = GaussLaser(; wavelength = λ_val, a0 = 1.0, world)
     @named elec_λ = ClassicalElectron(; laser = laser_λ)
     sys_λ = mtkcompile(elec_λ)
 
     # Build system using frequency kwarg
-    @named laser_ω = GaussLaser(; frequency = ω_val, a0 = 1.0, ref_frame)
+    @named laser_ω = GaussLaser(; frequency = ω_val, a0 = 1.0, world)
     @named elec_ω = ClassicalElectron(; laser = laser_ω)
     sys_ω = mtkcompile(elec_ω)
 
@@ -53,7 +53,7 @@ using Random
     end
 
     # Test error when both are specified
-    @test_throws ErrorException GaussLaser(; wavelength = 1.0, frequency = 1.0, ref_frame, name = :bad)
+    @test_throws ErrorException GaussLaser(; wavelength = 1.0, frequency = 1.0, world, name = :bad)
 end
 
 @testset "GaussLaser field values at origin" begin
@@ -66,8 +66,8 @@ end
     a0_val = 1.0
     ω_val = 2π * c / λ_val
 
-    @named ref_frame = ProperFrame(:atomic)
-    @named laser = GaussLaser(; wavelength = λ_val, a0 = a0_val, ref_frame)
+    @named world = Worldline(:τ,:atomic)
+    @named laser = GaussLaser(; wavelength = λ_val, a0 = a0_val, world)
 
     fe = FieldEvaluator(laser)
 
@@ -112,8 +112,8 @@ end
     w₀_val = 75 * λ_val
     a₀_val = 2.0
 
-    @named ref_frame = ProperFrame(:atomic)
-    @named laser = GaussLaser(; wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val, ref_frame)
+    @named world = Worldline(:τ,:atomic)
+    @named laser = GaussLaser(; wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val, world)
 
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
@@ -163,11 +163,11 @@ end
     w₀_val = 75 * λ_val
     a₀_val = 2.0
 
-    @named ref_frame = ProperFrame(:atomic)
+    @named world = Worldline(:τ,:atomic)
 
     # Both lasers with n_cycles=0 so t₀=0 and envelopes match directly
     @named gauss = GaussLaser(; wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
-        n_cycles = 0, ref_frame)
+        n_cycles = 0, world)
     fe_gauss = FieldEvaluator(gauss)
     sys_g = fe_gauss.prob.f.sys
     τ0_val = fe_gauss.prob.ps[sys_g.gauss.τ0]
@@ -175,7 +175,7 @@ end
     # LG(0,0) with Gaussian envelope matched to GaussLaser τ0
     @named lg = LaguerreGaussLaser(;
         wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
-        radial_index = 0, azimuthal_index = 0, ref_frame, temporal_profile = :gaussian,
+        radial_index = 0, azimuthal_index = 0, world, temporal_profile = :gaussian,
         temporal_width = τ0_val
     )
     fe_lg = FieldEvaluator(lg)
@@ -209,8 +209,8 @@ end
     λ_val = 2π * c / ω
     w₀_val = 75 * λ_val
 
-    @named ref_frame = ProperFrame(:atomic)
-    @named laser = GaussLaser(; wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val, ref_frame)
+    @named world = Worldline(:τ,:atomic)
+    @named laser = GaussLaser(; wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val, world)
 
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
@@ -265,8 +265,8 @@ end
     end
 
     # Now verify our FieldEvaluator matches LaserTypes at these same points
-    @named ref_frame = ProperFrame(:atomic)
-    @named laser = GaussLaser(; wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val, ref_frame)
+    @named world = Worldline(:τ,:atomic)
+    @named laser = GaussLaser(; wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val, world)
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
     t₀ = fe.prob.ps[sys.laser.t₀]
@@ -292,8 +292,8 @@ end
     λ_val = 2π * c / ω
     w₀_val = 75 * λ_val
 
-    @named ref_frame = ProperFrame(:atomic)
-    @named laser = GaussLaser(; wavelength = λ_val, a0 = 2.0, beam_waist = w₀_val, ref_frame)
+    @named world = Worldline(:τ,:atomic)
+    @named laser = GaussLaser(; wavelength = λ_val, a0 = 2.0, beam_waist = w₀_val, world)
 
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
@@ -322,10 +322,10 @@ end
     λ_val = 2π * c / ω
     w₀_val = 75 * λ_val
 
-    @named ref_frame = ProperFrame(:atomic)
+    @named world = Worldline(:τ,:atomic)
     @named laser_circ = GaussLaser(;
         wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val,
-        polarization = :circular, ref_frame
+        polarization = :circular, world
     )
 
     fe = FieldEvaluator(laser_circ)
@@ -356,8 +356,8 @@ end
     a₀_val = 3.0
     w₀_val = 100.0
 
-    @named ref_frame = ProperFrame(:atomic)
-    @named laser = GaussLaser(; wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val, ref_frame)
+    @named world = Worldline(:τ,:atomic)
+    @named laser = GaussLaser(; wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val, world)
 
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys
@@ -389,8 +389,8 @@ end
     λ_val = 2π * c / ω
     w₀_val = 75 * λ_val
 
-    @named ref_frame = ProperFrame(:atomic)
-    @named laser = GaussLaser(; wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val, ref_frame)
+    @named world = Worldline(:τ,:atomic)
+    @named laser = GaussLaser(; wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val, world)
 
     fe = FieldEvaluator(laser)
     sys = fe.prob.f.sys

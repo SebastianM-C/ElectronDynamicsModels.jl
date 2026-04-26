@@ -11,8 +11,8 @@ function TrajectoryInterpolant(sol::SciMLBase.AbstractODESolution, x_syms, u_sym
     u_idxs = SVector{4, Int}(variable_index.((sol,), collect(u_syms)))
     itp = CubicSpline(sol.u, sol.t; extrapolation = ExtrapolationType.Extension)
     sys = sol.prob.f.sys
-    _ref_frame = _find_ref_frame(sys)
-    K = sol.ps[_ref_frame.q_e / (4π * _ref_frame.ε₀ * _ref_frame.c)]
+    _world = _find_world(sys)
+    K = sol.ps[_world.q_e / (4π * _world.ε₀ * _world.c)]
     return TrajectoryInterpolant(itp, x_idxs, u_idxs, K)
 end
 

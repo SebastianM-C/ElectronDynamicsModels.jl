@@ -8,8 +8,8 @@ using Statistics
 
 @testset "Radiation Reaction System" begin
     # Create a radiating electron system
-    @named ref_frame = ProperFrame(:natural)
-    @named laser = PlaneWave(; ref_frame)
+    @named world = Worldline(:τ,:natural)
+    @named laser = PlaneWave(; world)
     @named electron = RadiatingElectron(; laser)
     sys = mtkcompile(electron)
 
@@ -57,9 +57,9 @@ using Statistics
         # Test 1: Free particle motion (no fields)
         @testset "Free Particle" begin
             # Create system with zero fields
-            @named ref_frame = ProperFrame(:natural)
+            @named world = Worldline(:τ,:natural)
             @named uniform_field =
-                UniformField(E_field = [0, 0, 0], B_field = [0, 0, 0]; ref_frame)
+                UniformField(E_field = [0, 0, 0], B_field = [0, 0, 0]; world)
             @named electron_free = RadiatingElectron(; laser = uniform_field)
 
             sys_free = mtkcompile(electron_free, allow_symbolic = true)
@@ -91,9 +91,9 @@ using Statistics
             # Reference: Jackson, "Classical Electrodynamics", Section 12.3
 
             E₀ = 0.01  # Small field to stay in non-relativistic regime
-            @named ref_frame = ProperFrame(:natural)
+            @named world = Worldline(:τ,:natural)
             @named uniform_field =
-                UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], ref_frame)
+                UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], world)
             @named electron_E = RadiatingElectron(; laser = uniform_field)
 
             sys_E = mtkcompile(electron_E, allow_symbolic = true)
@@ -139,20 +139,20 @@ using Statistics
             E₁ = 0.01
             E₂ = 0.02  # Double the field
 
-            @named ref_frame1 = ProperFrame(:natural)
+            @named world1 = Worldline(:τ,:natural)
             @named field1 = UniformField(
                 E_field = [0, 0, E₁],
                 B_field = [0, 0, 0];
-                ref_frame = ref_frame1,
+                world = world1,
             )
             @named electron1 = RadiatingElectron(; laser = field1)
             sys1 = mtkcompile(electron1, allow_symbolic = true)
 
-            @named ref_frame2 = ProperFrame(:natural)
+            @named world2 = Worldline(:τ,:natural)
             @named field2 = UniformField(
                 E_field = [0, 0, E₂],
                 B_field = [0, 0, 0];
-                ref_frame = ref_frame2,
+                world = world2,
             )
             @named electron2 = RadiatingElectron(; laser = field2)
             sys2 = mtkcompile(electron2, allow_symbolic = true)
@@ -190,9 +190,9 @@ using Statistics
             # In a magnetic field: qvB = γmv²/R, so R = γmv/(qB)
 
             B₀ = 0.1  # Magnetic field strength
-            @named ref_frame = ProperFrame(:natural)
+            @named world = Worldline(:τ,:natural)
             @named mag_field =
-                UniformField(; E_field = [0, 0, 0], B_field = [0, 0, B₀], ref_frame)
+                UniformField(; E_field = [0, 0, 0], B_field = [0, 0, B₀], world)
             @named electron_B = RadiatingElectron(; laser = mag_field)
             sys_B = mtkcompile(electron_B, allow_symbolic = true)
 
@@ -234,9 +234,9 @@ using Statistics
             # So P = (2q⁴E²)/(3*4πε₀m²c³)
 
             E₀ = 0.001  # Very weak field for non-relativistic motion
-            @named ref_frame = ProperFrame(:natural)
+            @named world = Worldline(:τ,:natural)
             @named weak_field =
-                UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], ref_frame)
+                UniformField(; E_field = [0, 0, E₀], B_field = [0, 0, 0], world)
             @named electron_nr = RadiatingElectron(; laser = weak_field)
             sys_nr = mtkcompile(electron_nr, allow_symbolic = true)
 

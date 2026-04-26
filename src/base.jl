@@ -59,17 +59,33 @@ function ReferenceFrame(iv, units::Symbol; name)
     ReferenceFrame(iv; name, c, ε₀, μ₀, m_e, q_e)
 end
 
-function ProperFrame(units::Symbol; name)
-    @independent_variables τ
+"""
+    Worldline(parameter, units; name)
 
-    ReferenceFrame(τ, units; name)
-end
+Construct a worldline parameterization context for relativistic dynamics. The
+returned MTK system carries the Minkowski metric, physical constants, and the
+chosen integration parameter (independent variable).
 
-function LabFrame(units::Symbol; name)
-    @independent_variables t
-    # t = ModelingToolkit.t_nounits
+`parameter` is `:τ` (proper time) or `:t` (lab time). Both choices describe the
+**same inertial (lab) frame**; they differ only in which scalar parameterizes
+the worldline that the integrator steps along. They are not different Lorentz
+frames — the components of `x^μ`, `u^μ`, `F^{μν}` are always resolved in the
+frame where the external fields are defined.
 
-    ReferenceFrame(t, units; name)
+`units` is `:SI`, `:atomic`, or `:natural`.
+"""
+function Worldline(parameter::Symbol, units::Symbol; name)
+    if parameter === :τ
+        @independent_variables τ
+        iv = τ
+    elseif parameter === :t
+        @independent_variables t
+        iv = t
+    else
+        error("Worldline parameter must be :τ or :t, got :$parameter")
+    end
+
+    ReferenceFrame(iv, units; name)
 end
 
 function ElectromagneticSystem(iv; name)

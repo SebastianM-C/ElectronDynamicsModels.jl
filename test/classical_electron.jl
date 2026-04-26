@@ -8,8 +8,8 @@ using LinearAlgebra
 @testset "Classical Electron Tests" begin
     # Test system structure
     @testset "System Structure" begin
-        ref_frame = ProperFrame(:natural, name = :ref_frame)
-        @named laser = PlaneWave(; ref_frame)
+        world = Worldline(:τ,:natural, name = :world)
+        @named laser = PlaneWave(; world)
         @named electron = ClassicalElectron(; laser)
         sys = mtkcompile(electron)
 
@@ -27,8 +27,8 @@ using LinearAlgebra
         k = 1
         c = 1
         @independent_variables τ
-        @named ref_frame = ReferenceFrame(τ; c, ε₀ = 1, μ₀ = 1, m_e = 1, q_e = 1)
-        external_field = PlaneWave(; ref_frame, name = :plane_wave, k_direction = [0, 0, k])
+        @named world = ReferenceFrame(τ; c, ε₀ = 1, μ₀ = 1, m_e = 1, q_e = 1)
+        external_field = PlaneWave(; world, name = :plane_wave, k_direction = [0, 0, k])
         @named electron = ChargedParticle(; external_field)
         sys = mtkcompile(electron)
 
@@ -91,8 +91,8 @@ using LinearAlgebra
         E_field = [0.01, 0.0, 0.0]  # Weaker E field to stay non-relativistic
         B_field = [0.0, 0.0, 1.0]  # B in z-direction
 
-        @named ref_frame = ProperFrame(:natural)
-        @named uniform_field = UniformField(; E_field, B_field, ref_frame)
+        @named world = Worldline(:τ,:natural)
+        @named uniform_field = UniformField(; E_field, B_field, world)
         @named electron = ChargedParticle(; external_field = uniform_field)
 
         sys = mtkcompile(electron, allow_symbolic = true)
@@ -136,9 +136,9 @@ using LinearAlgebra
         # Use extremely weak field to minimize radiation effects
         # The radiation force scales as E², so reducing E by 10x reduces radiation by 100x
         E₀ = 0.0001  # Extremely weak field
-        @named ref_frame = ProperFrame(:natural)
+        @named world = Worldline(:τ,:natural)
         @named weak_field =
-            UniformField(E_field = [0, 0, E₀], B_field = [0, 0, 0]; ref_frame)
+            UniformField(E_field = [0, 0, E₀], B_field = [0, 0, 0]; world)
 
         # Classical electron (no radiation)
         @named electron_classical = ClassicalElectron(; laser = weak_field)

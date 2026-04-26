@@ -50,8 +50,8 @@ m_index = -2
 z₀ = 0.0
 
 # Create spacetime and laser using ElectronDynamicsModels
-@named ref_frame = ProperFrame(:atomic)
-# @named ref_frame = LabFrame(:atomic)
+@named world = Worldline(:τ,:atomic)
+# @named world = Worldline(:t, :atomic)
 
 @named laser = LaguerreGaussLaser(
     wavelength = λ_au,
@@ -59,7 +59,7 @@ z₀ = 0.0
     beam_waist = w₀_au,
     radial_index = p_index,
     azimuthal_index = m_index,
-    ref_frame,
+    world,
     temporal_profile = :gaussian,  # Using Gaussian profile
     temporal_width = τ_fwhm,
     focus_position = z₀,

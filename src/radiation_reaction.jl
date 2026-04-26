@@ -14,9 +14,9 @@ dp^μ/dτ = q F^μν u_ν + (2q³/3m²c³)[∂_ν F^μλ u^ν u_λ + F^μν F_ν
 For uniform fields (∂_ν F^μλ = 0), this reduces to:
 dp^μ/dτ = q F^μν u_ν + (2q³/3m²c³)[F^μν F_νλ u^λ - (1/4)F_αβ F^αβ u^μ]
 """
-@component function LandauLifshitzRadiation(; name, charge=1.0, F_lorentz_ref, ref_frame, particle)
-    @unpack c, gμν, ε₀ = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+@component function LandauLifshitzRadiation(; name, charge=1.0, F_lorentz_ref, world, particle)
+    @unpack c, gμν, ε₀ = world
+    iv = ModelingToolkit.get_iv(world)
     @named field = ElectromagneticSystem(iv)
 
     u = ParentScope(particle.u)
@@ -87,9 +87,9 @@ F_rad^μ = (2e²/3mc³) * (d²x^μ/dτ²)
 We use the Schott term approximation to avoid runaway solutions.
 This is valid when ω << m*c²/ℏ (classical regime).
 """
-@component function AbrahamLorentzRadiation(; name, charge=1.0, F_lorentz_ref, ref_frame, particle)
-    @unpack c, gμν, ε₀ = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+@component function AbrahamLorentzRadiation(; name, charge=1.0, F_lorentz_ref, world, particle)
+    @unpack c, gμν, ε₀ = world
+    iv = ModelingToolkit.get_iv(world)
 
     @unpack u = particle
 

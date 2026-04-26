@@ -1,12 +1,12 @@
 """
-    _find_ref_frame(sys)
+    _find_world(sys)
 
-Find the reference frame subsystem within an external field by checking for
-the metric tensor `gμν` and electron mass `m_e` parameters.
+Find the `Worldline` subsystem within an external field by checking for the
+metric tensor `gμν` and electron mass `m_e` parameters.
 """
-function _find_ref_frame(sys::AbstractSystem)
+function _find_world(sys::AbstractSystem)
     if isempty(get_systems(sys)) && ModelingToolkitBase.has_parent(sys)
-        return _find_ref_frame(ModelingToolkitBase.get_parent(sys))
+        return _find_world(ModelingToolkitBase.get_parent(sys))
     end
     for s in get_systems(sys)
         s isa AbstractSystem || continue
@@ -14,10 +14,10 @@ function _find_ref_frame(sys::AbstractSystem)
         if :gμν ∈ names && :m_e ∈ names
             return s
         elseif !isempty(get_systems(s))
-            return _find_ref_frame(s)
+            return _find_world(s)
         end
     end
-    error("No reference frame found in $(nameof(sys))")
+    error("No Worldline subsystem found in $(nameof(sys))")
 end
 
 @component function ChargedParticle(;
@@ -27,9 +27,9 @@ end
         charge = nothing,
         radiation_model = nothing,
     )
-    ref_frame = _find_ref_frame(external_field)
-    @unpack c, m_e, q_e, gμν, ε₀ = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+    world = _find_world(external_field)
+    @unpack c, m_e, q_e, gμν, ε₀ = world
+    iv = ModelingToolkit.get_iv(world)
 
     if isnothing(mass)
         mass = m_e
@@ -38,7 +38,7 @@ end
         charge = abs(q_e)
     end
 
-    @named particle = ParticleDynamics(; mass, ref_frame)
+    @named particle = ParticleDynamics(; mass, world)
     @unpack x, u, F_total = particle
 
     Fμν = ParentScope(external_field.field.Fμν)
@@ -68,13 +68,13 @@ end
     # Handle radiation reaction if specified
     if radiation_model == :landau_lifshitz
         @named radiation =
-            LandauLifshitzRadiation(; charge, F_lorentz_ref = F_lorentz, ref_frame, particle)
+            LandauLifshitzRadiation(; charge, F_lorentz_ref = F_lorentz, world, particle)
         push!(systems, radiation)
         push!(eqs, external_field.field.Fμν ~ radiation.field.Fμν)
         push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
     elseif radiation_model == :abraham_lorentz
         @named radiation =
-            AbrahamLorentzRadiation(; charge, F_lorentz_ref = F_lorentz, ref_frame, particle)
+            AbrahamLorentzRadiation(; charge, F_lorentz_ref = F_lorentz, world, particle)
         push!(systems, radiation)
         push!(eqs, u ~ radiation.u)
         push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
