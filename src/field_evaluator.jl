@@ -11,8 +11,8 @@ The input is `[t, x, y, z]` (bare time, not c*t). The speed of light `c` is
 obtained from the reference frame and applied internally.
 
 ```julia
-@named ref_frame = ProperFrame(:atomic)
-@named laser = GaussLaser(; wavelength=1.0, a0=1.0, ref_frame)
+@named world = Worldline(:τ, :atomic)
+@named laser = GaussLaser(; wavelength=1.0, a0=1.0, world)
 fe = FieldEvaluator(laser)
 result = fe([t, x, y, z])  # (E = [...], B = [...])
 ```

@@ -1,6 +1,6 @@
-@component function ParticleDynamics(; name, mass, ref_frame)
-    @unpack c = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+@component function ParticleDynamics(; name, mass, world)
+    @unpack c = world
+    iv = ModelingToolkit.get_iv(world)
     D = Differential(iv)
 
     @variables begin
@@ -33,7 +33,7 @@
             D(u) ~ F_total / m
         ]
 
-        System(eqs, iv, [t, γ, x, u, p, F_total], [m]; name, systems = [ref_frame])
+        System(eqs, iv, [t, γ, x, u, p, F_total], [m]; name, systems = [world])
     elseif nameof(iv) == :t
         t = iv
 
@@ -57,6 +57,6 @@
             D(u) ~ F_total / (m * γ)
         ]
 
-        System(eqs, iv, [τ, γ, x, u, p, F_total], [m]; name, systems = [ref_frame])
+        System(eqs, iv, [τ, γ, x, u, p, F_total], [m]; name, systems = [world])
     end
 end

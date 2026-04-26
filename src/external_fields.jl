@@ -16,7 +16,7 @@ Parameters:
 @component function GaussLaser(;
         name, wavelength = nothing, frequency = nothing,
         a0 = 10.0, beam_waist = nothing, polarization = :linear,
-        n_cycles = 5, focus_position = nothing, ref_frame
+        n_cycles = 5, focus_position = nothing, world
     )
     if wavelength === nothing && frequency === nothing
         wavelength = 1.0
@@ -26,11 +26,11 @@ Parameters:
     end
 
     # New interface with spacetime
-    @named field_dynamics = EMFieldDynamics(; ref_frame)
+    @named field_dynamics = EMFieldDynamics(; world)
 
     # Get spacetime variables and constants from parent scope
-    @unpack c, m_e, q_e = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+    @unpack c, m_e, q_e = world
+    iv = ModelingToolkit.get_iv(world)
 
     # Create local position and time variables
     @variables x(iv)[1:4] t(iv)
@@ -130,7 +130,7 @@ Parameters:
     sys = System(
         eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, τ0, n_cycles, t₀, z₀];
         name,
-        systems = [ref_frame],
+        systems = [world],
         initial_conditions,
         initialization_eqs,
         bindings
@@ -148,7 +148,7 @@ electrons can exhibit figure-8 motion when a₀ ~ 1.
 
 Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 """
-@component function PlaneWave(; name, amplitude = 1.0, wavelength = nothing, frequency = nothing, k_direction = [0, 0, 1], polarization = [1, 0, 0], ref_frame)
+@component function PlaneWave(; name, amplitude = 1.0, wavelength = nothing, frequency = nothing, k_direction = [0, 0, 1], polarization = [1, 0, 0], world)
     if wavelength === nothing && frequency === nothing
         frequency = 1.0
     end
@@ -157,11 +157,11 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
     end
 
     # New interface with spacetime
-    @named field_dynamics = EMFieldDynamics(; ref_frame)
+    @named field_dynamics = EMFieldDynamics(; world)
 
     # Get spacetime variables and constants from parent scope
-    @unpack c, m_e, q_e = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+    @unpack c, m_e, q_e = world
+    iv = ModelingToolkit.get_iv(world)
 
     # Create local position and time variables
     @variables x(iv)[1:4]
@@ -229,7 +229,7 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 
     vars = nameof(iv) == :τ ? [x, t] : [x]
 
-    sys = System(eqs, iv; name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions)
+    sys = System(eqs, iv; name, systems = [world], initialization_eqs, bindings, initial_conditions)
 
     extend(sys, field_dynamics)
 end
@@ -242,13 +242,13 @@ particles drift with velocity v_drift = E×B/B²
 
 Reference: Jackson, "Classical Electrodynamics", Section 12.4
 """
-@component function UniformField(; name, E_field = [0, 0, 1], B_field = [0, 0, 0], ref_frame)
-    @named field_dynamics = EMFieldDynamics(; ref_frame)
+@component function UniformField(; name, E_field = [0, 0, 1], B_field = [0, 0, 0], world)
+    @named field_dynamics = EMFieldDynamics(; world)
     @unpack E, B = field_dynamics
 
     # Get spacetime variables and constants from parent scope
-    @unpack c, m_e, q_e = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+    @unpack c, m_e, q_e = world
+    iv = ModelingToolkit.get_iv(world)
 
     # Create local position and time variables
     @variables x(iv)[1:4] t(iv)
@@ -263,7 +263,7 @@ Reference: Jackson, "Classical Electrodynamics", Section 12.4
         B ~ B₀,
     ]
 
-    sys = System(eqs, iv, [x, t], [E₀, B₀]; name, systems = [ref_frame])
+    sys = System(eqs, iv, [x, t], [E₀, B₀]; name, systems = [world])
 
     extend(sys, field_dynamics)
 end
@@ -294,7 +294,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         beam_waist = nothing,
         radial_index = 0,      # p
         azimuthal_index = 1,   # m
-        ref_frame,
+        world,
         temporal_profile = :gaussian,  # :gaussian or :constant
         temporal_width = nothing,      # pulse width (for gaussian profile)
         n_cycles = 0,                  # number of optical cycles to pulse center
@@ -309,11 +309,11 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     end
 
     # New interface with spacetime
-    @named field_dynamics = EMFieldDynamics(; ref_frame)
+    @named field_dynamics = EMFieldDynamics(; world)
 
     # Get spacetime variables from parent scope
-    @unpack c, m_e, q_e = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+    @unpack c, m_e, q_e = world
+    iv = ModelingToolkit.get_iv(world)
 
     # Create local position and time variables
     @variables x(iv)[1:4]
@@ -511,7 +511,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
 
     sys = System(
         eqs, iv, vars, params;
-        name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions
+        name, systems = [world], initialization_eqs, bindings, initial_conditions
     )
     extend(sys, field_dynamics)
 end

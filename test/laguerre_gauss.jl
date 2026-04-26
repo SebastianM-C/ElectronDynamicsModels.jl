@@ -33,11 +33,11 @@ using CSV
         )
 
         # ElectronDynamicsModels
-        @named ref_frame = ProperFrame(:SI)
+        @named world = Worldline(:τ,:SI)
         @named laser = LaguerreGaussLaser(
             wavelength = λ_test, a0 = a₀_test, beam_waist = w₀_test,
             radial_index = p_val, azimuthal_index = m_val,
-            ref_frame = ref_frame, temporal_profile = :constant
+            world = world, temporal_profile = :constant
         )
 
         fe = FieldEvaluator(laser)
@@ -71,11 +71,11 @@ end
     m_e = 1.0
     q_e = -1.0
 
-    @named ref_frame = ProperFrame(:atomic)
+    @named world = Worldline(:τ,:atomic)
     @named laser = LaguerreGaussLaser(
         wavelength = 1.0, a0 = 1.0, beam_waist = nothing,
         radial_index = 1, azimuthal_index = 1,
-        ref_frame = ref_frame, temporal_profile = :constant
+        world = world, temporal_profile = :constant
     )
 
     fe = FieldEvaluator(laser)
@@ -116,11 +116,11 @@ end
     w₀_val = 75 * λ_val
     a₀_val = 2.0
 
-    @named ref_frame = ProperFrame(:atomic)
+    @named world = Worldline(:τ,:atomic)
     @named lg_laser = LaguerreGaussLaser(
         wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
         radial_index = 0, azimuthal_index = 0,
-        ref_frame = ref_frame, temporal_profile = :constant
+        world = world, temporal_profile = :constant
     )
 
     fe_lg = FieldEvaluator(lg_laser)
@@ -162,11 +162,11 @@ end
     w₀_val = 75 * λ_val
     a₀_val = 2.0
 
-    @named ref_frame = ProperFrame(:atomic)
+    @named world = Worldline(:τ,:atomic)
     @named laser = LaguerreGaussLaser(
         wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
         radial_index = 1, azimuthal_index = 1,
-        ref_frame = ref_frame, temporal_profile = :constant
+        world = world, temporal_profile = :constant
     )
 
     fe = FieldEvaluator(laser)
@@ -209,11 +209,11 @@ end
         (i_val === nothing || p_val === nothing || m_val === nothing) && continue
         i_val != i_filter && continue
 
-        @named ref_frame = ProperFrame(:atomic)
+        @named world = Worldline(:τ,:atomic)
         @named laser = LaguerreGaussLaser(
             wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val,
             radial_index = p_val, azimuthal_index = m_val,
-            ref_frame = ref_frame, temporal_profile = :constant
+            world = world, temporal_profile = :constant
         )
 
         fe = FieldEvaluator(laser)
@@ -262,14 +262,14 @@ end
     w₀ = 10.0e-6
     c = 299792458.0
 
-    @named ref_frame = ProperFrame(:SI)
+    @named world = Worldline(:τ,:SI)
     @named laser = LaguerreGaussLaser(
         wavelength = λ,
         a0 = a₀,
         beam_waist = w₀,
         radial_index = 0,
         azimuthal_index = 1,
-        ref_frame = ref_frame
+        world = world
     )
     @named elec = ClassicalElectron(; laser)
     sys = mtkcompile(elec)

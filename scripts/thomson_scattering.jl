@@ -23,7 +23,7 @@ Rmax = 3.25w₀
 
 a₀ = 10.0
 
-@named ref_frame = ProperFrame(:atomic)
+@named world = Worldline(:τ,:atomic)
 
 @named laser = LaguerreGaussLaser(;
     wavelength = λ,
@@ -31,7 +31,7 @@ a₀ = 10.0
     beam_waist = w₀,
     radial_index = 2,
     azimuthal_index = -2,
-    ref_frame,
+    world,
     temporal_profile = :gaussian,
     temporal_width = τ,
     focus_position = 0.0,

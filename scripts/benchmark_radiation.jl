@@ -18,8 +18,8 @@ w₀ = 75λ
 
 a₀ = 0.01  # small a₀ for quick solve
 
-@named ref_frame = ProperFrame(:atomic)
-@named laser = PlaneWave(; frequency = ω, amplitude = a₀, ref_frame)
+@named world = Worldline(:τ,:atomic)
+@named laser = PlaneWave(; frequency = ω, amplitude = a₀, world)
 @named elec = ClassicalElectron(; laser)
 sys = mtkcompile(elec)
 

@@ -15,10 +15,10 @@ using FFTW
     # Higher harmonics should be negligible.
 
     # Use natural units (c = 1)
-    @named ref_frame = ProperFrame(:natural)
+    @named world = Worldline(:τ,:natural)
 
     a₀ = 0.01
-    @named laser = PlaneWave(; amplitude = a₀, frequency = 1.0, ref_frame)
+    @named laser = PlaneWave(; amplitude = a₀, frequency = 1.0, world)
     @named elec = ClassicalElectron(; laser)
     sys = mtkcompile(elec)
 
