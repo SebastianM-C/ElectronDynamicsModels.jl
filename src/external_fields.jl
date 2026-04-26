@@ -269,6 +269,25 @@ Reference: Jackson, "Classical Electrodynamics", Section 12.4
 end
 
 """
+    _kz_sign(k_direction) -> ±1
+
+Validate that `k_direction` is along ±ẑ and return its sign. Currently only ±ẑ
+propagation is supported for `LaguerreGaussLaser`; oblique directions require
+defining a transverse basis convention that has not yet been implemented.
+"""
+function _kz_sign(k_direction)
+    length(k_direction) == 3 || error("k_direction must be a 3-vector, got length $(length(k_direction))")
+    isapprox(norm(k_direction), 1; atol=1e-10) || error("k_direction must be a unit vector, got norm $(norm(k_direction))")
+    if k_direction ≈ [0, 0, 1]
+        return +1
+    elseif k_direction ≈ [0, 0, -1]
+        return -1
+    else
+        error("LaguerreGaussLaser currently supports only k_direction ≈ ±ẑ; got $k_direction. Pass [0,0,1] for +ẑ or [0,0,-1] for -ẑ.")
+    end
+end
+
+"""
 Laguerre-Gauss laser beam electromagnetic field.
 
 Represents a focused beam with orbital angular momentum (OAM).
@@ -283,6 +302,8 @@ Parameters:
 - temporal_profile: :gaussian (pulsed) or :constant (CW)
 - temporal_width: pulse width for gaussian profile (defaults to 100.0)
 - focus_position: focal position along z-axis (defaults to 0.0)
+- k_direction: propagation direction unit vector. Currently restricted to
+  `[0, 0, 1]` (default, +ẑ) or `[0, 0, -1]` (−ẑ).
 
 Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
 """
@@ -299,8 +320,10 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         temporal_width = nothing,      # pulse width (for gaussian profile)
         n_cycles = 0,                  # number of optical cycles to pulse center
         focus_position = nothing,       # focal position along z-axis
-        polarization = :linear
+        polarization = :linear,
+        k_direction = [0, 0, 1]
     )
+    kz_sign = _kz_sign(k_direction)
     if wavelength === nothing && frequency === nothing
         wavelength = 1.0
     end
@@ -378,10 +401,12 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     end
 
     # Compute temporal envelope expression based on profile type
+    # The traveling wave moves at speed c along k̂, so the envelope follows
+    # `(t - t₀) - kz_sign·(z - z₀)/c`.
     env_expr = if temporal_profile == :constant
         1.0  # No temporal envelope
     elseif temporal_profile == :gaussian
-        exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2)
+        exp(-(((t - t₀) - kz_sign * (z - z₀) / c) / τ0)^2)
     else
         error("Unknown temporal_profile: $temporal_profile. Use :constant or :gaussian")
     end
@@ -389,14 +414,16 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     # We need to factor out the complex expressions so that we don't have equations with complex lhs
     # since MTK doesn't handle that well
 
-    # Base Gaussian field (before polarization and LG modification)
+    # Base Gaussian field (before polarization and LG modification).
+    # Replacing z → kz_sign·z in the wavefront curvature, Gouy phase, and
+    # carrier phase flips the sign of k̂ from +ẑ to -ẑ.
     E_g = E₀ * w₀ / wz *
         exp(-(r / wz)^2) *
-        exp(im * (-(r^2 * z) / (z_R * wz^2) + atan(z, z_R) - k * z + ϕ₀)) *
+        exp(im * (-(r^2 * kz_sign * z) / (z_R * wz^2) + atan(kz_sign * z, z_R) - k * kz_sign * z + ϕ₀)) *
         exp(im * ω * t) * env
 
-    # Laguerre-Gauss phase factor
-    lg_phase = exp(im * ((2p + mₐ) * atan(z, z_R) - m * θ + ϕ₀))
+    # Laguerre-Gauss phase factor (Gouy term acquires kz_sign for -ẑ propagation)
+    lg_phase = exp(im * ((2p + mₐ) * atan(kz_sign * z, z_R) - m * θ + ϕ₀))
 
     # NEgexp term used in Ez and Bz
     NEgexp = Nₚₘ * E_g * lg_phase
@@ -427,8 +454,11 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         # Electric field Ey component
         E[2] ~ real(Ey_complex)
 
-        # Electric field Ez component (longitudinal)
-        E[3] ~ real(
+        # Electric field Ez component (longitudinal).
+        # The longitudinal component points along k̂, so the lab z-component
+        # picks up an overall kz_sign. The (1 + im·z/z_R) curvature factor
+        # gets z → kz_sign·z to match the +ẑ-derived formula's analogue.
+        E[3] ~ kz_sign * real(
             -im / k * (
                 # Term 1: m-dependent term
                 (
@@ -438,7 +468,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
                         NEgexp * exp(im * sgn * θ)
                 ) -
                     # Term 2: transverse field coupling
-                    2 / (wz^2) * (1 + im * z / z_R) * (x[2] * Ex_complex + x[3] * Ey_complex) -
+                    2 / (wz^2) * (1 + im * kz_sign * z / z_R) * (x[2] * Ex_complex + x[3] * Ey_complex) -
                     # Term 3: p-dependent term
                     (
                     radial_index == 0 ? 0.0 :
@@ -448,13 +478,14 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
             )
         )
 
-        # Magnetic field components
-        # For paraxial beam: By ≈ Ex/c, Bx ≈ -Ey/c
-        B[1] ~ -E[2] / c
-        B[2] ~ E[1] / c
+        # Magnetic field components: B = (1/c) k̂ × E
+        # For k̂ = +ẑ: (B_x, B_y) = (-E_y, +E_x)/c; flipping k̂ → -ẑ flips both.
+        B[1] ~ -kz_sign * E[2] / c
+        B[2] ~  kz_sign * E[1] / c
 
-        # Bz component (full Laguerre-Gauss formula)
-        B[3] ~ real(
+        # Bz component: longitudinal magnetic field along k̂; lab z-component
+        # picks up an overall kz_sign analogously to Ez.
+        B[3] ~ kz_sign * real(
             -im / ω * (
                 # Term 1: m-dependent term
                 -(
@@ -464,7 +495,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
                         NEgexp * exp(im * sgn * θ)
                 ) +
                     # Term 2: transverse field coupling
-                    2 / (wz^2) * (1 + im * z / z_R) * (x[2] * Ey_complex - x[3] * Ex_complex) +
+                    2 / (wz^2) * (1 + im * kz_sign * z / z_R) * (x[2] * Ey_complex - x[3] * Ex_complex) +
                     # Term 3: p-dependent term
                     (
                     radial_index == 0 ? 0.0 :
