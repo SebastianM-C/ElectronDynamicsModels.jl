@@ -21,9 +21,9 @@ const c = 137.03599908330932
 w₀ = 75λ
 Rmax = 3.25w₀
 
-a₀ = 10.0
+a₀ = 0.1
 
-@named world = Worldline(:τ,:atomic)
+@named world = Worldline(:τ, :atomic)
 
 @named laser = LaguerreGaussLaser(;
     wavelength = λ,
@@ -83,7 +83,7 @@ function sunflower(n, α)
 end
 
 # Ensemble solve
-N = 300
+N = 800
 R₀ = Rmax * sunflower(N, 2)
 xμ = [[τi * c, r..., 0.0] for r in R₀]
 
@@ -114,12 +114,12 @@ trajs = trajectory_interpolants(solution)
 
 # Screen parameters
 const Z = 2.0e5λ
-const δt = 2π / ω / 4
-const N_samples = floor(Int, (τf - τi) / δt)
+const δt = 2π / ω / 5
+const N_samples = 2500#floor(Int, (τf - τi) / δt)
 const x⁰_start = c * τi + hypot(Z, 25w₀ + Rmax)
 
-Nx = 50
-Ny = 50
+Nx = 300
+Ny = 300
 
 x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
 
@@ -130,15 +130,19 @@ screen = ObserverScreen(
     x⁰_samples
 )
 
-@time A_s = accumulate_potential(trajs, screen, Tsit5())
+# @time A_cpu = accumulate_potential(trajs, screen, Tsit5());
 
 # GPU
-# accumulate_potential(trajs, screen, GPUTsit5(), EnsembleGPUKernel(CUDA.CUDABackend()))
+@time A_gpu1 = accumulate_potential(trajs, screen, Tsit5(), CUDA.CUDABackend());
 # gpu_trajs = gpu_trajectory_interpolants(solution);
-@time A_gpu = accumulate_potential(trajs, screen, Tsit5(), CUDA.CUDABackend());
+# @time A_gpu2 = accumulate_potential(trajs, screen, GPUKernelRK4(), CUDA.CUDABackend());
+# @time A_gpu3 = accumulate_potential(trajs, screen, GPUKernelTsit5(), CUDA.CUDABackend(); batch_size = 8);
 
-@info norm(A_s - A_gpu) / norm(A_s)
-
+# @info norm(A_cpu - A_gpu1) / norm(A_cpu)
+# @info norm(A_cpu - A_gpu2) / norm(A_cpu)
+# @info norm(A_cpu - A_gpu3) / norm(A_cpu)
+#
+A_s = A_gpu1
 A_ω = rfft(A_s, 1)
 
 # Find fundamental frequency bin
@@ -154,3 +158,31 @@ heatmap!(
     colorrange = maximum(abs, field) .* (-1, 1), colormap = :seismic
 )
 fig
+
+using GLMakie
+
+fig = Figure()
+ax = Axis3(fig[1, 1], aspect = (3,1,1))
+colormap = to_colormap(:plasma)
+pushfirst!(colormap, RGBAf(0,0,0,0))
+scaling = a₀ * 2 * atan(25w₀, Z) ./ 2.0.^(eachindex(freqs) ./ idx_f1)
+field = abs2.(real.(A_ω[:, 3, :, :]))
+freq_end = idx_f1
+volume!(ax, (first(freqs), freqs[end]), (-25w₀, 25w₀), (-25w₀, 25w₀),
+    log10.(field[1:end, :, :]); algorithm = :mip, colormap)
+
+fig = Figure()
+axes_2d = [Axis(fig[i, j], yscale = log10) for i in 1:2, j in 1:2]
+foreach(args -> lines!(args[2], freqs, [sum(abs2.(@view(A_ω[ν, args[1], :, :]))) for ν in axes(A_ω, 1)]), enumerate(axes_2d))
+
+
+fig = Figure()
+axes_2d = [Axis(fig[i, j]) for i in 1:2, j in 1:2]
+slider = Slider(fig[3, :], range = axes(A_ω, 1), startvalue = first(axes(A_ω, 1)))
+foreach(args -> heatmap!(args[2], -1..1, -1..1, @lift(real.(@view(A_ω[$(slider.value), args[1], :, :]))), colormap = :seismic), enumerate(axes_2d))
+slider.value[] = 2idx_f1
+
+fig = Figure()
+θmax = atan(25w₀/Z)
+axes_2d = [Axis(fig[i, j]) for i in 1:2, j in 1:2]
+foreach(args -> lines!(args[2], freqs, [sum(abs2.(@view(A_ω[ν, args[1], :, :]))) * (a₀*θmax)^(ν/idx_f1) for ν in axes(A_ω, 1)]), enumerate(axes_2d))
