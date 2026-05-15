@@ -141,12 +141,12 @@ function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::Ob
         (advanced_time(traj0, τi0, r_obs_0), advanced_time(traj0, τf0, r_obs_0)),
         (traj0, r_obs_0)
     )
-    proto_integ = init(proto_prob, alg; saveat = x⁰_samples, solve_kwargs...)
+    proto_integ = init(proto_prob, alg; saveat = x⁰_samples, save_start = false, save_end = false, solve_kwargs...)
     nworkers = Threads.nthreads()
     integ_pool = Channel{typeof(proto_integ)}(nworkers)
     put!(integ_pool, proto_integ)
     for _ in 2:nworkers
-        put!(integ_pool, init(proto_prob, alg; saveat = x⁰_samples, solve_kwargs...))
+        put!(integ_pool, init(proto_prob, alg; saveat = x⁰_samples, save_start = false, save_end = false, solve_kwargs...))
     end
 
     for traj in trajs
@@ -164,7 +164,7 @@ function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::Ob
                 reinit!(integ, τi; t0 = x⁰_i, tf = x⁰_f)
                 solve!(integ)
 
-                _accumulate_pixel!(A, traj, screen, integ.sol.u, ix, iy)
+                _accumulate_pixel!(A, traj, screen, integ.sol.u, integ.sol.t, ix, iy)
             end
             put!(integ_pool, integ)
         end
@@ -192,7 +192,8 @@ function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::Ob
 
         Threads.@threads for ix in Base.OneTo(Nx)
             for iy in Base.OneTo(Ny)
-                _accumulate_pixel!(A, traj, screen, rt_sol.u[LI[ix, iy]].u, ix, iy)
+                sol_pixel = rt_sol.u[LI[ix, iy]]
+                _accumulate_pixel!(A, traj, screen, sol_pixel.u, sol_pixel.t, ix, iy)
             end
         end
     end
@@ -200,13 +201,23 @@ function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::Ob
     return A
 end
 
-function _accumulate_pixel!(A, traj, screen, τ_samples, ix, iy)
+function _accumulate_pixel!(A, traj, screen, τ_samples, t_samples, ix, iy)
     r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
+    # Map saveat values back to A's first-axis index. The integrator only
+    # saves saveat points within [tspan[1], tspan[2]] — fewer than length(x⁰_samples)
+    # for narrow per-pixel arrival windows — so iterating sequentially over
+    # τ_samples with k=1,2,… would accumulate radiation into the wrong
+    # observer-time slots. Compute the saveat index from t_samples explicitly.
+    x⁰_first = first(screen.x⁰_samples)
+    N_x⁰     = length(screen.x⁰_samples)
+    δx⁰      = (last(screen.x⁰_samples) - x⁰_first) / (N_x⁰ - 1)
     for (k, τ) in enumerate(τ_samples)
+        idx = round(Int, (t_samples[k] - x⁰_first) / δx⁰) + 1
+        1 ≤ idx ≤ N_x⁰ || continue
         xμ, uμ = traj(τ)
         disp = r_obs - xμ[SA[2, 3, 4]]
         xr = SVector{4}(norm(disp), disp[1], disp[2], disp[3])
-        @views A[k, :, ix, iy] .+= traj.K * uμ ./ m_dot(xr, uμ)
+        @views A[idx, :, ix, iy] .+= traj.K * uμ ./ m_dot(xr, uμ)
     end
     return
 end

@@ -42,7 +42,7 @@ Parameters:
         a₀ = a0, [description = "Normalized vector potential"]
         ω, [guess = 1.0, description = "Angular frequency"]
         k, [description = "Wave number (2π/λ)"]
-        E₀, [description = "Peak electric field amplitude"]
+        E₀, [guess = 1.0, description = "Peak electric field amplitude"]
         w₀, [description = "Beam waist radius at focus"]
         z_R, [description = "Rayleigh length"]
         τ0, [description = "Temporal envelope half-width"]
@@ -288,6 +288,45 @@ function _kz_sign(k_direction)
 end
 
 """
+    a0_from_pulse_energy(W, w₀, τ₀, ω; world, mode = (p = 0, m = 2)) -> a₀
+
+Compute the dimensionless vector potential `a₀` for a Laguerre-Gauss pulse of
+total energy `W`, host-beam waist `w₀`, field-envelope half-width `τ₀`, and
+angular frequency `ω`. All inputs in the unit system of `world` (atomic, SI,
+or natural). `mode = (p, m)` selects the LG mode; the formula is
+`p`-independent (in EDM's normalization), so only `|m|` matters in practice.
+
+Formula:
+    a₀² = 2W·|q_e|² / (ε₀ c³ A(p,m) (m_e ω)² w₀² τ₀ √(π/2))
+with A(p,m) = (π/2)·(|m|!)².
+
+Use this script-side when `u0_constructor` (e.g. `SVector{8}`) precludes
+`LaguerreGaussLaser`'s built-in `pulse_energy` initialization, since the
+init sub-problem inherits the constructor with the wrong dimension. Pass the
+result to `LaguerreGaussLaser(; a0 = …)` instead.
+
+See `references/lg_pulse_energy_a0.tex` for the derivation.
+"""
+function a0_from_pulse_energy(W, w₀, τ₀, ω; world, mode = (p = 0, m = 2))
+    m = mode.m
+    ε₀      = getdefault(world.ε₀)
+    c       = getdefault(world.c)
+    m_e     = getdefault(world.m_e)
+    q_e_abs = abs(getdefault(world.q_e))
+    A_pm    = (π/2) * factorial(abs(m))^2
+
+    # Sanity check on cycle-averaging validity (slow-envelope approximation).
+    ωτ = ω * τ₀
+    if ωτ < 5
+        @warn "a0_from_pulse_energy assumes ωτ₀ ≫ 1 (slow envelope vs fast carrier)" ωτ suppression=exp(-ωτ^2/2)
+    end
+
+    a₀² = 2 * W * q_e_abs^2 /
+          (ε₀ * c^3 * A_pm * (m_e * ω)^2 * w₀^2 * τ₀ * sqrt(π/2))
+    return sqrt(a₀²)
+end
+
+"""
 Laguerre-Gauss laser beam electromagnetic field.
 
 Represents a focused beam with orbital angular momentum (OAM).
@@ -311,7 +350,8 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         name,
         wavelength = nothing,
         frequency = nothing,
-        a0 = 10.0,
+        a0 = nothing,
+        pulse_energy = nothing,
         beam_waist = nothing,
         radial_index = 0,      # p
         azimuthal_index = 1,   # m
@@ -331,11 +371,38 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         error("Specify either wavelength or frequency, not both")
     end
 
+    # Validate field-strength specification: exactly one of a0 / pulse_energy
+    a0_given = a0           !== nothing
+    we_given = pulse_energy !== nothing
+    if temporal_profile == :constant
+        we_given && error("pulse_energy is not meaningful for temporal_profile = :constant (CW beams have no finite total energy). Use a0 instead.")
+        a0_given || (a0 = 10.0; a0_given = true)  # backward-compat default for CW
+    else
+        if !(a0_given ⊻ we_given)
+            error("Specify exactly one of `a0` or `pulse_energy` (got a0 = $a0, pulse_energy = $pulse_energy)")
+        end
+    end
+
+    # When pulse_energy is given, the W ↔ a₀ relation assumes the slow-envelope
+    # approximation ωτ₀ ≫ 1 (cycle-averaged intensity). For few-cycle pulses
+    # this breaks down — see references/lg_pulse_energy_a0.tex §2.4.
+    if we_given && temporal_profile == :gaussian && temporal_width !== nothing
+        c_val = getdefault(world.c)
+        ω_estimate = wavelength !== nothing ? 2π * c_val / wavelength :
+                     frequency  !== nothing ? frequency : nothing
+        if ω_estimate !== nothing
+            ωτ = ω_estimate * temporal_width
+            if ωτ < 5
+                @warn "pulse_energy formula assumes ωτ₀ ≫ 1; got ωτ₀ = $ωτ. Fast Fourier-suppression term e^(-(ωτ₀)²/2) ≈ $(exp(-ωτ^2/2)) is no longer negligible. For few-cycle pulses, derive a0 from pulse energy by integrating the carrier-explicit field directly."
+            end
+        end
+    end
+
     # New interface with spacetime
     @named field_dynamics = EMFieldDynamics(; world)
 
     # Get spacetime variables from parent scope
-    @unpack c, m_e, q_e = world
+    @unpack c, m_e, q_e, ε₀ = world
     iv = ModelingToolkit.get_iv(world)
 
     # Create local position and time variables
@@ -356,12 +423,17 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     # Nₚₘ = √((p+1)_{|m|}) where (x)_n is the Pochhammer symbol
     Npm_val = sqrt(pochhammer(radial_index + 1, mₐ))
 
+    # Spatial-integral coefficient for LG_p^m: A(p, m) = (π/2) * (|m|!)²
+    # Independent of p; see references/lg_pulse_energy_a0.tex for derivation.
+    A_pm = (π/2) * factorial(abs(azimuthal_index))^2
+
     params = @parameters begin
         λ, [guess = 1.0, description = "Wavelength"]
-        a₀ = a0, [description = "Normalized vector potential"]
+        a₀, [guess = 1.0, description = "Normalized vector potential"]
+        W, [guess = 1.0, description = "Total pulse energy"]
         ω, [guess = 1.0, description = "Angular frequency"]
         k, [description = "Wave number (2π/λ)"]
-        E₀, [description = "Peak electric field amplitude"]
+        E₀, [guess = 1.0, description = "Peak electric field amplitude"]
         w₀, [description = "Beam waist radius at focus"]
         z_R, [description = "Rayleigh length"]
         τ0 = temporal_width === nothing ? 100.0 : temporal_width, [description = "Temporal envelope half-width"]
@@ -510,6 +582,16 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         k ~ 2π / λ
         z_R ~ π * w₀^2 / λ
         E₀ ~ a₀ * m_e * c * ω / abs(q_e)
+        # Pulse-energy ↔ a₀ relation (Gaussian envelope, cycle-averaged):
+        #   W = (1/2) ε₀ c · A(p,m) w₀² E₀² · τ₀√(π/2).
+        # Written in the `W ~ …` direction so MTK can substitute forward when
+        # a₀ is given (no nonlinear init step, so problem-level constructors
+        # like `u0_constructor = SVector{N}` don't propagate to a smaller
+        # init sub-problem). The reverse direction (W given → solve for a₀)
+        # involves the sqrt and would stall Newton's abstol; users wanting
+        # `pulse_energy →  a₀` should call `a0_from_pulse_energy` script-side
+        # and pass `a0 = …` explicitly. See references/lg_pulse_energy_a0.tex.
+        W ~ (1/2) * ε₀ * c * A_pm * E₀^2 * w₀^2 * τ0 * sqrt(π/2)
         t₀ ~ n_cycles * 2π / ω
     ]
     bindings = [
@@ -521,6 +603,8 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         w₀ => missing
         t₀ => missing
         z₀ => missing
+        a₀ => missing
+        W => missing
     ]
 
     initial_conditions = Pair{SymbolicT, Any}[]
@@ -531,6 +615,13 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     end
     if frequency !== nothing
         push!(initial_conditions, ω => frequency)
+    end
+    # Field-strength specification: exactly one of a0 / pulse_energy
+    if a0_given
+        push!(initial_conditions, a₀ => a0)
+    end
+    if we_given
+        push!(initial_conditions, W => pulse_energy)
     end
 
     vars = if nameof(iv) == :τ
