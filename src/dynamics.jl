@@ -5,8 +5,8 @@
 
     @variables begin
         γ(iv), [description = "Lorentz factor"]
-        x(iv)[1:4], [description = "4-position (ct, x, y, z)"]
-        u(iv)[1:4], [description = "4-velocity (u⁰, u¹, u², u³, u⁴)"]
+        x(iv)[1:4], [description = "4-position (ct, x, y, z)", state_priority = 10]
+        u(iv)[1:4], [description = "4-velocity (u⁰, u¹, u², u³, u⁴)", state_priority = 10]
         p(iv)[1:4]
         F_total(iv)[1:4]
     end

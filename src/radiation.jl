@@ -93,7 +93,8 @@ function retarded_time_problem(traj::TrajectoryInterpolant, screen::ObserverScre
         (traj, r_obs_0),
     )
 
-    function set_pixel(prob, i, repeat)
+    function set_pixel(prob, ctx)
+        i = ctx.sim_id
         ix, iy = Tuple(CI[i])
         r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
         (x⁰_i, x⁰_f) = advanced_time(traj, τi, r_obs), advanced_time(traj, τf, r_obs)
