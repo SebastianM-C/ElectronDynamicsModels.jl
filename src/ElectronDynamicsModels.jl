@@ -28,7 +28,7 @@ export ReferenceFrame, Worldline,
     ClassicalElectron, RadiatingElectron, LandauLifshitzElectron,
     FieldEvaluator,
     ObserverScreen, trajectory_interpolants, TrajectoryInterpolant, accumulate_potential,
-    gpu_trajectory_interpolants, GPUCubicSpline, GPUKernelRK4, GPUKernelTsit5,
+    GPUCubicSpline, GPUKernelRK4, GPUKernelTsit5,
     retarded_time_problem
 
 include("base.jl")
@@ -46,5 +46,7 @@ include("gpu_radiation.jl")
 module Experimental
     include("experimental.jl")
 end
+
+using .Experimental: GPUKernelRK4, GPUKernelTsit5, accumulate_intensity
 
 end
