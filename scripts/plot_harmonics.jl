@@ -96,7 +96,8 @@ let dir = dirname(abspath(datafile))
             @warn "no parent run manifest for $(basename(datafile)); skipping h$n sidecar"
         else
             write_derived(dir; kind = "h$n", label = hlabel(n), run_id = pid,
-                plot = plotname, source = basename(datafile))
+                plot = plotname, source = basename(datafile),
+                datafile = basename(cachefile))   # shared harmonic-slice cache (all h<n>)
             println("derived sidecar → h$n (parent run $pid)")
         end
     end
