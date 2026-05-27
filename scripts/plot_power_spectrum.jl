@@ -91,7 +91,8 @@ let dir = dirname(abspath(datafile))
         @warn "no parent run manifest found for $(basename(datafile)); skipping derived sidecar"
     else
         write_derived(dir; kind = "powspec", label = "power spectrum", run_id = pid,
-            plot = basename(stem * "_powspec_all.png"), source = basename(datafile))
+            plot = basename(stem * "_powspec_all.png"), source = basename(datafile),
+            datafile = basename(cachefile))   # publish the small reduced-spectrum cache
         println("derived sidecar → powspec (parent run $pid)")
     end
 end
