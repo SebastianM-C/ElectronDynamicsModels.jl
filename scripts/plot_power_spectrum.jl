@@ -1,0 +1,80 @@
+# Frequency power spectra of all four 4-potential components, summed over the
+# screen:  power_spec[ν, μ] = Σ_{ix,iy} |A_ω[ν, μ, ix, iy]|²,  A_ω = rfft(A, 1).
+# Overlays A⁰ (ct), Aˣ, Aʸ, Aᶻ on a log-y axis with harmonic markers, so you can
+# see which components (if any) carry harmonic structure.  Caches the
+# (N÷2+1)×4 spectra so re-plots are instant.
+#
+#   julia --project=scripts scripts/plot_power_spectrum.jl [file.jls]
+
+using Serialization
+using FFTW
+using CairoMakie
+using Printf
+
+const c = 137.03599908330932
+const ω = 0.057
+
+const datafile = length(ARGS) ≥ 1 ? ARGS[1] : "A_rk4_400_N10000_Ns8000_spp16.jls"
+const m = match(r"_spp(\d+)", datafile)
+const samples_per_period = m === nothing ? 5 : parse(Int, m.captures[1])
+const δt = 2π / ω / samples_per_period
+const stem = replace(datafile, r"\.jls$" => "")
+const cachefile = stem * "_powspec_all.jls"
+const labels = ["A⁰ (ct)", "Aˣ", "Aʸ", "Aᶻ"]
+const colors = [:black, :dodgerblue, :seagreen, :crimson]
+
+if isfile(cachefile)
+    cache = deserialize(cachefile)
+    println("loaded $cachefile")
+else
+    println("loading $datafile (slow path)…")
+    A = deserialize(datafile)
+    N_samples = size(A, 1)
+    Nf = N_samples ÷ 2 + 1
+    power_spec = zeros(Nf, 4)
+    for μ in 1:4
+        Aμ = A[:, μ, :, :]
+        Aω = rfft(Aμ, 1)
+        Aμ = nothing
+        GC.gc()
+        power_spec[:, μ] = dropdims(sum(abs2, Aω; dims = (2, 3)); dims = (2, 3))
+        Aω = nothing
+        GC.gc()
+        println("  component μ=$μ ($(labels[μ])) done")
+    end
+    A = nothing
+    GC.gc()
+    freqs = rfftfreq(N_samples, 1 / δt)
+    cache = (freqs = collect(freqs), power_spec = power_spec, samples_per_period = samples_per_period)
+    serialize(cachefile, cache)
+    println("cached → $cachefile")
+end
+
+xh = cache.freqs ./ (ω / 2π)               # frequency in units of the fundamental
+yfloor = maximum(cache.power_spec) * 1e-30
+
+fig = Figure(size = (1150, 560))
+ax = Axis(fig[1, 1],
+    xlabel = "frequency / ω₁", ylabel = "Σ_pixels |A_ω,μ|²", yscale = log10,
+    title = "4-potential power spectra  —  $datafile  ($(cache.samples_per_period) samples/period)")
+vlines!(ax, 1:floor(Int, last(xh)), color = (:gray, 0.35), linestyle = :dash)
+for μ in 1:4
+    lines!(ax, xh, max.(cache.power_spec[:, μ], yfloor), color = colors[μ], label = labels[μ])
+end
+xlims!(ax, 0, last(xh))
+axislegend(ax, position = :rt)
+save(stem * "_powspec_all.png", fig)
+
+# Per-component power at each integer harmonic.
+@printf("\n%-4s" , "n")
+for L in labels; print(rpad(L, 14)); end
+println()
+for n in 1:floor(Int, last(xh))
+    idx = argmin(abs.(cache.freqs .- n * ω / 2π))
+    @printf("%-4d", n)
+    for μ in 1:4
+        print(rpad(string(round(cache.power_spec[idx, μ], sigdigits = 4)), 14))
+    end
+    println()
+end
+println("saved → $(stem)_powspec_all.png")
