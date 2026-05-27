@@ -277,7 +277,7 @@ defining a transverse basis convention that has not yet been implemented.
 """
 function _kz_sign(k_direction)
     length(k_direction) == 3 || error("k_direction must be a 3-vector, got length $(length(k_direction))")
-    isapprox(norm(k_direction), 1; atol=1e-10) || error("k_direction must be a unit vector, got norm $(norm(k_direction))")
+    isapprox(norm(k_direction), 1; atol = 1.0e-10) || error("k_direction must be a unit vector, got norm $(norm(k_direction))")
     if k_direction ≈ [0, 0, 1]
         return +1
     elseif k_direction ≈ [0, 0, -1]
@@ -309,20 +309,20 @@ See `references/lg_pulse_energy_a0.tex` for the derivation.
 """
 function a0_from_pulse_energy(W, w₀, τ₀, ω; world, mode = (p = 0, m = 2))
     m = mode.m
-    ε₀      = getdefault(world.ε₀)
-    c       = getdefault(world.c)
-    m_e     = getdefault(world.m_e)
+    ε₀ = getdefault(world.ε₀)
+    c = getdefault(world.c)
+    m_e = getdefault(world.m_e)
     q_e_abs = abs(getdefault(world.q_e))
-    A_pm    = (π/2) * factorial(abs(m))^2
+    A_pm = (π / 2) * factorial(abs(m))^2
 
     # Sanity check on cycle-averaging validity (slow-envelope approximation).
     ωτ = ω * τ₀
     if ωτ < 5
-        @warn "a0_from_pulse_energy assumes ωτ₀ ≫ 1 (slow envelope vs fast carrier)" ωτ suppression=exp(-ωτ^2/2)
+        @warn "a0_from_pulse_energy assumes ωτ₀ ≫ 1 (slow envelope vs fast carrier)" ωτ suppression = exp(-ωτ^2 / 2)
     end
 
     a₀² = 2 * W * q_e_abs^2 /
-          (ε₀ * c^3 * A_pm * (m_e * ω)^2 * w₀^2 * τ₀ * sqrt(π/2))
+        (ε₀ * c^3 * A_pm * (m_e * ω)^2 * w₀^2 * τ₀ * sqrt(π / 2))
     return sqrt(a₀²)
 end
 
@@ -335,6 +335,7 @@ The beam is characterized by radial index p and azimuthal index m.
 Parameters:
 - λ: wavelength
 - a₀: normalized vector potential (a0 kwarg)
+- ϕ₀: initial carrier phase (initial_phase kwarg, defaults to 0.0)
 - w₀: beam waist (defaults to 75λ)
 - radial_index (p): radial mode number, p ≥ 0
 - azimuthal_index (m): azimuthal mode number (orbital angular momentum)
@@ -361,6 +362,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         n_cycles = 0,                  # number of optical cycles to pulse center
         focus_position = nothing,       # focal position along z-axis
         polarization = :linear,
+        initial_phase = 0.0,
         k_direction = [0, 0, 1]
     )
     kz_sign = _kz_sign(k_direction)
@@ -372,7 +374,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     end
 
     # Validate field-strength specification: exactly one of a0 / pulse_energy
-    a0_given = a0           !== nothing
+    a0_given = a0 !== nothing
     we_given = pulse_energy !== nothing
     if temporal_profile == :constant
         we_given && error("pulse_energy is not meaningful for temporal_profile = :constant (CW beams have no finite total energy). Use a0 instead.")
@@ -389,11 +391,11 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     if we_given && temporal_profile == :gaussian && temporal_width !== nothing
         c_val = getdefault(world.c)
         ω_estimate = wavelength !== nothing ? 2π * c_val / wavelength :
-                     frequency  !== nothing ? frequency : nothing
+            frequency !== nothing ? frequency : nothing
         if ω_estimate !== nothing
             ωτ = ω_estimate * temporal_width
             if ωτ < 5
-                @warn "pulse_energy formula assumes ωτ₀ ≫ 1; got ωτ₀ = $ωτ. Fast Fourier-suppression term e^(-(ωτ₀)²/2) ≈ $(exp(-ωτ^2/2)) is no longer negligible. For few-cycle pulses, derive a0 from pulse energy by integrating the carrier-explicit field directly."
+                @warn "pulse_energy formula assumes ωτ₀ ≫ 1; got ωτ₀ = $ωτ. Fast Fourier-suppression term e^(-(ωτ₀)²/2) ≈ $(exp(-ωτ^2 / 2)) is no longer negligible. For few-cycle pulses, derive a0 from pulse energy by integrating the carrier-explicit field directly."
             end
         end
     end
@@ -425,7 +427,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
 
     # Spatial-integral coefficient for LG_p^m: A(p, m) = (π/2) * (|m|!)²
     # Independent of p; see references/lg_pulse_energy_a0.tex for derivation.
-    A_pm = (π/2) * factorial(abs(azimuthal_index))^2
+    A_pm = (π / 2) * factorial(abs(azimuthal_index))^2
 
     params = @parameters begin
         λ, [guess = 1.0, description = "Wavelength"]
@@ -448,6 +450,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         n_cycles = n_cycles, [description = "Number of optical cycles to pulse center"]
         t₀, [guess = 1.0, description = "Pulse center time"]
         z₀ = 0, [description = "Focus position along z-axis"]
+        ϕ₀ = initial_phase, [description = "Initial carrier phase"]
     end
 
     if polarization == :linear
@@ -458,8 +461,6 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     else
         error("polarization $polarization not supported.")
     end
-
-    ϕ₀ = 0
 
     # Derived variables
     @variables begin
@@ -489,12 +490,17 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     # Base Gaussian field (before polarization and LG modification).
     # Replacing z → kz_sign·z in the wavefront curvature, Gouy phase, and
     # carrier phase flips the sign of k̂ from +ẑ to -ẑ.
+    #
+    # Note: ϕ₀ is intentionally absent here. It must enter the field exactly
+    # once, via lg_phase below. Adding it here too would double it,
+    # since every field component is the product E_g · lg_phase.
     E_g = E₀ * w₀ / wz *
         exp(-(r / wz)^2) *
-        exp(im * (-(r^2 * kz_sign * z) / (z_R * wz^2) + atan(kz_sign * z, z_R) - k * kz_sign * z + ϕ₀)) *
+        exp(im * (-(r^2 * kz_sign * z) / (z_R * wz^2) + atan(kz_sign * z, z_R) - k * kz_sign * z)) *
         exp(im * ω * t) * env
 
-    # Laguerre-Gauss phase factor (Gouy term acquires kz_sign for -ẑ propagation)
+    # Laguerre-Gauss phase factor (Gouy term acquires kz_sign for -ẑ propagation).
+
     lg_phase = exp(im * ((2p + mₐ) * atan(kz_sign * z, z_R) - m * θ + ϕ₀))
 
     # NEgexp term used in Ez and Bz
@@ -553,7 +559,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         # Magnetic field components: B = (1/c) k̂ × E
         # For k̂ = +ẑ: (B_x, B_y) = (-E_y, +E_x)/c; flipping k̂ → -ẑ flips both.
         B[1] ~ -kz_sign * E[2] / c
-        B[2] ~  kz_sign * E[1] / c
+        B[2] ~ kz_sign * E[1] / c
 
         # Bz component: longitudinal magnetic field along k̂; lab z-component
         # picks up an overall kz_sign analogously to Ez.
@@ -591,7 +597,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         # involves the sqrt and would stall Newton's abstol; users wanting
         # `pulse_energy →  a₀` should call `a0_from_pulse_energy` script-side
         # and pass `a0 = …` explicitly. See references/lg_pulse_energy_a0.tex.
-        W ~ (1/2) * ε₀ * c * A_pm * E₀^2 * w₀^2 * τ0 * sqrt(π/2)
+        W ~ (1 / 2) * ε₀ * c * A_pm * E₀^2 * w₀^2 * τ0 * sqrt(π / 2)
         t₀ ~ n_cycles * 2π / ω
     ]
     bindings = [
