@@ -78,3 +78,16 @@ for n in 1:floor(Int, last(xh))
     println()
 end
 println("saved → $(stem)_powspec_all.png")
+
+# ── derived-artifact metadata for the results dashboard (research.314159265.dev) ──
+include(joinpath(@__DIR__, "manifest.jl"))
+let dir = dirname(abspath(datafile))
+    pid = find_parent_run(dir, basename(datafile))
+    if pid === nothing
+        @warn "no parent run manifest found for $(basename(datafile)); skipping derived sidecar"
+    else
+        write_derived(dir; kind = "powspec", label = "power spectrum", run_id = pid,
+            plot = basename(stem * "_powspec_all.png"), source = basename(datafile))
+        println("derived sidecar → powspec (parent run $pid)")
+    end
+end
