@@ -37,9 +37,10 @@ const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "8000")) # observer-time sa
 const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))        # samples per optical period
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))   # RK4 substeps per sample
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))    # normalized vector potential a₀
+const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "true"))  # false = overlap uploads
 const RUN_TAG = @sprintf("a%g_phi%.4f", A0, ϕ₀)
 mkpath(OUTDIR)
-@info "Thomson run config" GPU_BACKEND ϕ₀ A0 OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
+@info "Thomson run config" GPU_BACKEND ϕ₀ A0 SYNC OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
 
 # Laser parameters
 ω = 0.057
@@ -171,7 +172,7 @@ screen = ObserverScreen(
 # @time A_cpu = accumulate_potential(trajs, screen, Tsit5());
 
 # GPU (fully-on-GPU GPUKernelRK4 path)
-@time A_rk4 = accumulate_potential(trajs, screen, GPUKernelRK4(), gpu_backend; n_substeps = NSUBSTEPS);
+@time A_rk4 = accumulate_potential(trajs, screen, GPUKernelRK4(), gpu_backend; n_substeps = NSUBSTEPS, sync_per_electron = SYNC);
 
 # @info norm(A_cpu - A_rk4) / norm(A_cpu)
 
