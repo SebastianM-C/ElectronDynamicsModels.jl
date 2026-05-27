@@ -122,10 +122,10 @@ function _gpu_unified_one_electron!(
             xr_dot_u = r_norm * u⁰ - (d¹ * u¹ + d² * u² + d³ * u³)
             coeff = K / xr_dot_u
 
-            @inbounds A_buf[k, 1, ix, iy] += coeff * u⁰
-            @inbounds A_buf[k, 2, ix, iy] += coeff * u¹
-            @inbounds A_buf[k, 3, ix, iy] += coeff * u²
-            @inbounds A_buf[k, 4, ix, iy] += coeff * u³
+            @inbounds A_buf[ix, iy, 1, k] += coeff * u⁰
+            @inbounds A_buf[ix, iy, 2, k] += coeff * u¹
+            @inbounds A_buf[ix, iy, 3, k] += coeff * u²
+            @inbounds A_buf[ix, iy, 4, k] += coeff * u³
 
             if k < k_end
                 sub_dt = δx⁰ / n_substeps
@@ -177,7 +177,11 @@ function accumulate_potential(
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
 
-    A_buf = Adapt.adapt(backend, zeros(N_samples, 4, Nx, Ny))
+    # Pixel-fastest layout (Nx, Ny leading) so warp-adjacent pixel-threads
+    # (consecutive ix) write consecutive addresses → coalesced accumulation.
+    # The kernel writes A_buf[ix, iy, μ, k]; we permute back to the public
+    # (N_samples, 4, Nx, Ny) layout (rfft over dim 1) on return.
+    A_buf = Adapt.adapt(backend, zeros(Nx, Ny, 4, N_samples))
 
     x⁰_first = first(screen.x⁰_samples)
     δx⁰ = step(screen.x⁰_samples)
@@ -213,7 +217,9 @@ function accumulate_potential(
         finalize(gpu_traj.itp.c2)
     end
 
-    return Array(A_buf)
+    # Permute the pixel-fastest device buffer back to the public
+    # (N_samples, 4, Nx, Ny) layout before copying to host.
+    return Array(permutedims(A_buf, (4, 3, 1, 2)))
 end
 
 # ── Batched GPU Tsit5 path: B electrons per kernel launch ──
