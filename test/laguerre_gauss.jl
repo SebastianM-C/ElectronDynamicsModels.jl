@@ -18,6 +18,9 @@ using CSV
     # Test multiple (p, m) combinations
     pm_combos = [(0, 0), (0, 1), (1, 0), (1, 1), (0, 2), (2, 1)]
 
+    # Sweep the initial carrier phase ϕ₀ (0.0 covers the no-phase regression)
+    phases = [0.0, 0.3, π / 2, 1.7, -0.9]
+
     test_points = [
         (r = 1.0e-6, θ = π / 4, z = 0.0),
         (r = 5.0e-6, θ = π / 2, z = 10.0e-6),
@@ -25,11 +28,11 @@ using CSV
         (r = 3.0e-6, θ = 0.0, z = 5.0e-6),
     ]
 
-    @testset "p=$p_val, m=$m_val" for (p_val, m_val) in pm_combos
+    @testset "p=$p_val, m=$m_val, ϕ₀=$ϕ₀" for (p_val, m_val) in pm_combos, ϕ₀ in phases
         # LaserTypes reference
         lt_laser = LaserTypes.LaguerreGaussLaser(
             :SI;
-            λ = λ_test, a₀ = a₀_test, w₀ = w₀_test, p = p_val, m = m_val
+            λ = λ_test, a₀ = a₀_test, ϕ₀ = ϕ₀, w₀ = w₀_test, p = p_val, m = m_val
         )
 
         # ElectronDynamicsModels
@@ -37,6 +40,7 @@ using CSV
         @named laser = LaguerreGaussLaser(
             wavelength = λ_test, a0 = a₀_test, beam_waist = w₀_test,
             radial_index = p_val, azimuthal_index = m_val,
+            initial_phase = ϕ₀,
             world = world, temporal_profile = :constant
         )
 
