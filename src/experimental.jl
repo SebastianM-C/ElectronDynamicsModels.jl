@@ -217,9 +217,12 @@ function accumulate_potential(
         finalize(gpu_traj.itp.c2)
     end
 
-    # Permute the pixel-fastest device buffer back to the public
-    # (N_samples, 4, Nx, Ny) layout before copying to host.
-    return Array(permutedims(A_buf, (4, 3, 1, 2)))
+    # Permute the pixel-fastest buffer back to the public (N_samples, 4, Nx, Ny)
+    # layout. Do it on the HOST: a full-res A_buf has > 2³¹ elements
+    # (400·400·4·8000 = 5.12e9) and GPU `permutedims` uses 32-bit linear
+    # indexing → illegal-address overflow. The device→host copy is 64-bit-safe,
+    # so copy first, then permute with CPU (Int64) indexing.
+    return permutedims(Array(A_buf), (4, 3, 1, 2))
 end
 
 # ── Batched GPU Tsit5 path: B electrons per kernel launch ──
