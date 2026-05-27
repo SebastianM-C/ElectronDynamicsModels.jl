@@ -29,16 +29,17 @@ end
 const c = 137.03599908330932
 
 # ── Run configuration (ENV-overridable; defaults reproduce the full production run) ──
-const ϕ₀        = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
-const OUTDIR    = get(ENV, "EDM_OUTDIR", ".")
-const NX        = parse(Int, get(ENV, "EDM_NX", "400"))        # screen pixels per side
-const NELEC     = parse(Int, get(ENV, "EDM_N", "10000"))       # ensemble size
-const NSAMPLES  = parse(Int, get(ENV, "EDM_NSAMPLES", "8000")) # observer-time samples
-const SPP       = parse(Int, get(ENV, "EDM_SPP", "16"))        # samples per optical period
+const ϕ₀ = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
+const OUTDIR = get(ENV, "EDM_OUTDIR", ".")
+const NX = parse(Int, get(ENV, "EDM_NX", "400"))        # screen pixels per side
+const NELEC = parse(Int, get(ENV, "EDM_N", "10000"))       # ensemble size
+const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "8000")) # observer-time samples
+const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))        # samples per optical period
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))   # RK4 substeps per sample
-const PHASE_TAG = @sprintf("phi%.4f", ϕ₀)
+const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))    # normalized vector potential a₀
+const RUN_TAG = @sprintf("a%g_phi%.4f", A0, ϕ₀)
 mkpath(OUTDIR)
-@info "Thomson run config" GPU_BACKEND ϕ₀ OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
+@info "Thomson run config" GPU_BACKEND ϕ₀ A0 OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
 
 # Laser parameters
 ω = 0.057
@@ -47,7 +48,15 @@ mkpath(OUTDIR)
 w₀ = 75λ
 Rmax = 3.25w₀
 
-a₀ = 0.1
+a₀ = A0
+
+# Laguerre-Gauss mode / pulse parameters (named so the run manifest records
+# exactly what was used, with no drift between the call and the manifest).
+p_radial = 2
+m_azimuthal = -2
+pol = :circular
+profile = :gaussian
+z_focus = 0.0
 
 @named world = Worldline(:τ, :atomic)
 
@@ -55,13 +64,13 @@ a₀ = 0.1
     wavelength = λ,
     a0 = a₀,
     beam_waist = w₀,
-    radial_index = 2,
-    azimuthal_index = -2,
+    radial_index = p_radial,
+    azimuthal_index = m_azimuthal,
     world,
-    temporal_profile = :gaussian,
+    temporal_profile = profile,
     temporal_width = τ,
-    focus_position = 0.0,
-    polarization = :circular,
+    focus_position = z_focus,
+    polarization = pol,
     initial_phase = ϕ₀
 )
 @named elec = ClassicalElectron(; laser)
@@ -170,7 +179,7 @@ A_s = A_rk4
 
 # Serialize the raw 4-potential so the offline scripts (plot_harmonic_ladder.jl,
 # plot_harmonics.jl, plot_power_spectrum.jl) can read this run directly.
-datafile = joinpath(OUTDIR, "A_rk4_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(PHASE_TAG).jls")
+datafile = joinpath(OUTDIR, "A_rk4_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(RUN_TAG).jls")
 serialize(datafile, A_s)
 println("serialized → $datafile")
 
@@ -199,25 +208,118 @@ end
 function plot_harmonic(k, n)
     idx = harmonic_bins[k]
     fig = Figure()
-    Label(fig[0, :], @sprintf("Thomson scattering — %dω₁ (%.3f× fundamental)",
-            n, freqs[idx] / (ω / 2π)), fontsize = 16, font = :bold)
+    Label(
+        fig[0, :], @sprintf(
+            "Thomson scattering — %dω₁ (%.3f× fundamental)",
+            n, freqs[idx] / (ω / 2π)
+        ), fontsize = 16, font = :bold
+    )
     for μ in 1:4
         field = real.(fields[k, μ, :, :])
         cr = maximum(abs, field)
         gl = fig[cld(μ, 2), (μ - 1) % 2 + 1] = GridLayout()
-        ax = Axis(gl[1, 1], width = 340, height = 340, xlabel = "x", ylabel = "y",
-            title = @sprintf("%s  (peak %.2e)", complabels[μ], cr))
-        hm = heatmap!(ax, collect(screen.x_grid), collect(screen.y_grid), field,
-            colorrange = (-cr, cr), colormap = :seismic)
+        ax = Axis(
+            gl[1, 1], width = 340, height = 340, xlabel = "x", ylabel = "y",
+            title = @sprintf("%s  (peak %.2e)", complabels[μ], cr)
+        )
+        hm = heatmap!(
+            ax, collect(screen.x_grid), collect(screen.y_grid), field,
+            colorrange = (-cr, cr), colormap = :seismic
+        )
         Colorbar(gl[1, 2], hm, width = 12, height = 340)
     end
     resize_to_layout!(fig)
-    out = joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, PHASE_TAG))
+    out = joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, RUN_TAG))
     save(out, fig)
     println("saved → $out")
     return fig
 end
 
+plotfiles = String[]
 for (k, n) in enumerate(harmonics)
     plot_harmonic(k, n)
+    push!(plotfiles, joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, RUN_TAG)))
 end
+
+# ── Reproducibility manifest ──
+# Drop a TOML next to the outputs capturing provenance (repo commit, script,
+# host, GPU) and the physical setup, so any result can be traced and rerun.
+using TOML
+using Dates
+
+const _edm_dir = pkgdir(ElectronDynamicsModels)
+_git(args...) = try
+    readchomp(Cmd(["git", "-C", string(_edm_dir), args...]))
+catch
+    "unknown"
+end
+repo_status = _git("status", "--porcelain")
+
+provenance = Dict{String, Any}(
+    "repo_commit" => _git("rev-parse", "HEAD"),
+    "repo_dirty" => !(repo_status == "" || repo_status == "unknown"),
+    "edm_pkgdir" => string(_edm_dir),
+    "script" => abspath(PROGRAM_FILE),
+    "host" => gethostname(),
+    "slurm_job_id" => get(ENV, "SLURM_JOB_ID", ""),
+    "gpu_backend" => GPU_BACKEND,
+    "julia_version" => string(VERSION),
+    "timestamp" => string(now()),
+)
+if GPU_BACKEND == "cuda"
+    provenance["gpu_device"] = string(CUDA.name(CUDA.device()))
+end
+
+config = Dict{String, Any}(
+    "initial_phase" => ϕ₀,
+    "a0" => A0,
+    "Nx" => Nx,
+    "Ny" => Ny,
+    "N" => N,
+    "N_samples" => N_samples,
+    "samples_per_period" => samples_per_period,
+    "n_substeps" => NSUBSTEPS,
+)
+
+outputs = Dict{String, Any}(
+    "datafile" => basename(datafile),
+    "plots" => basename.(plotfiles),
+)
+
+# Laser parameters read back from the compiled system (post-initialization
+# values), plus the simulation setup, for full reproducibility.
+laser_params = Dict{String, Any}(
+    "wavelength" => prob.ps[sys.laser.λ],
+    "a0" => prob.ps[sys.laser.a₀],
+    "w0" => prob.ps[sys.laser.w₀],
+    "p" => prob.ps[sys.laser.p],
+    "m" => prob.ps[sys.laser.m],
+    "pol" => string(pol),
+    "profile" => string(profile),
+    "temporal_width" => prob.ps[sys.laser.τ0],
+    "focus_position" => prob.ps[sys.laser.z₀],
+    "phi0" => prob.ps[sys.laser.ϕ₀],
+)
+setup = Dict{String, Any}(
+    "τi" => τi,
+    "τf" => τf,
+    "Rmax" => Rmax,
+    "N" => N,
+    "Z" => Z,
+    "samples_per_period" => samples_per_period,
+    "N_samples" => N_samples,
+    "Nx" => Nx,
+    "Ny" => Ny,
+)
+
+manifest = Dict{String, Any}(
+    "provenance" => provenance,
+    "config" => config,
+    "laser" => laser_params,
+    "setup" => setup,
+    "outputs" => outputs
+)
+
+manifestfile = joinpath(OUTDIR, "run_$(RUN_TAG).toml")
+open(io -> TOML.print(io, manifest; sorted = true), manifestfile, "w")
+println("manifest → $manifestfile")
