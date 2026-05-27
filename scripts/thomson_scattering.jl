@@ -179,8 +179,8 @@ screen = ObserverScreen(
 
 A_s = A_rk4
 
-# Serialize the raw 4-potential so the offline scripts (plot_harmonic_ladder.jl,
-# plot_harmonics.jl, plot_power_spectrum.jl) can read this run directly.
+# Serialize the raw 4-potential so the offline scripts (plot_harmonics.jl,
+# plot_power_spectrum.jl) can read this run directly.
 datafile = joinpath(OUTDIR, "A_rk4_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(RUN_TAG).jls")
 serialize(datafile, A_s)
 println("serialized → $datafile")
@@ -188,7 +188,7 @@ println("serialized → $datafile")
 # ── Harmonic maps ──
 # Extract the first two harmonics of ω₁ for all four 4-potential components.
 # rfft one component at a time (the full complex spectrum is 4× the raw array),
-# mirroring plot_harmonic_ladder.jl's memory-conscious slicing.
+# mirroring plot_harmonics.jl's memory-conscious slicing.
 const complabels = ("A⁰", "Aˣ", "Aʸ", "Aᶻ")
 const harmonics = (1, 2)
 
