@@ -11,6 +11,7 @@ using CairoMakie
 using AcceleratedKernels
 using Serialization
 using Printf
+using UUIDs
 
 # GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
 # The `using` for the unused backend never executes, so each platform only needs its own.
@@ -38,9 +39,9 @@ const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))        # samples per optical p
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))   # RK4 substeps per sample
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))    # normalized vector potential a₀
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "true"))  # false = overlap uploads
-const RUN_TAG = @sprintf("a%g_phi%.4f", A0, ϕ₀)
+const RUN_TAG = string(uuid4())   # unique per run; params live in the TOML manifest
 mkpath(OUTDIR)
-@info "Thomson run config" GPU_BACKEND ϕ₀ A0 SYNC OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
+@info "Thomson run config" RUN_TAG GPU_BACKEND ϕ₀ A0 SYNC OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
 
 # Laser parameters
 ω = 0.057
@@ -257,6 +258,7 @@ end
 repo_status = _git("status", "--porcelain")
 
 provenance = Dict{String, Any}(
+    "run_id" => RUN_TAG,
     "repo_commit" => _git("rev-parse", "HEAD"),
     "repo_dirty" => !(repo_status == "" || repo_status == "unknown"),
     "edm_pkgdir" => string(_edm_dir),
