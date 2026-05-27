@@ -1,4 +1,5 @@
 using ..ElectronDynamicsModels: TrajectoryInterpolant, ObserverScreen, to_gpu
+import ..ElectronDynamicsModels: accumulate_potential
 import Adapt
 import AcceleratedKernels as AK
 import KernelAbstractions
@@ -85,17 +86,19 @@ function _gpu_unified_one_electron!(
             return
         end
 
-        # TODO(human): bridge τ from τi (the τ at observer time x⁰_i_px) up to
-        # observer time x⁰_samples[k_start], and inside the slot loop advance τ
-        # by δx⁰ between successive slots — using `n_substeps` RK4 sub-steps
-        # rather than a single RK4 step, so that the inner step size dt =
-        # δx⁰/n_substeps brings ω·dt down into RK4's accurate range.
-        # The single-step version below works for ω·δx⁰ ≪ 1 but fails badly
-        # for the relativistic Thomson script (ω·δx⁰ ≈ π/2).
+        # Bridge τ from τi (the τ at observer time x⁰_i_px) up to observer time
+        # x⁰_samples[k_start], then advance τ by δx⁰ between successive slots.
+        # Each advance is taken as `n_substeps` RK4 sub-steps of dt =
+        # δx⁰/n_substeps, bringing ω·dt into RK4's accurate range (a single
+        # step works only for ω·δx⁰ ≪ 1, which fails at ω·δx⁰ ≈ π/2).
         τ = τi
         bridge_dt = x⁰_first + (k_start - 1) * δx⁰ - x⁰_i_px
         if bridge_dt > 0
-            τ = _rk4_step(τ, bridge_dt, gpu_traj, r_obs)
+            sub_dt = bridge_dt / n_substeps
+            for _ in 1:n_substeps
+                τ = _rk4_step(τ, sub_dt, gpu_traj, r_obs)
+            end
+            τ = clamp(τ, τi, τf)
         end
 
         # March through saveat slots, accumulating at each
@@ -125,8 +128,11 @@ function _gpu_unified_one_electron!(
             @inbounds A_buf[k, 4, ix, iy] += coeff * u³
 
             if k < k_end
-                τ_next = _rk4_step(τ, δx⁰, gpu_traj, r_obs)
-                τ = clamp(τ_next, τi, τf)
+                sub_dt = δx⁰ / n_substeps
+                for _ in 1:n_substeps
+                    τ = _rk4_step(τ, sub_dt, gpu_traj, r_obs)
+                end
+                τ = clamp(τ, τi, τf)
             end
         end
     end
@@ -151,6 +157,14 @@ successive saveat slots (and within the bridge step).  Required when
 script (a₀ = 10, δt = T/4) `ω · δx⁰ ≈ π/2` and `n_substeps = 1` causes
 ~7%/step amplitude damping; `n_substeps = 8` brings the inner step to
 ω·dt ≈ 0.2 and recovers parity with the adaptive-Tsit5 reference.
+
+`sync_per_electron` (default `true`) inserts a `KernelAbstractions.synchronize`
+before freeing each trajectory's device buffers — safe but serializes the
+electron loop.  Setting it `false` drops the per-electron sync and relies on
+stream-ordered async free (the kernel that still reads the buffers is queued
+ahead of the free on the same stream), letting electron N+1's upload overlap
+kernel N.  Correctness of the async free depends on the backend honoring
+stream-ordered `unsafe_free!`; verify against the synced path before trusting.
 """
 function accumulate_potential(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -158,6 +172,7 @@ function accumulate_potential(
         ::GPUKernelRK4,
         backend::Backend;
         n_substeps::Int = 1,
+        sync_per_electron::Bool = true,
     )
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
@@ -185,13 +200,12 @@ function accumulate_potential(
             x⁰_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_substeps,
         )
-        # Wait for the kernel to finish before releasing the trajectory's
-        # device buffers — `finalize` invokes the device-array finalizer
-        # (which calls `unsafe_free!` on CUDA / `unsafe_free!` on AMDGPU),
-        # and freeing while the kernel still reads the buffer would
-        # corrupt the read.  Per-iteration sync stalls pipelining, but
-        # at ~600 ms per electron the sync cost is negligible.
-        KernelAbstractions.synchronize(backend)
+        # Release the trajectory's device buffers.  With `sync_per_electron`
+        # we wait for the kernel first (safe but serializing); otherwise we
+        # rely on stream-ordered async free — `finalize` queues `unsafe_free!`
+        # behind kernel N on the same stream, so the read completes before the
+        # memory is reused, and electron N+1's upload overlaps kernel N.
+        sync_per_electron && KernelAbstractions.synchronize(backend)
         finalize(gpu_traj.itp.t)
         finalize(gpu_traj.itp.h)
         finalize(gpu_traj.itp.z)
@@ -428,7 +442,7 @@ function _gpu_batched_tsit5_one_batch!(
         A_buf, splines::BatchedGPUSplines,
         x_grid, y_grid, z_screen,
         x⁰_first, δx⁰, N_samples, Nx, Ny, B,
-        pixel_iter, backend,
+        pixel_iter, backend, n_substeps,
     )
     AK.foreachindex(pixel_iter, backend) do i_lin
         ix = ((i_lin - 1) % Nx) + 1
@@ -462,15 +476,18 @@ function _gpu_batched_tsit5_one_batch!(
                 continue
             end
 
-            # Bridge x⁰_i_px → x⁰_samples[k_start] with a single Tsit5 step.
+            # Bridge x⁰_i_px → x⁰_samples[k_start] with n_substeps Tsit5 steps
+            # (FSAL-chained across the equal-dt substeps).
             τ = τi_e
             bridge_dt = x⁰_first + (k_start - 1) * δx⁰ - x⁰_i_px
             if bridge_dt > 0
-                k1_bridge = _rt_rhs_batched(τ, splines, e, r_obs)
-                (τ_after_bridge, _k7_bridge) = _tsit5_step_fsal(
-                    τ, bridge_dt, k1_bridge, splines, e, r_obs
-                )
-                τ = clamp(τ_after_bridge, τi_e, τf_e)
+                sub_dt = bridge_dt / n_substeps
+                k1_b = _rt_rhs_batched(τ, splines, e, r_obs)
+                for _ in 1:n_substeps
+                    (τ, k7_b) = _tsit5_step_fsal(τ, sub_dt, k1_b, splines, e, r_obs)
+                    k1_b = k7_b
+                end
+                τ = clamp(τ, τi_e, τf_e)
             end
 
             # Seed FSAL k1 for the slot loop.  We reseed (rather than reusing
@@ -503,11 +520,12 @@ function _gpu_batched_tsit5_one_batch!(
                 @inbounds A_buf[k, 4, ix, iy] += coeff * u³
 
                 if k < k_end
-                    (τ_next, k7) = _tsit5_step_fsal(
-                        τ, δx⁰, k1_carry, splines, e, r_obs
-                    )
-                    τ = clamp(τ_next, τi_e, τf_e)
-                    k1_carry = k7
+                    sub_dt = δx⁰ / n_substeps
+                    for _ in 1:n_substeps
+                        (τ, k7) = _tsit5_step_fsal(τ, sub_dt, k1_carry, splines, e, r_obs)
+                        k1_carry = k7
+                    end
+                    τ = clamp(τ, τi_e, τf_e)
                 end
             end
         end
@@ -516,7 +534,7 @@ function _gpu_batched_tsit5_one_batch!(
 end
 
 """
-    accumulate_potential(trajs, screen, ::GPUKernelTsit5, backend; batch_size = 8)
+    accumulate_potential(trajs, screen, ::GPUKernelTsit5, backend; batch_size = 8, n_substeps = 1)
 
 Batched GPU path: process electrons in chunks of `batch_size`, with each
 kernel launch handling all B electrons in the batch.  Compared to the
@@ -536,6 +554,10 @@ scales to arbitrary `N_macro`.
   to saturate GPU occupancy (≈ Nx · Ny · B ≳ 4× SM count × 32 cores) but
   small enough that `B × spline_size` fits comfortably in VRAM.  8 is a
   reasonable starting point on a 16 GB card.
+- `n_substeps`: number of fixed-step Tsit5 sub-steps taken between successive
+  saveat slots (and within the bridge step).  Required when `ω · δx⁰` lies
+  outside Tsit5's accurate range; FSAL is chained across the equal-`dt`
+  sub-steps so each adds only ~6 RHS evals.
 """
 function accumulate_potential(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -543,6 +565,7 @@ function accumulate_potential(
         ::GPUKernelTsit5,
         backend::Backend;
         batch_size::Int = 8,
+        n_substeps::Int = 1,
     )
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
@@ -565,7 +588,7 @@ function accumulate_potential(
             A_buf, splines,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny, B,
-            pixel_iter, backend,
+            pixel_iter, backend, n_substeps,
         )
         KernelAbstractions.synchronize(backend)
 
