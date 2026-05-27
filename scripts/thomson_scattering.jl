@@ -9,13 +9,36 @@ using LinearAlgebra
 using FFTW
 using CairoMakie
 using AcceleratedKernels
-# using CUDA
-using AMDGPU
 using Serialization
 using Printf
 
+# GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
+# The `using` for the unused backend never executes, so each platform only needs its own.
+const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
+if GPU_BACKEND == "cuda"
+    using CUDA
+    const gpu_backend = CUDA.CUDABackend()
+elseif GPU_BACKEND == "rocm"
+    using AMDGPU
+    const gpu_backend = AMDGPU.ROCBackend()
+else
+    error("EDM_GPU_BACKEND must be \"cuda\" or \"rocm\", got $(repr(GPU_BACKEND))")
+end
+
 # Atomic units
 const c = 137.03599908330932
+
+# ── Run configuration (ENV-overridable; defaults reproduce the full production run) ──
+const ϕ₀        = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
+const OUTDIR    = get(ENV, "EDM_OUTDIR", ".")
+const NX        = parse(Int, get(ENV, "EDM_NX", "400"))        # screen pixels per side
+const NELEC     = parse(Int, get(ENV, "EDM_N", "10000"))       # ensemble size
+const NSAMPLES  = parse(Int, get(ENV, "EDM_NSAMPLES", "8000")) # observer-time samples
+const SPP       = parse(Int, get(ENV, "EDM_SPP", "16"))        # samples per optical period
+const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))   # RK4 substeps per sample
+const PHASE_TAG = @sprintf("phi%.4f", ϕ₀)
+mkpath(OUTDIR)
+@info "Thomson run config" GPU_BACKEND ϕ₀ OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
 
 # Laser parameters
 ω = 0.057
@@ -38,7 +61,8 @@ a₀ = 0.1
     temporal_profile = :gaussian,
     temporal_width = τ,
     focus_position = 0.0,
-    polarization = :circular
+    polarization = :circular,
+    initial_phase = ϕ₀
 )
 @named elec = ClassicalElectron(; laser)
 sys = mtkcompile(elec)
@@ -86,7 +110,7 @@ function sunflower(n, α)
 end
 
 # Ensemble solve
-N = 10_000
+N = NELEC
 R₀ = Rmax * sunflower(N, 2)
 xμ = [[τi * c, r..., 0.0] for r in R₀]
 
@@ -118,13 +142,13 @@ trajs = trajectory_interpolants(solution)
 
 # Screen parameters
 const Z = 2.0e5λ
-const samples_per_period = 16          # Nyquist = 8× fundamental
+const samples_per_period = SPP         # Nyquist = 8× fundamental at SPP=16
 const δt = 2π / ω / samples_per_period
-const N_samples = 8000                 # ≈500λ window
+const N_samples = NSAMPLES             # ≈500λ window at the default 8000
 const x⁰_start = c * τi + hypot(Z, 25w₀ + Rmax)
 
-Nx = 400
-Ny = 400
+Nx = NX
+Ny = NX
 
 x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
 
@@ -137,8 +161,8 @@ screen = ObserverScreen(
 
 # @time A_cpu = accumulate_potential(trajs, screen, Tsit5());
 
-# GPU (fully-on-GPU GPUKernelRK4 path, n_substeps=1)
-@time A_rk4 = accumulate_potential(trajs, screen, GPUKernelRK4(), AMDGPU.ROCBackend(); n_substeps = 1);
+# GPU (fully-on-GPU GPUKernelRK4 path)
+@time A_rk4 = accumulate_potential(trajs, screen, GPUKernelRK4(), gpu_backend; n_substeps = NSUBSTEPS);
 
 # @info norm(A_cpu - A_rk4) / norm(A_cpu)
 
@@ -146,7 +170,7 @@ A_s = A_rk4
 
 # Serialize the raw 4-potential so the offline scripts (plot_harmonic_ladder.jl,
 # plot_harmonics.jl, plot_power_spectrum.jl) can read this run directly.
-datafile = "A_rk4_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period).jls"
+datafile = joinpath(OUTDIR, "A_rk4_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(PHASE_TAG).jls")
 serialize(datafile, A_s)
 println("serialized → $datafile")
 
@@ -188,7 +212,7 @@ function plot_harmonic(k, n)
         Colorbar(gl[1, 2], hm, width = 12, height = 340)
     end
     resize_to_layout!(fig)
-    out = @sprintf("thomson_scattering_h%d.png", n)
+    out = joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, PHASE_TAG))
     save(out, fig)
     println("saved → $out")
     return fig
