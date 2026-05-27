@@ -22,6 +22,9 @@ const stem = replace(datafile, r"\.jls$" => "")
 const cachefile = stem * "_powspec_all.jls"
 const labels = ["A⁰ (ct)", "Aˣ", "Aʸ", "Aᶻ"]
 const colors = [:black, :dodgerblue, :seagreen, :crimson]
+# Aˣ and Aʸ are near-degenerate and overlap; dash the one drawn on top (Aʸ) so the
+# one underneath (Aˣ) stays visible, and dot Aᶻ to set it apart too.
+const linestyles = [:solid, :solid, :dash, :dot]
 
 if isfile(cachefile)
     cache = deserialize(cachefile)
@@ -56,10 +59,11 @@ yfloor = maximum(cache.power_spec) * 1e-30
 fig = Figure(size = (1150, 560))
 ax = Axis(fig[1, 1],
     xlabel = "frequency / ω₁", ylabel = "Σ_pixels |A_ω,μ|²", yscale = log10,
-    title = "4-potential power spectra  —  $datafile  ($(cache.samples_per_period) samples/period)")
+    title = "4-potential power spectra  —  $(basename(datafile))  ($(cache.samples_per_period) samples/period)")
 vlines!(ax, 1:floor(Int, last(xh)), color = (:gray, 0.35), linestyle = :dash)
 for μ in 1:4
-    lines!(ax, xh, max.(cache.power_spec[:, μ], yfloor), color = colors[μ], label = labels[μ])
+    lines!(ax, xh, max.(cache.power_spec[:, μ], yfloor),
+        color = colors[μ], linestyle = linestyles[μ], linewidth = 1.8, label = labels[μ])
 end
 xlims!(ax, 0, last(xh))
 axislegend(ax, position = :rt)
