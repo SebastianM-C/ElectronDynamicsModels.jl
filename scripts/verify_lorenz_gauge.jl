@@ -445,3 +445,35 @@ function main()
 end
 
 main()
+
+# ── derived-artifact metadata for the results dashboard (research.314159265.dev) ──
+# Standalone analysis node: the N=2000 screens are recomputed (not read from a run), so the
+# parent run it verifies is passed via EDM_DERIVED_FROM to draw the lineage link. The run_id
+# is deterministic in the verification's params, so re-runs overwrite rather than duplicate.
+using UUIDs
+include(joinpath(@__DIR__, "manifest.jl"))
+let dir = pwd(),
+    V = string(uuid5(UUID("0000000e-d42a-4000-8000-000000000000"), "lorenz_verify_$(N)_$(N_samples)_$(CX)-$(CY)-$(NB)")),
+    parent = get(ENV, "EDM_DERIVED_FROM", "")
+
+    write_run_manifest(dir; run_id = V, script = basename(PROGRAM_FILE),
+        derived_from = isempty(parent) ? nothing : parent,
+        config = Dict("a0" => a₀, "initial_phase" => 0.0, "N" => N, "N_samples" => N_samples,
+            "samples_per_period" => samples_per_period, "n_substeps" => n_substeps),
+        laser = Dict("wavelength" => λ, "a0" => a₀, "w0" => w₀, "p" => 2, "m" => -2,
+            "pol" => "circular", "profile" => "gaussian", "temporal_width" => τ,
+            "focus_position" => 0.0, "phi0" => 0.0),
+        setup = Dict("Z" => Z, "box" => "$(CX)-$(CY)-$(NB)"))
+
+    emit(kind, label, plot; setup = Dict()) = isfile(joinpath(dir, plot)) &&
+        write_derived(dir; kind, label, run_id = V, plot, source = screens_cache, setup)
+    for n in map_harmonics
+        emit("terms", "gauge terms", "lorenz_gauge_terms_n$(n).png"; setup = Dict("harmonic" => n))
+    end
+    emit("summary", "gauge term summary", "lorenz_gauge_summary.png")
+    emit("relmap", "residual map", "lorenz_gauge_relmap.png")
+    emit("balance", "Lorenz balance", "lorenz_balance.png")
+    emit("time_map", "time map", "lorenz_time_map.png")
+    emit("time_trace", "time trace", "lorenz_time_trace.png")
+    println("dashboard metadata → verification node $V", isempty(parent) ? "" : " (derived_from $parent)")
+end
