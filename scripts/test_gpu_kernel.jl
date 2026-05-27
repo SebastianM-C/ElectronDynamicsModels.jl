@@ -70,7 +70,8 @@ prob = ODEProblem{false, SciMLBase.FullSpecialize}(
 )
 set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
 
-function prob_func(prob, i, repeat)
+function prob_func(prob, ctx)
+    i = ctx.sim_id
     u0_new, p = set_x(prob, SVector{8}(xμ[i]..., u_init...))
     return remake(prob; u0 = u0_new, p)
 end
