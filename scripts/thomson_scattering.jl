@@ -167,13 +167,17 @@ screen = ObserverScreen(
     LinRange(-25w₀, 25w₀, Nx),
     LinRange(-25w₀, 25w₀, Ny),
     Z,
-    x⁰_samples
+    x⁰_samples;
+    c,
 )
 
 # @time A_cpu = accumulate_potential(trajs, screen, Tsit5());
 
 # GPU (fully-on-GPU GPUKernelRK4 path)
-@time A_rk4 = accumulate_potential(trajs, screen, GPUKernelRK4(), gpu_backend; n_substeps = NSUBSTEPS, sync_per_electron = SYNC);
+@time A_rk4 = accumulate_potential(
+    trajs, screen, GPUKernelRK4(), gpu_backend;
+    n_substeps = NSUBSTEPS, sync_per_electron = SYNC
+);
 
 # @info norm(A_cpu - A_rk4) / norm(A_cpu)
 

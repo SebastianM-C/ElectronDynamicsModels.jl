@@ -100,7 +100,7 @@ x⁰_lo = L_screen - margin
 x⁰_hi = L_screen + margin
 N_samples = 500
 x⁰_samples = LinRange(x⁰_lo, x⁰_hi, N_samples)
-screen = ObserverScreen(x_grid, y_grid, L_screen, x⁰_samples)
+screen = ObserverScreen(x_grid, y_grid, L_screen, x⁰_samples; c)
 
 println("\nProblem size: Nx=$Nx, Ny=$Ny, N_macro=$N_macro, N_samples=$N_samples")
 

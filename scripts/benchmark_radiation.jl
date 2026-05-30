@@ -62,7 +62,8 @@ for Npx in [10, 50, 100, 200, 300]
         LinRange(-25w₀, 25w₀, Npx),
         LinRange(-25w₀, 25w₀, Npx),
         Z,
-        x⁰_samples
+        x⁰_samples;
+        c,
     )
 
     # Warmup
@@ -92,7 +93,8 @@ sc = ObserverScreen(
     LinRange(-25w₀, 25w₀, 50),
     LinRange(-25w₀, 25w₀, 50),
     Z,
-    x⁰_samples
+    x⁰_samples;
+    c,
 )
 
 # Create multiple copies of the trajectory to simulate many electrons

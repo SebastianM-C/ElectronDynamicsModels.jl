@@ -63,7 +63,8 @@ using FFTW
         LinRange(-L, L, Nx),
         LinRange(-L, L, Ny),
         Z,
-        x⁰_samples
+        x⁰_samples;
+        c,
     )
 
     A_s = accumulate_potential(trajs, screen, Tsit5())

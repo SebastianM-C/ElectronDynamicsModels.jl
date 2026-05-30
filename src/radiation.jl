@@ -35,18 +35,30 @@ function trajectory_interpolants(ensemble_sol::EnsembleSolution)
 end
 
 # Observer geometry + temporal sampling
-struct ObserverScreen{G, T, R}
+struct ObserverScreen{G, T, R, C}
     x_grid::G       # e.g., LinRange for x
     y_grid::G       # e.g., LinRange for y
     z::T            # screen distance
     x⁰_samples::R   # uniform observer-time sampling grid
+    c::C            # speed of light in the working units (x⁰ = c·t)
 end
+
+"""
+    ObserverScreen(x_grid, y_grid, z, x⁰_samples; c)
+
+Keyword form requiring the speed of light `c` in the working units (e.g.
+`getdefault(world.c)`).  `c` has no default on purpose: the `x⁰ = c·t` axis is
+meaningless without the unit system, and a wrong default would silently corrupt
+`δt`, FFT frequencies, and `recommended_n_substeps`.
+"""
+ObserverScreen(x_grid, y_grid, z, x⁰_samples; c) =
+    ObserverScreen(x_grid, y_grid, z, x⁰_samples, c)
 
 function Base.show(io::IO, s::ObserverScreen)
     Nx, Ny = length(s.x_grid), length(s.y_grid)
     N = length(s.x⁰_samples)
     δx⁰ = N > 1 ? step(s.x⁰_samples) : 0.0
-    return print(io, "ObserverScreen($(Nx)×$(Ny) pixels, z=$(s.z), $(N) time samples, Δx⁰=$(δx⁰))")
+    return print(io, "ObserverScreen($(Nx)×$(Ny) pixels, z=$(s.z), $(N) time samples, Δx⁰=$(δx⁰), c=$(s.c))")
 end
 
 function Base.show(io::IO, ::MIME"text/plain", s::ObserverScreen)
@@ -60,7 +72,9 @@ function Base.show(io::IO, ::MIME"text/plain", s::ObserverScreen)
     println(io, "  z:            $(s.z)")
     println(io, "  time samples: $(N)")
     println(io, "  x⁰ range:     [$(first(s.x⁰_samples)), $(last(s.x⁰_samples))]")
-    return print(io, "  Δx⁰:          $(δx⁰)")
+    println(io, "  Δx⁰:          $(δx⁰)")
+    println(io, "  c:            $(s.c)")
+    return print(io, "  Δt:           $(δx⁰ / s.c)")
 end
 
 # dτᵣ/dt = 1/(u⁰(τᵣ) - u⃗(τᵣ)·n̂(τᵣ, r_obs))
@@ -210,8 +224,8 @@ function _accumulate_pixel!(A, traj, screen, τ_samples, t_samples, ix, iy)
     # τ_samples with k=1,2,… would accumulate radiation into the wrong
     # observer-time slots. Compute the saveat index from t_samples explicitly.
     x⁰_first = first(screen.x⁰_samples)
-    N_x⁰     = length(screen.x⁰_samples)
-    δx⁰      = (last(screen.x⁰_samples) - x⁰_first) / (N_x⁰ - 1)
+    N_x⁰ = length(screen.x⁰_samples)
+    δx⁰ = (last(screen.x⁰_samples) - x⁰_first) / (N_x⁰ - 1)
     for (k, τ) in enumerate(τ_samples)
         idx = round(Int, (t_samples[k] - x⁰_first) / δx⁰) + 1
         1 ≤ idx ≤ N_x⁰ || continue
