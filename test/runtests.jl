@@ -20,6 +20,12 @@ using JET
     @testset "Radiation Emission" begin
         include("thomson_scattering.jl")
     end
+    @testset "GPU Interpolation" begin
+        include("gpu_interp.jl")
+    end
+    @testset "GPU Radiation Accumulation" begin
+        include("gpu_radiation.jl")
+    end
     @testset "Radiation Reaction" begin
         include("radiation.jl")
     end
