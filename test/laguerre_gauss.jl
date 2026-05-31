@@ -18,6 +18,9 @@ using CSV
     # Test multiple (p, m) combinations
     pm_combos = [(0, 0), (0, 1), (1, 0), (1, 1), (0, 2), (2, 1)]
 
+    # Sweep the initial carrier phase ϕ₀ (0.0 covers the no-phase regression)
+    phases = [0.0, 0.3, π / 2, 1.7, -0.9]
+
     test_points = [
         (r = 1.0e-6, θ = π / 4, z = 0.0),
         (r = 5.0e-6, θ = π / 2, z = 10.0e-6),
@@ -25,19 +28,20 @@ using CSV
         (r = 3.0e-6, θ = 0.0, z = 5.0e-6),
     ]
 
-    @testset "p=$p_val, m=$m_val" for (p_val, m_val) in pm_combos
+    @testset "p=$p_val, m=$m_val, ϕ₀=$ϕ₀" for (p_val, m_val) in pm_combos, ϕ₀ in phases
         # LaserTypes reference
         lt_laser = LaserTypes.LaguerreGaussLaser(
             :SI;
-            λ = λ_test, a₀ = a₀_test, w₀ = w₀_test, p = p_val, m = m_val
+            λ = λ_test, a₀ = a₀_test, ϕ₀ = ϕ₀, w₀ = w₀_test, p = p_val, m = m_val
         )
 
         # ElectronDynamicsModels
-        @named ref_frame = ProperFrame(:SI)
+        @named world = Worldline(:τ,:SI)
         @named laser = LaguerreGaussLaser(
             wavelength = λ_test, a0 = a₀_test, beam_waist = w₀_test,
             radial_index = p_val, azimuthal_index = m_val,
-            ref_frame = ref_frame, temporal_profile = :constant
+            initial_phase = ϕ₀,
+            world = world, temporal_profile = :constant
         )
 
         fe = FieldEvaluator(laser)
@@ -71,11 +75,11 @@ end
     m_e = 1.0
     q_e = -1.0
 
-    @named ref_frame = ProperFrame(:atomic)
+    @named world = Worldline(:τ,:atomic)
     @named laser = LaguerreGaussLaser(
         wavelength = 1.0, a0 = 1.0, beam_waist = nothing,
         radial_index = 1, azimuthal_index = 1,
-        ref_frame = ref_frame, temporal_profile = :constant
+        world = world, temporal_profile = :constant
     )
 
     fe = FieldEvaluator(laser)
@@ -116,11 +120,11 @@ end
     w₀_val = 75 * λ_val
     a₀_val = 2.0
 
-    @named ref_frame = ProperFrame(:atomic)
+    @named world = Worldline(:τ,:atomic)
     @named lg_laser = LaguerreGaussLaser(
         wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
         radial_index = 0, azimuthal_index = 0,
-        ref_frame = ref_frame, temporal_profile = :constant
+        world = world, temporal_profile = :constant
     )
 
     fe_lg = FieldEvaluator(lg_laser)
@@ -162,11 +166,11 @@ end
     w₀_val = 75 * λ_val
     a₀_val = 2.0
 
-    @named ref_frame = ProperFrame(:atomic)
+    @named world = Worldline(:τ,:atomic)
     @named laser = LaguerreGaussLaser(
         wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
         radial_index = 1, azimuthal_index = 1,
-        ref_frame = ref_frame, temporal_profile = :constant
+        world = world, temporal_profile = :constant
     )
 
     fe = FieldEvaluator(laser)
@@ -209,11 +213,11 @@ end
         (i_val === nothing || p_val === nothing || m_val === nothing) && continue
         i_val != i_filter && continue
 
-        @named ref_frame = ProperFrame(:atomic)
+        @named world = Worldline(:τ,:atomic)
         @named laser = LaguerreGaussLaser(
             wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val,
             radial_index = p_val, azimuthal_index = m_val,
-            ref_frame = ref_frame, temporal_profile = :constant
+            world = world, temporal_profile = :constant
         )
 
         fe = FieldEvaluator(laser)
@@ -262,14 +266,14 @@ end
     w₀ = 10.0e-6
     c = 299792458.0
 
-    @named ref_frame = ProperFrame(:SI)
+    @named world = Worldline(:τ,:SI)
     @named laser = LaguerreGaussLaser(
         wavelength = λ,
         a0 = a₀,
         beam_waist = w₀,
         radial_index = 0,
         azimuthal_index = 1,
-        ref_frame = ref_frame
+        world = world
     )
     @named elec = ClassicalElectron(; laser)
     sys = mtkcompile(elec)
@@ -291,4 +295,85 @@ end
     @test isapprox(prob.ps[sys.laser.z_R], z_R_expected, rtol = 1.0e-10)
     @test isapprox(prob.ps[sys.laser.E₀], E₀_expected, rtol = 1.0e-10)
     @test isapprox(prob.ps[sys.laser.Nₚₘ], 1.0, rtol = 1.0e-10)  # For p=0, m=1
+end
+
+@testset "k_direction (±ẑ propagation)" begin
+    # Build a fresh world for validation tests (each LaguerreGaussLaser call
+    # would otherwise share/conflict on the symbolic state).
+    @named world_v = Worldline(:τ, :atomic)
+
+    # Validation: oblique direction errors
+    @test_throws ErrorException LaguerreGaussLaser(;
+        wavelength = 1.0, a0 = 1.0, world = world_v,
+        k_direction = [1, 0, 0], name = :bad_oblique
+    )
+    # Validation: non-unit vector errors
+    @test_throws ErrorException LaguerreGaussLaser(;
+        wavelength = 1.0, a0 = 1.0, world = world_v,
+        k_direction = [0, 0, 2], name = :bad_norm
+    )
+    # Validation: wrong length errors
+    @test_throws ErrorException LaguerreGaussLaser(;
+        wavelength = 1.0, a0 = 1.0, world = world_v,
+        k_direction = [0, 0], name = :bad_len
+    )
+
+    # Default ([0,0,1]) reproduces explicit +ẑ exactly (regression check)
+    @named world_default = Worldline(:τ, :atomic)
+    @named laser_default = LaguerreGaussLaser(;
+        wavelength = 1.0, a0 = 1.0, world = world_default,
+        radial_index = 0, azimuthal_index = 1,
+        temporal_profile = :constant, polarization = :linear,
+    )
+    @named world_pos = Worldline(:τ, :atomic)
+    @named laser_pos = LaguerreGaussLaser(;
+        wavelength = 1.0, a0 = 1.0, world = world_pos,
+        radial_index = 0, azimuthal_index = 1,
+        temporal_profile = :constant, polarization = :linear,
+        k_direction = [0, 0, 1],
+    )
+    fe_default = FieldEvaluator(laser_default)
+    fe_pos     = FieldEvaluator(laser_pos)
+    for txyz in ([0.0, 0.0, 0.0, 0.0], [0.5, 0.3, -0.2, 0.7])
+        rd = fe_default(txyz)
+        rp = fe_pos(txyz)
+        @test rd.E ≈ rp.E
+        @test rd.B ≈ rp.B
+    end
+
+    # Sign-flip relations between +ẑ and −ẑ propagation.
+    # The substitution z → kz_sign·z + overall sign on E_z, B_x, B_y, B_z gives:
+    #   E_x_neg(x,y,z,t) =  E_x_pos(x,y,−z,t)
+    #   E_y_neg(x,y,z,t) =  E_y_pos(x,y,−z,t)
+    #   E_z_neg(x,y,z,t) = −E_z_pos(x,y,−z,t)
+    #   B_x_neg(x,y,z,t) = −B_x_pos(x,y,−z,t)
+    #   B_y_neg(x,y,z,t) = −B_y_pos(x,y,−z,t)
+    #   B_z_neg(x,y,z,t) = −B_z_pos(x,y,−z,t)
+    # Use circular polarization so E_y is nontrivial → exercises the B_x sign too.
+    @named world_pc = Worldline(:τ, :atomic)
+    @named laser_pos_c = LaguerreGaussLaser(;
+        wavelength = 1.0, a0 = 1.0, world = world_pc,
+        radial_index = 0, azimuthal_index = 1,
+        temporal_profile = :constant, polarization = :circular,
+        k_direction = [0, 0, 1],
+    )
+    @named world_nc = Worldline(:τ, :atomic)
+    @named laser_neg_c = LaguerreGaussLaser(;
+        wavelength = 1.0, a0 = 1.0, world = world_nc,
+        radial_index = 0, azimuthal_index = 1,
+        temporal_profile = :constant, polarization = :circular,
+        k_direction = [0, 0, -1],
+    )
+    fe_pos_c = FieldEvaluator(laser_pos_c)
+    fe_neg_c = FieldEvaluator(laser_neg_c)
+    for x in (0.0, 0.4), y in (0.0, 0.5), z in (-0.3, 0.0, 0.5), t in (0.0, 0.7)
+        r_neg     = fe_neg_c([t, x, y, z])
+        r_pos_at_neg = fe_pos_c([t, x, y, -z])
+        @test r_neg.E[1] ≈  r_pos_at_neg.E[1]
+        @test r_neg.E[2] ≈  r_pos_at_neg.E[2]
+        @test r_neg.E[3] ≈ -r_pos_at_neg.E[3]
+        @test r_neg.B[1] ≈ -r_pos_at_neg.B[1]
+        @test r_neg.B[2] ≈ -r_pos_at_neg.B[2]
+        @test r_neg.B[3] ≈ -r_pos_at_neg.B[3]
+    end
 end

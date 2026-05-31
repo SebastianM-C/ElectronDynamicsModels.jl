@@ -15,11 +15,11 @@ p_val = 1
 m_val = 1
 
 # --- FieldEvaluator setup ---
-@named ref_frame = ProperFrame(:atomic)
+@named world = Worldline(:τ,:atomic)
 @named laser = LaguerreGaussLaser(;
     wavelength = λ_val, a0 = a₀_val, beam_waist = w₀_val,
     radial_index = p_val, azimuthal_index = m_val,
-    ref_frame, temporal_profile = :constant
+    world, temporal_profile = :constant
 )
 
 fe = FieldEvaluator(laser)

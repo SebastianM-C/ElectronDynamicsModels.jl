@@ -11,8 +11,8 @@ function TrajectoryInterpolant(sol::SciMLBase.AbstractODESolution, x_syms, u_sym
     u_idxs = SVector{4, Int}(variable_index.((sol,), collect(u_syms)))
     itp = CubicSpline(sol.u, sol.t; extrapolation = ExtrapolationType.Extension)
     sys = sol.prob.f.sys
-    _ref_frame = _find_ref_frame(sys)
-    K = sol.ps[_ref_frame.q_e / (4π * _ref_frame.ε₀ * _ref_frame.c)]
+    _world = _find_world(sys)
+    K = sol.ps[_world.q_e / (4π * _world.ε₀ * _world.c)]
     return TrajectoryInterpolant(itp, x_idxs, u_idxs, K)
 end
 
@@ -35,18 +35,30 @@ function trajectory_interpolants(ensemble_sol::EnsembleSolution)
 end
 
 # Observer geometry + temporal sampling
-struct ObserverScreen{G, T, R}
+struct ObserverScreen{G, T, R, C}
     x_grid::G       # e.g., LinRange for x
     y_grid::G       # e.g., LinRange for y
     z::T            # screen distance
     x⁰_samples::R   # uniform observer-time sampling grid
+    c::C            # speed of light in the working units (x⁰ = c·t)
 end
+
+"""
+    ObserverScreen(x_grid, y_grid, z, x⁰_samples; c)
+
+Keyword form requiring the speed of light `c` in the working units (e.g.
+`getdefault(world.c)`).  `c` has no default on purpose: the `x⁰ = c·t` axis is
+meaningless without the unit system, and a wrong default would silently corrupt
+`δt`, FFT frequencies, and `recommended_n_substeps`.
+"""
+ObserverScreen(x_grid, y_grid, z, x⁰_samples; c) =
+    ObserverScreen(x_grid, y_grid, z, x⁰_samples, c)
 
 function Base.show(io::IO, s::ObserverScreen)
     Nx, Ny = length(s.x_grid), length(s.y_grid)
     N = length(s.x⁰_samples)
     δx⁰ = N > 1 ? step(s.x⁰_samples) : 0.0
-    return print(io, "ObserverScreen($(Nx)×$(Ny) pixels, z=$(s.z), $(N) time samples, Δx⁰=$(δx⁰))")
+    return print(io, "ObserverScreen($(Nx)×$(Ny) pixels, z=$(s.z), $(N) time samples, Δx⁰=$(δx⁰), c=$(s.c))")
 end
 
 function Base.show(io::IO, ::MIME"text/plain", s::ObserverScreen)
@@ -60,7 +72,9 @@ function Base.show(io::IO, ::MIME"text/plain", s::ObserverScreen)
     println(io, "  z:            $(s.z)")
     println(io, "  time samples: $(N)")
     println(io, "  x⁰ range:     [$(first(s.x⁰_samples)), $(last(s.x⁰_samples))]")
-    return print(io, "  Δx⁰:          $(δx⁰)")
+    println(io, "  Δx⁰:          $(δx⁰)")
+    println(io, "  c:            $(s.c)")
+    return print(io, "  Δt:           $(δx⁰ / s.c)")
 end
 
 # dτᵣ/dt = 1/(u⁰(τᵣ) - u⃗(τᵣ)·n̂(τᵣ, r_obs))
@@ -93,7 +107,8 @@ function retarded_time_problem(traj::TrajectoryInterpolant, screen::ObserverScre
         (traj, r_obs_0),
     )
 
-    function set_pixel(prob, i, repeat)
+    function set_pixel(prob, ctx)
+        i = ctx.sim_id
         ix, iy = Tuple(CI[i])
         r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
         (x⁰_i, x⁰_f) = advanced_time(traj, τi, r_obs), advanced_time(traj, τf, r_obs)
@@ -131,22 +146,27 @@ function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::Ob
 
     A = zeros(N_samples, 4, Nx, Ny)
 
-    for (j, traj) in enumerate(trajs)
+    # Create typed integrator pool once (reused across all electrons)
+    traj0 = first(trajs)
+    τi0 = first(traj0.itp.t)
+    τf0 = last(traj0.itp.t)
+    r_obs_0 = SVector{3}(screen.x_grid[1], screen.y_grid[1], screen.z)
+    proto_prob = ODEProblem{false, SciMLBase.FullSpecialize}(
+        retarded_time_rhs, τi0,
+        (advanced_time(traj0, τi0, r_obs_0), advanced_time(traj0, τf0, r_obs_0)),
+        (traj0, r_obs_0)
+    )
+    proto_integ = init(proto_prob, alg; saveat = x⁰_samples, save_start = false, save_end = false, solve_kwargs...)
+    nworkers = Threads.nthreads()
+    integ_pool = Channel{typeof(proto_integ)}(nworkers)
+    put!(integ_pool, proto_integ)
+    for _ in 2:nworkers
+        put!(integ_pool, init(proto_prob, alg; saveat = x⁰_samples, save_start = false, save_end = false, solve_kwargs...))
+    end
+
+    for traj in trajs
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
-
-        r_obs_0 = SVector{3}(screen.x_grid[1], screen.y_grid[1], screen.z)
-        x⁰_i_0 = advanced_time(traj, τi, r_obs_0)
-        x⁰_f_0 = advanced_time(traj, τf, r_obs_0)
-        proto_prob = ODEProblem{false, SciMLBase.FullSpecialize}(
-            retarded_time_rhs, τi, (x⁰_i_0, x⁰_f_0), (traj, r_obs_0)
-        )
-
-        nworkers = Threads.nthreads()
-        integ_pool = Channel{Any}(nworkers)
-        for _ in 1:nworkers
-            put!(integ_pool, init(proto_prob, alg; saveat = x⁰_samples, solve_kwargs...))
-        end
 
         Threads.@threads for ix in Base.OneTo(Nx)
             integ = take!(integ_pool)
@@ -159,7 +179,7 @@ function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::Ob
                 reinit!(integ, τi; t0 = x⁰_i, tf = x⁰_f)
                 solve!(integ)
 
-                _accumulate_pixel!(A, traj, screen, integ.sol.u, ix, iy)
+                _accumulate_pixel!(A, traj, screen, integ.sol.u, integ.sol.t, ix, iy)
             end
             put!(integ_pool, integ)
         end
@@ -187,7 +207,8 @@ function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::Ob
 
         Threads.@threads for ix in Base.OneTo(Nx)
             for iy in Base.OneTo(Ny)
-                _accumulate_pixel!(A, traj, screen, rt_sol.u[LI[ix, iy]].u, ix, iy)
+                sol_pixel = rt_sol.u[LI[ix, iy]]
+                _accumulate_pixel!(A, traj, screen, sol_pixel.u, sol_pixel.t, ix, iy)
             end
         end
     end
@@ -195,13 +216,23 @@ function accumulate_potential(trajs::Vector{<:TrajectoryInterpolant}, screen::Ob
     return A
 end
 
-function _accumulate_pixel!(A, traj, screen, τ_samples, ix, iy)
+function _accumulate_pixel!(A, traj, screen, τ_samples, t_samples, ix, iy)
     r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
+    # Map saveat values back to A's first-axis index. The integrator only
+    # saves saveat points within [tspan[1], tspan[2]] — fewer than length(x⁰_samples)
+    # for narrow per-pixel arrival windows — so iterating sequentially over
+    # τ_samples with k=1,2,… would accumulate radiation into the wrong
+    # observer-time slots. Compute the saveat index from t_samples explicitly.
+    x⁰_first = first(screen.x⁰_samples)
+    N_x⁰ = length(screen.x⁰_samples)
+    δx⁰ = (last(screen.x⁰_samples) - x⁰_first) / (N_x⁰ - 1)
     for (k, τ) in enumerate(τ_samples)
+        idx = round(Int, (t_samples[k] - x⁰_first) / δx⁰) + 1
+        1 ≤ idx ≤ N_x⁰ || continue
         xμ, uμ = traj(τ)
         disp = r_obs - xμ[SA[2, 3, 4]]
         xr = SVector{4}(norm(disp), disp[1], disp[2], disp[3])
-        @views A[k, :, ix, iy] .+= traj.K * uμ ./ m_dot(xr, uμ)
+        @views A[idx, :, ix, iy] .+= traj.K * uμ ./ m_dot(xr, uμ)
     end
     return
 end

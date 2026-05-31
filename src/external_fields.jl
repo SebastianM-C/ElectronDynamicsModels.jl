@@ -16,7 +16,7 @@ Parameters:
 @component function GaussLaser(;
         name, wavelength = nothing, frequency = nothing,
         a0 = 10.0, beam_waist = nothing, polarization = :linear,
-        n_cycles = 5, focus_position = nothing, ref_frame
+        n_cycles = 5, focus_position = nothing, world
     )
     if wavelength === nothing && frequency === nothing
         wavelength = 1.0
@@ -26,11 +26,11 @@ Parameters:
     end
 
     # New interface with spacetime
-    @named field_dynamics = EMFieldDynamics(; ref_frame)
+    @named field_dynamics = EMFieldDynamics(; world)
 
     # Get spacetime variables and constants from parent scope
-    @unpack c, m_e, q_e = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+    @unpack c, m_e, q_e = world
+    iv = ModelingToolkit.get_iv(world)
 
     # Create local position and time variables
     @variables x(iv)[1:4] t(iv)
@@ -42,7 +42,7 @@ Parameters:
         a₀ = a0, [description = "Normalized vector potential"]
         ω, [guess = 1.0, description = "Angular frequency"]
         k, [description = "Wave number (2π/λ)"]
-        E₀, [description = "Peak electric field amplitude"]
+        E₀, [guess = 1.0, description = "Peak electric field amplitude"]
         w₀, [description = "Beam waist radius at focus"]
         z_R, [description = "Rayleigh length"]
         τ0, [description = "Temporal envelope half-width"]
@@ -130,7 +130,7 @@ Parameters:
     sys = System(
         eqs, iv, [x, t, wz, z, r], [λ, a₀, ω, k, E₀, w₀, z_R, τ0, n_cycles, t₀, z₀];
         name,
-        systems = [ref_frame],
+        systems = [world],
         initial_conditions,
         initialization_eqs,
         bindings
@@ -148,7 +148,7 @@ electrons can exhibit figure-8 motion when a₀ ~ 1.
 
 Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 """
-@component function PlaneWave(; name, amplitude = 1.0, wavelength = nothing, frequency = nothing, k_direction = [0, 0, 1], polarization = [1, 0, 0], ref_frame)
+@component function PlaneWave(; name, amplitude = 1.0, wavelength = nothing, frequency = nothing, k_direction = [0, 0, 1], polarization = [1, 0, 0], world)
     if wavelength === nothing && frequency === nothing
         frequency = 1.0
     end
@@ -157,11 +157,11 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
     end
 
     # New interface with spacetime
-    @named field_dynamics = EMFieldDynamics(; ref_frame)
+    @named field_dynamics = EMFieldDynamics(; world)
 
     # Get spacetime variables and constants from parent scope
-    @unpack c, m_e, q_e = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+    @unpack c, m_e, q_e = world
+    iv = ModelingToolkit.get_iv(world)
 
     # Create local position and time variables
     @variables x(iv)[1:4]
@@ -229,7 +229,7 @@ Reference: Sarachik & Schappert, Phys. Rev. D 1, 2738 (1970)
 
     vars = nameof(iv) == :τ ? [x, t] : [x]
 
-    sys = System(eqs, iv; name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions)
+    sys = System(eqs, iv; name, systems = [world], initialization_eqs, bindings, initial_conditions)
 
     extend(sys, field_dynamics)
 end
@@ -242,13 +242,13 @@ particles drift with velocity v_drift = E×B/B²
 
 Reference: Jackson, "Classical Electrodynamics", Section 12.4
 """
-@component function UniformField(; name, E_field = [0, 0, 1], B_field = [0, 0, 0], ref_frame)
-    @named field_dynamics = EMFieldDynamics(; ref_frame)
+@component function UniformField(; name, E_field = [0, 0, 1], B_field = [0, 0, 0], world)
+    @named field_dynamics = EMFieldDynamics(; world)
     @unpack E, B = field_dynamics
 
     # Get spacetime variables and constants from parent scope
-    @unpack c, m_e, q_e = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+    @unpack c, m_e, q_e = world
+    iv = ModelingToolkit.get_iv(world)
 
     # Create local position and time variables
     @variables x(iv)[1:4] t(iv)
@@ -263,9 +263,67 @@ Reference: Jackson, "Classical Electrodynamics", Section 12.4
         B ~ B₀,
     ]
 
-    sys = System(eqs, iv, [x, t], [E₀, B₀]; name, systems = [ref_frame])
+    sys = System(eqs, iv, [x, t], [E₀, B₀]; name, systems = [world])
 
     extend(sys, field_dynamics)
+end
+
+"""
+    _kz_sign(k_direction) -> ±1
+
+Validate that `k_direction` is along ±ẑ and return its sign. Currently only ±ẑ
+propagation is supported for `LaguerreGaussLaser`; oblique directions require
+defining a transverse basis convention that has not yet been implemented.
+"""
+function _kz_sign(k_direction)
+    length(k_direction) == 3 || error("k_direction must be a 3-vector, got length $(length(k_direction))")
+    isapprox(norm(k_direction), 1; atol = 1.0e-10) || error("k_direction must be a unit vector, got norm $(norm(k_direction))")
+    if k_direction ≈ [0, 0, 1]
+        return +1
+    elseif k_direction ≈ [0, 0, -1]
+        return -1
+    else
+        error("LaguerreGaussLaser currently supports only k_direction ≈ ±ẑ; got $k_direction. Pass [0,0,1] for +ẑ or [0,0,-1] for -ẑ.")
+    end
+end
+
+"""
+    a0_from_pulse_energy(W, w₀, τ₀, ω; world, mode = (p = 0, m = 2)) -> a₀
+
+Compute the dimensionless vector potential `a₀` for a Laguerre-Gauss pulse of
+total energy `W`, host-beam waist `w₀`, field-envelope half-width `τ₀`, and
+angular frequency `ω`. All inputs in the unit system of `world` (atomic, SI,
+or natural). `mode = (p, m)` selects the LG mode; the formula is
+`p`-independent (in EDM's normalization), so only `|m|` matters in practice.
+
+Formula:
+    a₀² = 2W·|q_e|² / (ε₀ c³ A(p,m) (m_e ω)² w₀² τ₀ √(π/2))
+with A(p,m) = (π/2)·(|m|!)².
+
+Use this script-side when `u0_constructor` (e.g. `SVector{8}`) precludes
+`LaguerreGaussLaser`'s built-in `pulse_energy` initialization, since the
+init sub-problem inherits the constructor with the wrong dimension. Pass the
+result to `LaguerreGaussLaser(; a0 = …)` instead.
+
+See `references/lg_pulse_energy_a0.tex` for the derivation.
+"""
+function a0_from_pulse_energy(W, w₀, τ₀, ω; world, mode = (p = 0, m = 2))
+    m = mode.m
+    ε₀ = getdefault(world.ε₀)
+    c = getdefault(world.c)
+    m_e = getdefault(world.m_e)
+    q_e_abs = abs(getdefault(world.q_e))
+    A_pm = (π / 2) * factorial(abs(m))^2
+
+    # Sanity check on cycle-averaging validity (slow-envelope approximation).
+    ωτ = ω * τ₀
+    if ωτ < 5
+        @warn "a0_from_pulse_energy assumes ωτ₀ ≫ 1 (slow envelope vs fast carrier)" ωτ suppression = exp(-ωτ^2 / 2)
+    end
+
+    a₀² = 2 * W * q_e_abs^2 /
+        (ε₀ * c^3 * A_pm * (m_e * ω)^2 * w₀^2 * τ₀ * sqrt(π / 2))
+    return sqrt(a₀²)
 end
 
 """
@@ -277,12 +335,15 @@ The beam is characterized by radial index p and azimuthal index m.
 Parameters:
 - λ: wavelength
 - a₀: normalized vector potential (a0 kwarg)
+- ϕ₀: initial carrier phase (initial_phase kwarg, defaults to 0.0)
 - w₀: beam waist (defaults to 75λ)
 - radial_index (p): radial mode number, p ≥ 0
 - azimuthal_index (m): azimuthal mode number (orbital angular momentum)
 - temporal_profile: :gaussian (pulsed) or :constant (CW)
 - temporal_width: pulse width for gaussian profile (defaults to 100.0)
 - focus_position: focal position along z-axis (defaults to 0.0)
+- k_direction: propagation direction unit vector. Currently restricted to
+  `[0, 0, 1]` (default, +ẑ) or `[0, 0, -1]` (−ẑ).
 
 Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
 """
@@ -290,17 +351,21 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         name,
         wavelength = nothing,
         frequency = nothing,
-        a0 = 10.0,
+        a0 = nothing,
+        pulse_energy = nothing,
         beam_waist = nothing,
         radial_index = 0,      # p
         azimuthal_index = 1,   # m
-        ref_frame,
+        world,
         temporal_profile = :gaussian,  # :gaussian or :constant
         temporal_width = nothing,      # pulse width (for gaussian profile)
         n_cycles = 0,                  # number of optical cycles to pulse center
         focus_position = nothing,       # focal position along z-axis
-        polarization = :linear
+        polarization = :linear,
+        initial_phase = 0.0,
+        k_direction = [0, 0, 1]
     )
+    kz_sign = _kz_sign(k_direction)
     if wavelength === nothing && frequency === nothing
         wavelength = 1.0
     end
@@ -308,12 +373,39 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         error("Specify either wavelength or frequency, not both")
     end
 
+    # Validate field-strength specification: exactly one of a0 / pulse_energy
+    a0_given = a0 !== nothing
+    we_given = pulse_energy !== nothing
+    if temporal_profile == :constant
+        we_given && error("pulse_energy is not meaningful for temporal_profile = :constant (CW beams have no finite total energy). Use a0 instead.")
+        a0_given || (a0 = 10.0; a0_given = true)  # backward-compat default for CW
+    else
+        if !(a0_given ⊻ we_given)
+            error("Specify exactly one of `a0` or `pulse_energy` (got a0 = $a0, pulse_energy = $pulse_energy)")
+        end
+    end
+
+    # When pulse_energy is given, the W ↔ a₀ relation assumes the slow-envelope
+    # approximation ωτ₀ ≫ 1 (cycle-averaged intensity). For few-cycle pulses
+    # this breaks down — see references/lg_pulse_energy_a0.tex §2.4.
+    if we_given && temporal_profile == :gaussian && temporal_width !== nothing
+        c_val = getdefault(world.c)
+        ω_estimate = wavelength !== nothing ? 2π * c_val / wavelength :
+            frequency !== nothing ? frequency : nothing
+        if ω_estimate !== nothing
+            ωτ = ω_estimate * temporal_width
+            if ωτ < 5
+                @warn "pulse_energy formula assumes ωτ₀ ≫ 1; got ωτ₀ = $ωτ. Fast Fourier-suppression term e^(-(ωτ₀)²/2) ≈ $(exp(-ωτ^2 / 2)) is no longer negligible. For few-cycle pulses, derive a0 from pulse energy by integrating the carrier-explicit field directly."
+            end
+        end
+    end
+
     # New interface with spacetime
-    @named field_dynamics = EMFieldDynamics(; ref_frame)
+    @named field_dynamics = EMFieldDynamics(; world)
 
     # Get spacetime variables from parent scope
-    @unpack c, m_e, q_e = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+    @unpack c, m_e, q_e, ε₀ = world
+    iv = ModelingToolkit.get_iv(world)
 
     # Create local position and time variables
     @variables x(iv)[1:4]
@@ -333,12 +425,17 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     # Nₚₘ = √((p+1)_{|m|}) where (x)_n is the Pochhammer symbol
     Npm_val = sqrt(pochhammer(radial_index + 1, mₐ))
 
+    # Spatial-integral coefficient for LG_p^m: A(p, m) = (π/2) * (|m|!)²
+    # Independent of p; see references/lg_pulse_energy_a0.tex for derivation.
+    A_pm = (π / 2) * factorial(abs(azimuthal_index))^2
+
     params = @parameters begin
         λ, [guess = 1.0, description = "Wavelength"]
-        a₀ = a0, [description = "Normalized vector potential"]
+        a₀, [guess = 1.0, description = "Normalized vector potential"]
+        W, [guess = 1.0, description = "Total pulse energy"]
         ω, [guess = 1.0, description = "Angular frequency"]
         k, [description = "Wave number (2π/λ)"]
-        E₀, [description = "Peak electric field amplitude"]
+        E₀, [guess = 1.0, description = "Peak electric field amplitude"]
         w₀, [description = "Beam waist radius at focus"]
         z_R, [description = "Rayleigh length"]
         τ0 = temporal_width === nothing ? 100.0 : temporal_width, [description = "Temporal envelope half-width"]
@@ -353,6 +450,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         n_cycles = n_cycles, [description = "Number of optical cycles to pulse center"]
         t₀, [guess = 1.0, description = "Pulse center time"]
         z₀ = 0, [description = "Focus position along z-axis"]
+        ϕ₀ = initial_phase, [description = "Initial carrier phase"]
     end
 
     if polarization == :linear
@@ -363,8 +461,6 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     else
         error("polarization $polarization not supported.")
     end
-
-    ϕ₀ = 0
 
     # Derived variables
     @variables begin
@@ -378,10 +474,12 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     end
 
     # Compute temporal envelope expression based on profile type
+    # The traveling wave moves at speed c along k̂, so the envelope follows
+    # `(t - t₀) - kz_sign·(z - z₀)/c`.
     env_expr = if temporal_profile == :constant
         1.0  # No temporal envelope
     elseif temporal_profile == :gaussian
-        exp(-(((t - t₀) - (z - z₀) / c) / τ0)^2)
+        exp(-(((t - t₀) - kz_sign * (z - z₀) / c) / τ0)^2)
     else
         error("Unknown temporal_profile: $temporal_profile. Use :constant or :gaussian")
     end
@@ -389,14 +487,21 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     # We need to factor out the complex expressions so that we don't have equations with complex lhs
     # since MTK doesn't handle that well
 
-    # Base Gaussian field (before polarization and LG modification)
+    # Base Gaussian field (before polarization and LG modification).
+    # Replacing z → kz_sign·z in the wavefront curvature, Gouy phase, and
+    # carrier phase flips the sign of k̂ from +ẑ to -ẑ.
+    #
+    # Note: ϕ₀ is intentionally absent here. It must enter the field exactly
+    # once, via lg_phase below. Adding it here too would double it,
+    # since every field component is the product E_g · lg_phase.
     E_g = E₀ * w₀ / wz *
         exp(-(r / wz)^2) *
-        exp(im * (-(r^2 * z) / (z_R * wz^2) + atan(z, z_R) - k * z + ϕ₀)) *
+        exp(im * (-(r^2 * kz_sign * z) / (z_R * wz^2) + atan(kz_sign * z, z_R) - k * kz_sign * z)) *
         exp(im * ω * t) * env
 
-    # Laguerre-Gauss phase factor
-    lg_phase = exp(im * ((2p + mₐ) * atan(z, z_R) - m * θ + ϕ₀))
+    # Laguerre-Gauss phase factor (Gouy term acquires kz_sign for -ẑ propagation).
+
+    lg_phase = exp(im * ((2p + mₐ) * atan(kz_sign * z, z_R) - m * θ + ϕ₀))
 
     # NEgexp term used in Ez and Bz
     NEgexp = Nₚₘ * E_g * lg_phase
@@ -427,8 +532,11 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         # Electric field Ey component
         E[2] ~ real(Ey_complex)
 
-        # Electric field Ez component (longitudinal)
-        E[3] ~ real(
+        # Electric field Ez component (longitudinal).
+        # The longitudinal component points along k̂, so the lab z-component
+        # picks up an overall kz_sign. The (1 + im·z/z_R) curvature factor
+        # gets z → kz_sign·z to match the +ẑ-derived formula's analogue.
+        E[3] ~ kz_sign * real(
             -im / k * (
                 # Term 1: m-dependent term
                 (
@@ -438,7 +546,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
                         NEgexp * exp(im * sgn * θ)
                 ) -
                     # Term 2: transverse field coupling
-                    2 / (wz^2) * (1 + im * z / z_R) * (x[2] * Ex_complex + x[3] * Ey_complex) -
+                    2 / (wz^2) * (1 + im * kz_sign * z / z_R) * (x[2] * Ex_complex + x[3] * Ey_complex) -
                     # Term 3: p-dependent term
                     (
                     radial_index == 0 ? 0.0 :
@@ -448,13 +556,14 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
             )
         )
 
-        # Magnetic field components
-        # For paraxial beam: By ≈ Ex/c, Bx ≈ -Ey/c
-        B[1] ~ -E[2] / c
-        B[2] ~ E[1] / c
+        # Magnetic field components: B = (1/c) k̂ × E
+        # For k̂ = +ẑ: (B_x, B_y) = (-E_y, +E_x)/c; flipping k̂ → -ẑ flips both.
+        B[1] ~ -kz_sign * E[2] / c
+        B[2] ~ kz_sign * E[1] / c
 
-        # Bz component (full Laguerre-Gauss formula)
-        B[3] ~ real(
+        # Bz component: longitudinal magnetic field along k̂; lab z-component
+        # picks up an overall kz_sign analogously to Ez.
+        B[3] ~ kz_sign * real(
             -im / ω * (
                 # Term 1: m-dependent term
                 -(
@@ -464,7 +573,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
                         NEgexp * exp(im * sgn * θ)
                 ) +
                     # Term 2: transverse field coupling
-                    2 / (wz^2) * (1 + im * z / z_R) * (x[2] * Ey_complex - x[3] * Ex_complex) +
+                    2 / (wz^2) * (1 + im * kz_sign * z / z_R) * (x[2] * Ey_complex - x[3] * Ex_complex) +
                     # Term 3: p-dependent term
                     (
                     radial_index == 0 ? 0.0 :
@@ -479,6 +588,16 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         k ~ 2π / λ
         z_R ~ π * w₀^2 / λ
         E₀ ~ a₀ * m_e * c * ω / abs(q_e)
+        # Pulse-energy ↔ a₀ relation (Gaussian envelope, cycle-averaged):
+        #   W = (1/2) ε₀ c · A(p,m) w₀² E₀² · τ₀√(π/2).
+        # Written in the `W ~ …` direction so MTK can substitute forward when
+        # a₀ is given (no nonlinear init step, so problem-level constructors
+        # like `u0_constructor = SVector{N}` don't propagate to a smaller
+        # init sub-problem). The reverse direction (W given → solve for a₀)
+        # involves the sqrt and would stall Newton's abstol; users wanting
+        # `pulse_energy →  a₀` should call `a0_from_pulse_energy` script-side
+        # and pass `a0 = …` explicitly. See references/lg_pulse_energy_a0.tex.
+        W ~ (1 / 2) * ε₀ * c * A_pm * E₀^2 * w₀^2 * τ0 * sqrt(π / 2)
         t₀ ~ n_cycles * 2π / ω
     ]
     bindings = [
@@ -490,6 +609,8 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         w₀ => missing
         t₀ => missing
         z₀ => missing
+        a₀ => missing
+        W => missing
     ]
 
     initial_conditions = Pair{SymbolicT, Any}[]
@@ -501,6 +622,13 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
     if frequency !== nothing
         push!(initial_conditions, ω => frequency)
     end
+    # Field-strength specification: exactly one of a0 / pulse_energy
+    if a0_given
+        push!(initial_conditions, a₀ => a0)
+    end
+    if we_given
+        push!(initial_conditions, W => pulse_energy)
+    end
 
     vars = if nameof(iv) == :τ
         [x, t, z, r, θ, wz, σ, rwz, env]
@@ -511,7 +639,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
 
     sys = System(
         eqs, iv, vars, params;
-        name, systems = [ref_frame], initialization_eqs, bindings, initial_conditions
+        name, systems = [world], initialization_eqs, bindings, initial_conditions
     )
     extend(sys, field_dynamics)
 end

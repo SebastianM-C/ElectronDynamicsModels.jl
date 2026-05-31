@@ -1,12 +1,12 @@
-@component function ParticleDynamics(; name, mass, ref_frame)
-    @unpack c = ref_frame
-    iv = ModelingToolkit.get_iv(ref_frame)
+@component function ParticleDynamics(; name, mass, world)
+    @unpack c = world
+    iv = ModelingToolkit.get_iv(world)
     D = Differential(iv)
 
     @variables begin
         γ(iv), [description = "Lorentz factor"]
-        x(iv)[1:4], [description = "4-position (ct, x, y, z)"]
-        u(iv)[1:4], [description = "4-velocity (u⁰, u¹, u², u³, u⁴)"]
+        x(iv)[1:4], [description = "4-position (ct, x, y, z)", state_priority = 10]
+        u(iv)[1:4], [description = "4-velocity (u⁰, u¹, u², u³, u⁴)", state_priority = 10]
         p(iv)[1:4]
         F_total(iv)[1:4]
     end
@@ -33,7 +33,7 @@
             D(u) ~ F_total / m
         ]
 
-        System(eqs, iv, [t, γ, x, u, p, F_total], [m]; name, systems = [ref_frame])
+        System(eqs, iv, [t, γ, x, u, p, F_total], [m]; name, systems = [world])
     elseif nameof(iv) == :t
         t = iv
 
@@ -57,6 +57,6 @@
             D(u) ~ F_total / (m * γ)
         ]
 
-        System(eqs, iv, [τ, γ, x, u, p, F_total], [m]; name, systems = [ref_frame])
+        System(eqs, iv, [τ, γ, x, u, p, F_total], [m]; name, systems = [world])
     end
 end
