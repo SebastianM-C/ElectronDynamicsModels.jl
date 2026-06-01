@@ -72,12 +72,6 @@ end
         push!(systems, radiation)
         push!(eqs, external_field.field.Fμν ~ radiation.field.Fμν)
         push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
-    elseif radiation_model == :abraham_lorentz
-        @named radiation =
-            AbrahamLorentzRadiation(; charge, F_lorentz_ref = F_lorentz, world, particle)
-        push!(systems, radiation)
-        push!(eqs, u ~ radiation.u)
-        push!(eqs, F_total ~ F_lorentz + radiation.F_rad)
     else
         # No radiation reaction
         push!(eqs, F_total ~ F_lorentz)
@@ -93,17 +87,6 @@ end
         laser,
     )
     ChargedParticle(; name, external_field = laser, radiation_model = nothing)
-end
-
-@component function RadiatingElectron(;
-        name,
-        laser,
-    )
-    ChargedParticle(;
-        name,
-        external_field = laser,
-        radiation_model = :abraham_lorentz,
-    )
 end
 
 @component function LandauLifshitzElectron(;
