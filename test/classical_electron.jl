@@ -130,7 +130,7 @@ using LinearAlgebra
 
     # Test radiation-free limit
     @testset "Radiation-Free Limit" begin
-        # Compare ClassicalElectron (no radiation) with RadiatingElectron
+        # Compare ClassicalElectron (no radiation) with LandauLifshitzElectron
         # In weak fields, radiation effects should be small
 
         # Use extremely weak field to minimize radiation effects
@@ -144,9 +144,9 @@ using LinearAlgebra
         @named electron_classical = ClassicalElectron(; laser = weak_field)
         sys_classical = mtkcompile(electron_classical)
 
-        # Radiating electron
-        @named electron_radiating = RadiatingElectron(; laser = weak_field)
-        sys_radiating = mtkcompile(electron_radiating)
+        # Radiating electron (Landau-Lifshitz)
+        @named electron_radiating = LandauLifshitzElectron(; laser = weak_field)
+        sys_radiating = mtkcompile(electron_radiating, allow_symbolic = true)
 
         # Same initial conditions
         u0 = [

@@ -87,12 +87,3 @@ function Worldline(parameter::Symbol, units::Symbol; name)
 
     ReferenceFrame(iv, units; name)
 end
-
-function ElectromagneticSystem(iv; name)
-    @variables begin
-        Fμν(iv)[1:4, 1:4], [description = "Faraday tensor"]
-        T(iv)[1:4, 1:4], [description="Stress-energy tensor T^μν"]
-        J(iv)[1:4], [description="4-current density"]
-    end
-    System(Equation[], iv, [Fμν, T, J], []; name)
-end

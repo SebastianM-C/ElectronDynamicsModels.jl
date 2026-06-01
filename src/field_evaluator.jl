@@ -43,8 +43,9 @@ function FieldEvaluator(laser)
     # Build coordinate setter
     set_x = setsym_oop(prob, sys.x)
 
-    # Extract speed of light from the system constants
-    c_val = prob.ps[sys.c]
+    # Speed of light: read it straight from the reference frame rather than the
+    # compiled system, since `@constants` get inlined during mtkcompile.
+    c_val = getdefault(_find_world(laser).c)
 
     return FieldEvaluator(h, set_x, prob, c_val)
 end
