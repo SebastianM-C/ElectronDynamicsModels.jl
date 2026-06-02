@@ -31,7 +31,11 @@ function analytic_traj(; g, A, Ω, vz, τspan, N, K = 1.0)
         vz,                   # u³
     ) for τ in ts]
     itp = CubicSpline(us, ts; extrapolation = ExtrapolationType.Extension)
-    return TrajectoryInterpolant(itp, SVector{4, Int}(1, 2, 3, 4),
+    # 4-acceleration 𝔞μ = duμ/dτ = (0, −A Ω² sin(Ωτ), 0, 0), known in closed form;
+    # the field accumulator interpolates it from a dedicated spline.
+    as = [SVector{4}(0.0, -A * Ω^2 * sin(Ω * τ), 0.0, 0.0) for τ in ts]
+    a_itp = CubicSpline(as, ts; extrapolation = ExtrapolationType.Extension)
+    return TrajectoryInterpolant(itp, a_itp, SVector{4, Int}(1, 2, 3, 4),
         SVector{4, Int}(5, 6, 7, 8), K)
 end
 
@@ -97,5 +101,38 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         @test e1 > 5.0e-2          # single-step RK4 is genuinely under-resolved here
         @test e8 < 5.0e-3          # enough sub-steps recovers reference agreement
         @test e8 < e1              # adding sub-steps reduces the discrepancy
+    end
+
+    @testset "GPUKernelRK4 field matches reference (split E/B)" begin
+        # Same transverse worldline as the potential bulk-pattern test, run through
+        # the field path. Exercises the kernel leaf end-to-end on the CPU backend —
+        # the split tensor, extract_EB, and the four-bucket scalar writes — against
+        # the adaptive-Vern9 CPU `accumulate_field`. Caught GPU-incompatible code
+        # (e.g. colon-slice device writes) would diverge here; a logic bug in the
+        # split would show up in the per-bucket errors.
+        traj = analytic_traj(; g = 1.2, A = 0.25, Ω = 2.0, vz = 0.0,
+            τspan = (0.0, 20.0), N = 6000)
+        trajs = [traj]
+        τi, τf = first(traj.itp.t), last(traj.itp.t)
+
+        z = 50.0
+        Nx = Ny = 9
+        half = 8.0
+        x_grid = LinRange(-half, half, Nx)
+        y_grid = LinRange(-half, half, Ny)
+        x⁰ = LinRange(1.2τi + (z - 2half), 1.2τf + (z + 2half), 240)
+        screen = ObserverScreen(x_grid, y_grid, z, x⁰; c = 1.0)
+
+        ref = accumulate_field(trajs, screen, Vern9())
+        gpu = accumulate_field(trajs, screen, GPUKernelRK4(), CPU(); n_substeps = 8)
+
+        @test keys(gpu) == (:E, :B, :E_rad, :B_rad)
+        @test size(gpu.E) == size(ref.E)
+        @test all(isfinite, gpu.E) && all(isfinite, gpu.B)
+        @test maximum(abs, ref.E_rad) > 0           # the reference actually radiates
+        @test rel_l2(gpu.E, ref.E) < 5.0e-3         # total field matches
+        @test rel_l2(gpu.B, ref.B) < 5.0e-3
+        @test rel_l2(gpu.E_rad, ref.E_rad) < 5.0e-3 # radiation bucket matches
+        @test rel_l2(gpu.B_rad, ref.B_rad) < 5.0e-3
     end
 end

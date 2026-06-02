@@ -141,10 +141,13 @@ function Adapt.adapt_structure(to, traj::TrajectoryInterpolant)
     )
 end
 
-# The GPU potential kernel never touches the acceleration spline, so we skip
-# uploading it here: carrying `a_itp = nothing` keeps the (latency- and
-# memory-bound) GPUKernelRK4 campaign untouched. A future GPU field accumulator
-# will need its own conversion that uploads `GPUCubicSpline(traj.a_itp)`.
-function to_gpu(traj::TrajectoryInterpolant)
-    return TrajectoryInterpolant(GPUCubicSpline(traj.itp), nothing, traj.x_idxs, traj.u_idxs, traj.K)
+# The GPU potential kernel never touches the acceleration spline, so by default
+# we skip uploading it: carrying `a_itp = nothing` keeps the (latency- and
+# memory-bound) GPUKernelRK4 potential campaign untouched. The field accumulator
+# needs 𝔞μ for the Liénard–Wiechert radiation term, so it passes
+# `with_acceleration = true` to also upload `GPUCubicSpline(traj.a_itp)` — at the
+# cost of a second N×4 spline (≈ doubling the per-trajectory device footprint).
+function to_gpu(traj::TrajectoryInterpolant; with_acceleration::Bool = false)
+    a_itp = with_acceleration ? GPUCubicSpline(traj.a_itp) : nothing
+    return TrajectoryInterpolant(GPUCubicSpline(traj.itp), a_itp, traj.x_idxs, traj.u_idxs, traj.K)
 end
