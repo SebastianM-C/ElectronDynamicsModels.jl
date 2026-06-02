@@ -11,6 +11,7 @@ using HypergeometricFunctions: HypergeometricFunctions, _₁F₁, pochhammer
 using StaticArrays
 using SciMLBase
 using DataInterpolations
+using FFTW: rfft, rfftfreq
 
 import Adapt
 import AcceleratedKernels as AK
@@ -18,6 +19,16 @@ import KernelAbstractions
 using KernelAbstractions: Backend, @kernel, @index, @Const
 
 m_dot(x, y) = x[1] * y[1] - x[2] * y[2] - x[3] * y[3] - x[4] * y[4]
+
+# Single Minkowski metric g_{μν} = g^{μν} = diag(1,−1,−1,−1) for the whole package:
+# the default value of the symbolic `gμν` parameter (see `ReferenceFrame`) and the
+# concrete metric used by `stress_energy` and the numeric screen reduction.
+const η = @SMatrix [
+    1.0  0.0  0.0  0.0
+    0.0 -1.0  0.0  0.0
+    0.0  0.0 -1.0  0.0
+    0.0  0.0  0.0 -1.0
+]
 
 export GaussLaser, LaguerreGaussLaser, a0_from_pulse_energy
 export ReferenceFrame, Worldline,
@@ -28,6 +39,8 @@ export ReferenceFrame, Worldline,
     ClassicalElectron, LandauLifshitzElectron,
     FieldEvaluator,
     ObserverScreen, trajectory_interpolants, TrajectoryInterpolant, accumulate_potential,
+    accumulate_field, screen_observables, screen_spectrum,
+    lienard_wiechert_F, extract_EB, faraday, stress_energy,
     GPUCubicSpline, GPUKernelRK4, GPUKernelTsit5, recommended_n_substeps,
     retarded_time_problem
 

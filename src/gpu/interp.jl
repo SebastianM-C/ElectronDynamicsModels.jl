@@ -134,12 +134,17 @@ end
 function Adapt.adapt_structure(to, traj::TrajectoryInterpolant)
     return TrajectoryInterpolant(
         Adapt.adapt(to, traj.itp),
+        Adapt.adapt(to, traj.a_itp),   # `nothing` on the potential path (see `to_gpu`)
         traj.x_idxs,       # SVector{4,Int} — already isbits
         traj.u_idxs,        # SVector{4,Int} — already isbits
         traj.K,             # Float64 — already isbits
     )
 end
 
+# The GPU potential kernel never touches the acceleration spline, so we skip
+# uploading it here: carrying `a_itp = nothing` keeps the (latency- and
+# memory-bound) GPUKernelRK4 campaign untouched. A future GPU field accumulator
+# will need its own conversion that uploads `GPUCubicSpline(traj.a_itp)`.
 function to_gpu(traj::TrajectoryInterpolant)
-    return TrajectoryInterpolant(GPUCubicSpline(traj.itp), traj.x_idxs, traj.u_idxs, traj.K)
+    return TrajectoryInterpolant(GPUCubicSpline(traj.itp), nothing, traj.x_idxs, traj.u_idxs, traj.K)
 end
