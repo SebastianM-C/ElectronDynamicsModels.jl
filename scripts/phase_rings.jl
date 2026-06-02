@@ -14,9 +14,10 @@
 # run and recording the diagnostic parameters (harmonic, component, tolerance) so
 # the results dashboard shows what was used.
 #
-#   julia --project=scripts scripts/phase_rings.jl [file.jls] [harmonic]
-# Env: EDM_COMP (default 2), EDM_R (ring radius; default 0.4·half-width),
-#      EDM_RADII (comma list, overrides EDM_R), EDM_TOL (annulus half-width).
+#   julia --project=scripts scripts/phase_rings.jl [file.jls] [harmonic …]
+# Env: EDM_HARMONIC (comma list if no CLI harmonics; default "1"), EDM_COMP
+#      (default 2), EDM_R / EDM_RADII (ring radii; default 0.2,0.4,0.6·half-width),
+#      EDM_TOL (annulus half-width).
 
 using Serialization
 using FFTW
@@ -33,7 +34,8 @@ const complabels = ("A⁰", "Aˣ", "Aʸ", "Aᶻ")
 const asciilabels = ("A0", "Ax", "Ay", "Az")   # filename/sidecar-safe
 
 const datafile = length(ARGS) ≥ 1 ? ARGS[1] : "A_rk4_400_N10000_Ns8000_spp16.jls"
-const harmonic = length(ARGS) ≥ 2 ? parse(Int, ARGS[2]) : parse(Int, get(ENV, "EDM_HARMONIC", "1"))
+const harmonics = length(ARGS) ≥ 2 ? parse.(Int, ARGS[2:end]) :
+    parse.(Int, split(get(ENV, "EDM_HARMONIC", "1"), ","))
 const comp = parse(Int, get(ENV, "EDM_COMP", "2"))
 
 # Resolve the parent run manifest once: it is the source of truth for
@@ -103,37 +105,37 @@ x_grid = LinRange(-25w₀, 25w₀, Nx)
 y_grid = LinRange(-25w₀, 25w₀, Ny)
 
 freqs = rfftfreq(N_samples, 1 / δt)
-bin = findmin(f -> abs(f - harmonic * ω / 2π), freqs)[2]
-@printf("harmonic %d → bin %d  (%.4f× fundamental), comp = %d (%s)\n",
-    harmonic, bin, freqs[bin] / (ω / 2π), comp, complabels[comp])
-
-Â = rfft(@view(A_s[:, comp, :, :]), 1)
-phase = angle.(Â[bin, :, :])
+Â = rfft(@view(A_s[:, comp, :, :]), 1)          # rfft the chosen component once
 A_s = nothing
 GC.gc()
 
 # ── Ring radii (R_test) and annulus tolerance — the diagnostic parameters ──
 const halfwidth = 25w₀
-radii = if haskey(ENV, "EDM_RADII")
+const radii = if haskey(ENV, "EDM_RADII")
     parse.(Float64, split(ENV["EDM_RADII"], ","))
 elseif haskey(ENV, "EDM_R")
     [parse(Float64, ENV["EDM_R"])]
 else
-    [0.4 * halfwidth]
+    halfwidth .* [0.2, 0.4, 0.6]
 end
-tol = haskey(ENV, "EDM_TOL") ? parse(Float64, ENV["EDM_TOL"]) : 1.5 * step(x_grid)
+const tol = haskey(ENV, "EDM_TOL") ? parse(Float64, ENV["EDM_TOL"]) : 1.5 * step(x_grid)
+const pid = parent[1]
 
-out = stem * @sprintf("_phaserings_h%d_%s.png", harmonic, asciilabels[comp])
-plot_phase_rings(phase, x_grid, y_grid;
-    radii, tol, outfile = out,
-    comp_label = @sprintf("%s, %dω₁", complabels[comp], harmonic))
-println("saved → $out")
+# One figure (+ derived sidecar) per harmonic, all from the single rfft above.
+for harmonic in harmonics
+    bin = findmin(f -> abs(f - harmonic * ω / 2π), freqs)[2]
+    @printf("harmonic %d → bin %d  (%.4f× fundamental), comp = %d (%s)\n",
+        harmonic, bin, freqs[bin] / (ω / 2π), comp, complabels[comp])
+    phase = angle.(Â[bin, :, :])
 
-# ── Derived-artifact sidecar for the results dashboard (research.314159265.dev) ──
-# Bind the plot to its parent run (already resolved for samples_per_period above);
-# `setup` keys are the dashboard picker axis and record the diagnostic parameters
-# used (tolerance, harmonic, component).
-let pid = parent[1]
+    out = stem * @sprintf("_phaserings_h%d_%s.png", harmonic, asciilabels[comp])
+    plot_phase_rings(phase, x_grid, y_grid;
+        radii, tol, outfile = out,
+        comp_label = @sprintf("%s, %dω₁", complabels[comp], harmonic))
+    println("saved → $out")
+
+    # Derived sidecar (one per harmonic): bind the plot to its parent run; `setup`
+    # keys are the dashboard picker axis and record the diagnostic parameters used.
     if pid === nothing
         @warn "parent run manifest for $(basename(datafile)) has no run_id; skipping sidecar"
     else
@@ -147,6 +149,6 @@ let pid = parent[1]
                 "component" => asciilabels[comp],
                 "tol" => round(tol; sigdigits = 4),
             ))
-        println("derived sidecar → phaserings (parent run $pid)")
+        println("derived sidecar → phaserings h$harmonic (parent run $pid)")
     end
 end
