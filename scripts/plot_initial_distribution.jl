@@ -18,6 +18,7 @@ using StaticArrays
 using LinearAlgebra
 using Printf
 using CairoMakie
+using UUIDs
 
 const c = 137.03599908330932
 const ω = 0.057
@@ -31,6 +32,8 @@ const T_EVAL = parse(Float64, get(ENV, "EDM_T", "0.0"))
 const EXTENT = parse(Float64, get(ENV, "EDM_EXTENT", "1.15")) * Rmax
 const NGRID = parse(Int, get(ENV, "EDM_NGRID", "220"))
 const p_radial, m_azimuthal = 2, -2
+const OUTDIR = get(ENV, "EDM_OUTDIR", joinpath(pkgdir(ElectronDynamicsModels), "runs"))
+const RUN_TAG = string(uuid4())
 
 # Sunflower distribution — identical to thomson_scattering.jl.
 const ϕ = (1 + √5) / 2
@@ -93,8 +96,20 @@ for (k, (name, data, cmap)) in enumerate(panels)
     Colorbar(gl[1, 2], hm, height = 330, width = 12)
 end
 resize_to_layout!(fig)
-out = get(ENV, "EDM_OUT", joinpath(pkgdir(ElectronDynamicsModels), "runs", "initial_distribution.png"))
-mkpath(dirname(out))
+mkpath(OUTDIR)
+out = joinpath(OUTDIR, "initial_distribution_$(RUN_TAG).png")
 save(out, fig)
 println("electrons: $NSCAT (Rmax = $(round(Rmax; sigdigits=4)) a.u. = $(round(Rmax/w₀; digits=2))·w₀), grid ±$(round(EXTENT/w₀; digits=2))·w₀")
 println("saved → $out")
+
+# Provenance manifest for the dashboard — a standalone analysis node (setup viz,
+# no parent run). write_run_manifest records repo_commit + script, so the dashboard
+# links the file that produced this plot.
+include(joinpath(@__DIR__, "manifest.jl"))
+write_run_manifest(OUTDIR; run_id = RUN_TAG, script = basename(PROGRAM_FILE),
+    config = Dict("a0" => A0, "t_eval" => T_EVAL, "n_electrons" => NSCAT,
+        "extent_over_w0" => EXTENT / w₀, "kind" => "initial_distribution"),
+    laser = Dict("wavelength" => λ, "w0" => w₀, "m" => m_azimuthal, "p" => p_radial,
+        "pol" => "circular", "profile" => "gaussian"),
+    plots = [basename(out)])
+println("manifest → $(joinpath(OUTDIR, "run_$(RUN_TAG).toml"))")

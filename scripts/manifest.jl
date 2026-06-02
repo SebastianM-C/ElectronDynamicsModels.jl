@@ -12,6 +12,17 @@
 using TOML
 using Dates
 
+# Git commit of the repo holding the post-processing scripts (this file lives in
+# scripts/), recorded in derived/analysis provenance so the dashboard can link the
+# *plotting* script on GitHub at the exact commit — alongside the run's own link.
+function _script_repo_commit()
+    return try
+        readchomp(Cmd(["git", "-C", @__DIR__, "rev-parse", "HEAD"]))
+    catch
+        "unknown"
+    end
+end
+
 """
     find_parent_manifest(dir, datafile) -> (run_id, manifest::Dict) | nothing
 
@@ -77,8 +88,8 @@ function write_derived(dir::AbstractString; kind, label, run_id, plot,
     source === nothing || (d["source"] = source)
     datafile === nothing || (d["datafile"] = datafile)
     m = Dict{String,Any}(
-        "provenance" => Dict("script" => basename(PROGRAM_FILE), "host" => gethostname(),
-            "timestamp" => string(now())),
+        "provenance" => Dict("script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
+            "host" => gethostname(), "timestamp" => string(now())),
         "derived" => d,
     )
     isempty(setup) || (m["setup"] = Dict{String,Any}(string(k) => v for (k, v) in setup))
@@ -98,7 +109,7 @@ run_id) to make the dashboard show it as an "analysis" with a lineage link to th
 """
 function write_run_manifest(dir::AbstractString; run_id, script, config = Dict(),
         laser = Dict(), setup = Dict(), derived_from = nothing, datafile = nothing, plots = String[])
-    prov = Dict{String,Any}("run_id" => run_id, "script" => script,
+    prov = Dict{String,Any}("run_id" => run_id, "script" => script, "repo_commit" => _script_repo_commit(),
         "host" => gethostname(), "timestamp" => string(now()))
     derived_from === nothing || (prov["derived_from"] = derived_from)
     outs = Dict{String,Any}("plots" => collect(plots))
