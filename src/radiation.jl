@@ -257,35 +257,63 @@ function _accumulate_pixel!(A, traj, screen, τ_samples, t_samples, ix, iy)
 end
 
 """
-    lienard_wiechert_F(X, u, 𝔞, K, c) -> SMatrix{4,4}
+    lienard_wiechert_F_split(X, u, 𝔞, K, c) -> (F_vel, F_rad)
 
-Liénard–Wiechert field-strength (Faraday) tensor `F^{μν}` of a single point
-charge, a direct transcription of
+Liénard–Wiechert field-strength (Faraday) tensor split **by power of R** into its
+velocity (near) and radiation (far) pieces — the form used for numerically clean,
+separately-coherent accumulation in [`accumulate_field`](@ref).  With
+`Xu = m_dot(X,u) ∝ R` and `X𝔞 = m_dot(X,𝔞) ∝ R`:
 
-    F^{μν} = K [ (Xᵘ𝔞ᵛ − Xᵛ𝔞ᵘ) / (Xu)²  +  (c² − X𝔞)(Xᵘuᵛ − Xᵛuᵘ) / (Xu)³ ]
+    F_vel = K c² (Xᵘuᵛ − Xᵛuᵘ) / (Xu)³                            ∝ 1/R²
+    F_rad = K [ (Xᵘ𝔞ᵛ − Xᵛ𝔞ᵘ) / (Xu)²
+              − X𝔞 (Xᵘuᵛ − Xᵛuᵘ) / (Xu)³ ]                        ∝ 1/R
 
-with prefactor `K = q/(4πε₀c)`.  `X` is the retarded displacement 4-vector
-`Xᵘ = xᵘ_obs − xᵘ_src(τᵣ)` (upper index, `= (R, R·n̂)`), `u` the 4-velocity and
-`𝔞` the 4-acceleration at the retarded proper time τᵣ.  Indices are upper,
-matching `faraday` and the Lorentz force in `ChargedParticle`.  Contractions use
-`m_dot` (the (+,−,−,−) Minkowski product): `Xu = m_dot(X,u)`, `X𝔞 = m_dot(X,𝔞)`.
+`X` is the retarded displacement 4-vector `Xᵘ = xᵘ_obs − xᵘ_src(τᵣ)`
+(`= (R, R·n̂)`), `u` the 4-velocity and `𝔞` the 4-acceleration at τᵣ; `K = q/(4πε₀c)`.
 
-The first term ∝ 1/(Xu)² ∝ 1/R is the radiation (acceleration) field; the second
-∝ 1/(Xu)³ ∝ 1/R² is the velocity (near) field — the piece an FFT of the
-4-potential alone cannot recover.
+The subtlety: the `−X𝔞` term rides the *velocity* bivector `(Xᵘuᵛ − Xᵛuᵘ)` yet
+scales as 1/R (because `X𝔞 ∝ R`), so it belongs to the **radiation** field.
+[`lienard_wiechert_F`](@ref) groups it with the `c²` term as `(c² − X𝔞)`, which
+loses ≈`log₁₀(c²/X𝔞)` significant digits when `X𝔞 ≪ c²` (small a₀); computing
+`F_rad` directly never forms that difference.  `F_vel + F_rad` is identically
+`lienard_wiechert_F` in exact arithmetic.
 """
-function lienard_wiechert_F(X, u, 𝔞, K, c)
+function lienard_wiechert_F_split(X, u, 𝔞, K, c)
     Xu = m_dot(X, u)
     X𝔞 = m_dot(X, 𝔞)
-    accel_coef = inv(Xu^2)
-    vel_coef = (c^2 - X𝔞) * inv(Xu^3)
-    return @SMatrix [
+    inv_Xu2 = inv(Xu^2)
+    inv_Xu3 = inv(Xu^3)
+    vel_coef = c^2 * inv_Xu3       # c² piece only → 1/R² near field
+    rad_vel_coef = -X𝔞 * inv_Xu3   # −X𝔞 piece → 1/R radiation, on the u-bivector
+    F_vel = @SMatrix [
+        K * (X[μ] * u[ν] - X[ν] * u[μ]) * vel_coef
+            for μ in 1:4, ν in 1:4
+    ]
+    F_rad = @SMatrix [
         K * (
-                (X[μ] * 𝔞[ν] - X[ν] * 𝔞[μ]) * accel_coef +
-                (X[μ] * u[ν] - X[ν] * u[μ]) * vel_coef
+                (X[μ] * 𝔞[ν] - X[ν] * 𝔞[μ]) * inv_Xu2 +
+                (X[μ] * u[ν] - X[ν] * u[μ]) * rad_vel_coef
             )
             for μ in 1:4, ν in 1:4
     ]
+    return (F_vel, F_rad)
+end
+
+"""
+    lienard_wiechert_F(X, u, 𝔞, K, c) -> SMatrix{4,4}
+
+Total Liénard–Wiechert field-strength (Faraday) tensor `F^{μν} = F_vel + F_rad`,
+the sum of the two pieces from [`lienard_wiechert_F_split`](@ref):
+
+    F^{μν} = K [ (Xᵘ𝔞ᵛ − Xᵛ𝔞ᵘ) / (Xu)²  +  (c² − X𝔞)(Xᵘuᵛ − Xᵛuᵘ) / (Xu)³ ].
+
+Indices are upper, matching `faraday` and the Lorentz force in `ChargedParticle`.
+Use [`lienard_wiechert_F_split`](@ref) when accumulating, to keep the radiation
+and velocity fields in separate coherent sums (see [`accumulate_field`](@ref)).
+"""
+function lienard_wiechert_F(X, u, 𝔞, K, c)
+    F_vel, F_rad = lienard_wiechert_F_split(X, u, 𝔞, K, c)
+    return F_vel + F_rad
 end
 
 """
@@ -329,23 +357,31 @@ end
 Compute the radiated electromagnetic field on `screen` from electron `trajs`.
 
 For each electron and pixel, solves the retarded-time ODE (as in
-[`accumulate_potential`](@ref)), builds the Liénard–Wiechert Faraday tensor
-[`lienard_wiechert_F`](@ref) at each observer-time sample, and coherently sums
-the fields over electrons.  The Faraday tensor is antisymmetric (6 independent
-components) and the fields are *linear* in it, so each contribution is stored in
-its compact, unit-natural basis, the (E, B) pair, rather than the redundant
-16-component matrix (`Σᵢ extract_EB(Fᵢ) = extract_EB(Σᵢ Fᵢ)`).
+[`accumulate_potential`](@ref)), builds the Liénard–Wiechert Faraday tensor at
+each observer-time sample via [`lienard_wiechert_F_split`](@ref), and coherently
+sums the fields over electrons.  The radiation (1/R) and velocity (1/R²) pieces
+are accumulated in **separate** buffers: this avoids the `(c² − X𝔞)` cancellation
+at small a₀ and keeps the (near-field-dominated) total from swamping the
+radiation sum.  The Faraday tensor is antisymmetric and the fields are *linear*
+in it, so each contribution is stored in the compact (E, B) basis rather than the
+redundant 16-component matrix (`Σᵢ extract_EB(Fᵢ) = extract_EB(Σᵢ Fᵢ)`).
 
-Returns `(; E, B)`, each `Array{Float64,4}` of shape `(N_samples, 3, Nx, Ny)`:
-the time-domain fields, from which [`screen_observables`](@ref) derives the
-Poynting vector, energy, and angular momentum.
+Returns `(; E, B, E_rad, B_rad)`, each `Array{Float64,4}` of shape
+`(N_samples, 3, Nx, Ny)`: `E, B` are the *total* time-domain fields (radiation +
+velocity, including their cross term) for [`screen_observables`](@ref); `E_rad,
+B_rad` are the radiation field alone, whose observables are the radiated
+energy/angular momentum exactly (the velocity is recoverable as `E − E_rad`).
 """
 function accumulate_field(trajs::Vector{<:TrajectoryInterpolant}, screen::ObserverScreen, alg; solve_kwargs...)
     N_samples = length(screen.x⁰_samples)
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
 
-    E = zeros(N_samples, 3, Nx, Ny)
-    B = zeros(N_samples, 3, Nx, Ny)
+    # Separate coherent accumulators for the radiation (1/R) and velocity (1/R²)
+    # fields; summed to the total on return (see `lienard_wiechert_F_split`).
+    E_rad = zeros(N_samples, 3, Nx, Ny)
+    B_rad = zeros(N_samples, 3, Nx, Ny)
+    E_vel = zeros(N_samples, 3, Nx, Ny)
+    B_vel = zeros(N_samples, 3, Nx, Ny)
 
     pool = _retarded_integ_pool(first(trajs), screen, alg; solve_kwargs...)
 
@@ -363,15 +399,17 @@ function accumulate_field(trajs::Vector{<:TrajectoryInterpolant}, screen::Observ
                 reinit!(integ, τi; t0 = x⁰_i, tf = x⁰_f)
                 solve!(integ)
 
-                _accumulate_field_pixel!(E, B, traj, screen, integ.sol.u, integ.sol.t, ix, iy)
+                _accumulate_field_pixel!(E_rad, B_rad, E_vel, B_vel, traj, screen, integ.sol.u, integ.sol.t, ix, iy)
             end
             put!(pool, integ)
         end
     end
-    return (; E, B)
+    E = E_rad .+ E_vel
+    B = B_rad .+ B_vel
+    return (; E, B, E_rad, B_rad)
 end
 
-function _accumulate_field_pixel!(E, B, traj, screen, τ_samples, t_samples, ix, iy)
+function _accumulate_field_pixel!(E_rad, B_rad, E_vel, B_vel, traj, screen, τ_samples, t_samples, ix, iy)
     r_obs = SVector{3}(screen.x_grid[ix], screen.y_grid[iy], screen.z)
     c = screen.c
     x⁰_first = first(screen.x⁰_samples)
@@ -383,10 +421,13 @@ function _accumulate_field_pixel!(E, B, traj, screen, τ_samples, t_samples, ix,
         xμ, uμ, 𝔞μ = state_with_acceleration(traj, τ)
         disp = r_obs - xμ[SA[2, 3, 4]]
         X = SVector{4}(norm(disp), disp[1], disp[2], disp[3])
-        F = lienard_wiechert_F(X, uμ, 𝔞μ, traj.K, c)
-        Eᵢ, Bᵢ = extract_EB(F, c)
-        @views E[idx, :, ix, iy] .+= Eᵢ
-        @views B[idx, :, ix, iy] .+= Bᵢ
+        F_vel, F_rad = lienard_wiechert_F_split(X, uμ, 𝔞μ, traj.K, c)
+        Eᵥ, Bᵥ = extract_EB(F_vel, c)
+        Eᵣ, Bᵣ = extract_EB(F_rad, c)
+        @views E_vel[idx, :, ix, iy] .+= Eᵥ
+        @views B_vel[idx, :, ix, iy] .+= Bᵥ
+        @views E_rad[idx, :, ix, iy] .+= Eᵣ
+        @views B_rad[idx, :, ix, iy] .+= Bᵣ
     end
     return
 end

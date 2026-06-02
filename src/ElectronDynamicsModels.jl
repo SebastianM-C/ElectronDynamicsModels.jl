@@ -40,7 +40,7 @@ export ReferenceFrame, Worldline,
     FieldEvaluator,
     ObserverScreen, trajectory_interpolants, TrajectoryInterpolant, accumulate_potential,
     accumulate_field, screen_observables, screen_spectrum,
-    lienard_wiechert_F, extract_EB, faraday, stress_energy,
+    lienard_wiechert_F, lienard_wiechert_F_split, extract_EB, faraday, stress_energy,
     GPUCubicSpline, GPUKernelRK4, GPUKernelTsit5, recommended_n_substeps,
     retarded_time_problem
 
