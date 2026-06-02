@@ -7,6 +7,13 @@ struct TrajectoryInterpolant{I, A, R, U, T}
     K::T            # q_e / (4π ε₀ c) — Liénard-Wiechert prefactor
 end
 
+# Potential-only convenience constructor: no 4-acceleration spline (`a_itp = nothing`).
+# Enough for `accumulate_potential` and the GPUKernelRK4 potential path, which never
+# touch 𝔞μ.  `accumulate_field` needs the acceleration, so it requires the 5-arg form
+# or the `sol` constructor below (which builds the `a_itp` spline).
+TrajectoryInterpolant(itp, x_idxs, u_idxs, K) =
+    TrajectoryInterpolant(itp, nothing, x_idxs, u_idxs, K)
+
 function TrajectoryInterpolant(sol::SciMLBase.AbstractODESolution, x_syms, u_syms)
     x_idxs = SVector{4, Int}(variable_index.((sol,), collect(x_syms)))
     u_idxs = SVector{4, Int}(variable_index.((sol,), collect(u_syms)))
