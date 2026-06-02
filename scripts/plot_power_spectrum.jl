@@ -15,8 +15,16 @@ const c = 137.03599908330932
 const ω = 0.057
 
 const datafile = length(ARGS) ≥ 1 ? ARGS[1] : "A_rk4_400_N10000_Ns8000_spp16.jls"
-const m = match(r"_spp(\d+)", datafile)
-const samples_per_period = m === nothing ? 5 : parse(Int, m.captures[1])
+
+# The run TOML (not the data filename) is the source of truth for
+# samples_per_period; resolve the parent manifest once and reuse it for the
+# derived sidecar below.
+include(joinpath(@__DIR__, "manifest.jl"))
+const dir = dirname(abspath(datafile))
+const parent = find_parent_manifest(dir, basename(datafile))
+parent === nothing && error("no run_*.toml in $dir binds $(basename(datafile)) — " *
+    "needed for samples_per_period (thomson_scattering.jl emits the run manifest)")
+const samples_per_period = spp_from_manifest(parent[2])
 const δt = 2π / ω / samples_per_period
 const stem = replace(datafile, r"\.jls$" => "")
 const cachefile = stem * "_powspec_all.jls"
@@ -84,11 +92,10 @@ end
 println("saved → $(stem)_powspec_all.png")
 
 # ── derived-artifact metadata for the results dashboard (research.314159265.dev) ──
-include(joinpath(@__DIR__, "manifest.jl"))
-let dir = dirname(abspath(datafile))
-    pid = find_parent_run(dir, basename(datafile))
+# manifest.jl is already included; `dir`/`parent` resolved at the top.
+let pid = parent[1]
     if pid === nothing
-        @warn "no parent run manifest found for $(basename(datafile)); skipping derived sidecar"
+        @warn "parent run manifest for $(basename(datafile)) has no run_id; skipping derived sidecar"
     else
         write_derived(dir; kind = "powspec", label = "power spectrum", run_id = pid,
             plot = basename(stem * "_powspec_all.png"), source = basename(datafile),

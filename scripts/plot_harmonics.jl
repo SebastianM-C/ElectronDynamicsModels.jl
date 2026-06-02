@@ -19,8 +19,16 @@ const w₀ = 75λ
 
 const datafile = length(ARGS) ≥ 1 ? ARGS[1] : "A_rk4_400_N10000_Ns8000_spp16.jls"
 const harmonics = length(ARGS) ≥ 2 ? parse.(Int, ARGS[2:end]) : [3, 5]
-const m = match(r"_spp(\d+)", datafile)
-const samples_per_period = m === nothing ? 5 : parse(Int, m.captures[1])
+
+# The run TOML (not the data filename) is the source of truth for
+# samples_per_period; resolve the parent manifest once and reuse it for the
+# derived sidecars below.
+include(joinpath(@__DIR__, "manifest.jl"))
+const dir = dirname(abspath(datafile))
+const parent = find_parent_manifest(dir, basename(datafile))
+parent === nothing && error("no run_*.toml in $dir binds $(basename(datafile)) — " *
+    "needed for samples_per_period (thomson_scattering.jl emits the run manifest)")
+const samples_per_period = spp_from_manifest(parent[2])
 const δt = 2π / ω / samples_per_period
 const stem = replace(datafile, r"\.jls$" => "")
 const cachefile = stem * "_hmaps.jls"
@@ -87,13 +95,12 @@ hlabel(n) = n == 1 ? "ω₁ (fundamental)" :
             @sprintf("%dω₁ (%s harmonic)", n, get(ORDINALS, n, "$(n)th"))
 
 # ── derived-artifact metadata for the results dashboard (research.314159265.dev) ──
-include(joinpath(@__DIR__, "manifest.jl"))
-let dir = dirname(abspath(datafile))
-    pid = find_parent_run(dir, basename(datafile))
+# manifest.jl is already included; `dir`/`parent` resolved at the top.
+let pid = parent[1]
     for n in harmonics
         plotname = plot_harmonic(n)
         if pid === nothing
-            @warn "no parent run manifest for $(basename(datafile)); skipping h$n sidecar"
+            @warn "parent run manifest for $(basename(datafile)) has no run_id; skipping h$n sidecar"
         else
             write_derived(dir; kind = "h$n", label = hlabel(n), run_id = pid,
                 plot = plotname, source = basename(datafile),

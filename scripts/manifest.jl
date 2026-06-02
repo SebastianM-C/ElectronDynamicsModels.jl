@@ -13,13 +13,15 @@ using TOML
 using Dates
 
 """
-    find_parent_run(dir, datafile) -> run_id | nothing
+    find_parent_manifest(dir, datafile) -> (run_id, manifest::Dict) | nothing
 
 Find the run a derived plot was computed from: scan `dir` for a `run_*.toml` whose
-`[outputs].datafile` equals `datafile` (a basename) and return its `provenance.run_id`.
-Binds derived plots to their run without needing the run id encoded in filenames.
+`[outputs].datafile` equals `datafile` (a basename) and return its
+`provenance.run_id` together with the parsed manifest. Binds derived plots to
+their run — and lets post-processing read run parameters (e.g.
+`samples_per_period`) from the manifest rather than from filenames.
 """
-function find_parent_run(dir::AbstractString, datafile::AbstractString)
+function find_parent_manifest(dir::AbstractString, datafile::AbstractString)
     isdir(dir) || return nothing
     for f in readdir(dir)
         (startswith(f, "run_") && endswith(f, ".toml")) || continue
@@ -29,10 +31,37 @@ function find_parent_run(dir::AbstractString, datafile::AbstractString)
             continue
         end
         if get(get(m, "outputs", Dict()), "datafile", nothing) == datafile
-            return get(get(m, "provenance", Dict()), "run_id", nothing)
+            return (get(get(m, "provenance", Dict()), "run_id", nothing), m)
         end
     end
     return nothing
+end
+
+"""
+    find_parent_run(dir, datafile) -> run_id | nothing
+
+The `provenance.run_id` of the run that produced `datafile` (see
+[`find_parent_manifest`](@ref)), or `nothing` if no run manifest binds it.
+"""
+function find_parent_run(dir::AbstractString, datafile::AbstractString)
+    r = find_parent_manifest(dir, datafile)
+    return r === nothing ? nothing : r[1]
+end
+
+"""
+    spp_from_manifest(manifest; default = nothing) -> Int
+
+Read `samples_per_period` from a parsed run `manifest` (`[config]`, falling back to
+`[setup]`). Errors if absent and no `default` is given — post-processing should get
+this from the run TOML, not by parsing the data filename.
+"""
+function spp_from_manifest(manifest::AbstractDict; default = nothing)
+    for sec in ("config", "setup")
+        v = get(get(manifest, sec, Dict()), "samples_per_period", nothing)
+        v === nothing || return Int(v)
+    end
+    default === nothing && error("samples_per_period not found in run manifest [config]/[setup]")
+    return default
 end
 
 """
