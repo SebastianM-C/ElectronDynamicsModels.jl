@@ -83,10 +83,12 @@ Write a `[derived]` sidecar TOML into `dir` binding `plot` (a basename in `dir`)
 in the dashboard; `source` records the input artifact as provenance.
 """
 function write_derived(dir::AbstractString; kind, label, run_id, plot,
-        source = nothing, datafile = nothing, setup = Dict())
+        source = nothing, datafile = nothing, setup = Dict(), description = nothing)
     d = Dict{String,Any}("kind" => kind, "label" => label, "depends_on" => [run_id], "plot" => plot)
     source === nothing || (d["source"] = source)
     datafile === nothing || (d["datafile"] = datafile)
+    # `description`: markdown + $…$ LaTeX, rendered (KaTeX) in the dashboard plot modal.
+    description === nothing || (d["description"] = description)
     m = Dict{String,Any}(
         "provenance" => Dict("script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
             "host" => gethostname(), "timestamp" => string(now())),
