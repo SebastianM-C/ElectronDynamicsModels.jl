@@ -45,33 +45,86 @@ function thomson_screen(Nx, N_samples)
     return ObserverScreen(LinRange(-25w₀, 25w₀, Nx), LinRange(-25w₀, 25w₀, Nx), Z, x⁰; c)
 end
 
-println("loading $datafile …")
-fld = deserialize(datafile)
-N_samples, _, Nx, Ny = size(fld.E)
-screen = thomson_screen(Nx, N_samples)
-xg, yg = collect(screen.x_grid), collect(screen.y_grid)
-dt = step(screen.x⁰_samples) / c
+# ── Reduced products + cache ──────────────────────────────────────────────────
+# The figures only ever use *reductions* of screen_observables (∫…dt maps, peak-slot
+# snapshots, length-N time series). The full output is ~38 GB/field (S alone is
+# (N,3,Nx,Ny)), so we cache just the reductions (~16 MB) in <stem>_obscache.jls and
+# skip BOTH the 86 GB .jls reload and the (minutes-long) screen_observables recompute
+# when re-plotting. Bump OBS_CACHE_VERSION whenever the reduced schema/math changes,
+# so an older cache is detected as stale and recomputed.
+const OBS_CACHE_VERSION = 1
+const cachefile = stem * "_obscache.jls"
+const recompute = ("--recompute" in ARGS) || get(ENV, "EDM_OBS_RECOMPUTE", "0") == "1"
 
-println("computing screen_observables (total + radiation) …")
-obs_tot = screen_observables(fld, screen; ε₀)
-obs_rad = screen_observables((; E = fld.E_rad, B = fld.B_rad), screen; ε₀)
+# Collapse one screen_observables result to the plot-ready quantities (per field).
+reduce_field(o, kp, dt, dA) = (;
+    energy_fluence = dropdims(sum(@view(o.S[:, 3, :, :]); dims = 1); dims = 1) .* dt,
+    lz_fluence = dropdims(sum(o.Lz_density; dims = 1); dims = 1) .* dt,
+    Smag_peak = [hypot(o.S[kp, 1, i, j], o.S[kp, 2, i, j], o.S[kp, 3, i, j]) for i in axes(o.S, 3), j in axes(o.S, 4)],
+    u_peak = o.energy_density[kp, :, :],
+    Sx_peak = o.S[kp, 1, :, :],
+    Sy_peak = o.S[kp, 2, :, :],
+    Pt = dropdims(sum(@view(o.S[:, 3, :, :]); dims = (2, 3)); dims = (2, 3)) .* dA,
+    Lzt = dropdims(sum(o.Lz_density; dims = (2, 3)); dims = (2, 3)) .* dA,
+    energy_total = o.energy_total,
+    Lz_total = o.Lz_total,
+)
 
-# Peak emission slot from the total field's screen-integrated energy density.
-slot_energy = dropdims(sum(obs_tot.energy_density; dims = (2, 3)); dims = (2, 3))
-const k_peak = argmax(slot_energy)
+# The heavy path: load the 86 GB field, run screen_observables, reduce to ~16 MB.
+function build_cache()
+    println("loading $datafile …")
+    fld = deserialize(datafile)
+    Ns, _, nx, ny = size(fld.E)
+    scr = thomson_screen(nx, Ns)
+    dt = step(scr.x⁰_samples) / c
+    dA = step(scr.x_grid) * step(scr.y_grid)
+    println("computing screen_observables (total + radiation) …")
+    ot = screen_observables(fld, scr; ε₀)
+    orad = screen_observables((; E = fld.E_rad, B = fld.B_rad), scr; ε₀)
+    se = dropdims(sum(ot.energy_density; dims = (2, 3)); dims = (2, 3))
+    kp = argmax(se)
+    return (;
+        version = OBS_CACHE_VERSION,
+        total = reduce_field(ot, kp, dt, dA), radiation = reduce_field(orad, kp, dt, dA),
+        k_peak = kp, slot_energy = se, Nx = nx, Ny = ny, N_samples = Ns,
+    )
+end
+
+function build_and_save()
+    cc = build_cache()
+    serialize(cachefile, cc)
+    println(@sprintf("cached reductions → %s  (%.1f MB)", cachefile, filesize(cachefile) / 1.0e6))
+    return cc
+end
+
+# Cache-invalidation policy: decide whether to reuse <stem>_obscache.jls or recompute.
+function load_or_build()
+    return if recompute || !(isfile(cachefile)) || (mtime(datafile) > mtime(cachefile))
+        cc = build_and_save()
+    else
+        cc = deserialize(cachefile)
+        if haskey(cc, :version) && cc.version == OBS_CACHE_VERSION
+            return cc
+        else
+            cc = build_and_save()
+        end
+    end
+end
+
+const cache = load_or_build()
+const Nx, Ny, N_samples, k_peak = cache.Nx, cache.Ny, cache.N_samples, cache.k_peak
+const red_tot, red_rad = cache.total, cache.radiation
+const screen = thomson_screen(Nx, N_samples)
+const xg, yg = collect(screen.x_grid), collect(screen.y_grid)
 @printf("peak emission slot k = %d of %d  (x⁰ = %.4g)\n", k_peak, N_samples, screen.x⁰_samples[k_peak])
 
 @printf("\n%-12s %14s %14s %14s\n", "", "energy_total", "Lz_total", "Lz/U")
-for (name, o) in (("total", obs_tot), ("radiation", obs_rad))
-    @printf("%-12s %14.4e %14.4e %14.4e\n", name, o.energy_total, o.Lz_total,
-        o.energy_total == 0 ? NaN : o.Lz_total / o.energy_total)
+for (name, r) in (("total", red_tot), ("radiation", red_rad))
+    @printf(
+        "%-12s %14.4e %14.4e %14.4e\n", name, r.energy_total, r.Lz_total,
+        r.energy_total == 0 ? NaN : r.Lz_total / r.energy_total
+    )
 end
-
-# Per-pixel maps.
-energy_fluence(o) = dropdims(sum(@view(o.S[:, 3, :, :]); dims = 1); dims = 1) .* dt
-lz_fluence(o) = dropdims(sum(o.Lz_density; dims = 1); dims = 1) .* dt
-Smag_peak(o) = [hypot(o.S[k_peak, 1, i, j], o.S[k_peak, 2, i, j], o.S[k_peak, 3, i, j]) for i in 1:Nx, j in 1:Ny]
-u_peak(o) = o.energy_density[k_peak, :, :]
 
 # Float32-safe colorrange: Makie casts data + range to Float32 and errors if the
 # range collapses (cmin==cmax) — which happens when the values are so tiny they
@@ -95,35 +148,41 @@ function panel!(fig, pos, data, title, cmap)
     return ax
 end
 
-function field_figure(o, fieldname, outfile)
+function field_figure(r, fieldname, outfile)
     fig = Figure()
-    Label(fig[0, :], @sprintf("Screen observables — %s field — %s\nU=%.3e  Lz=%.3e  Lz/U=%.3e",
-            fieldname, basename(stem), o.energy_total, o.Lz_total,
-            o.energy_total == 0 ? NaN : o.Lz_total / o.energy_total),
-        fontsize = 13, font = :bold)
-    panel!(fig, (1, 1), energy_fluence(o), L"\int S^z\,\mathrm{d}t", :viridis)
-    panel!(fig, (1, 2), lz_fluence(o), L"\int (\mathrm{d}L_z/\mathrm{d}A)\,\mathrm{d}t", :seismic)
-    panel!(fig, (2, 1), Smag_peak(o), "|S|   (peak slot k=$k_peak)", :viridis)
-    panel!(fig, (2, 2), u_peak(o), "energy density u   (peak slot k=$k_peak)", :viridis)
+    Label(
+        fig[0, :], @sprintf(
+            "Screen observables — %s field — %s\nU=%.3e  Lz=%.3e  Lz/U=%.3e",
+            fieldname, basename(stem), r.energy_total, r.Lz_total,
+            r.energy_total == 0 ? NaN : r.Lz_total / r.energy_total
+        ),
+        fontsize = 13, font = :bold
+    )
+    panel!(fig, (1, 1), r.energy_fluence, L"\int S^z\,\mathrm{d}t", :viridis)
+    panel!(fig, (1, 2), r.lz_fluence, L"\int (\mathrm{d}L_z/\mathrm{d}A)\,\mathrm{d}t", :seismic)
+    panel!(fig, (2, 1), r.Smag_peak, "|S|   (peak slot k=$k_peak)", :viridis)
+    panel!(fig, (2, 2), r.u_peak, "energy density u   (peak slot k=$k_peak)", :viridis)
     resize_to_layout!(fig)
     save(outfile, fig)
     println("saved → $outfile")
     return outfile
 end
 
-out_tot = field_figure(obs_tot, "total", stem * "_observables_total.png")
-out_rad = field_figure(obs_rad, "radiation", stem * "_observables_radiation.png")
+out_tot = field_figure(red_tot, "total", stem * "_observables_total.png")
+out_rad = field_figure(red_rad, "radiation", stem * "_observables_radiation.png")
 
 # ── Vortex figure: azimuthal Poynting Sφ + (Sˣ,Sʸ) circulation at the peak slot ──
 # Sφ = (x Sʸ − y Sˣ)/r is the azimuthal energy flux (its r-moment integrates to L_z);
 # its sign is the OAM handedness, and the (Sˣ,Sʸ) arrows show the swirl directly.
-function vortex_panel!(fig, pos, o, fieldname)
-    Sx = o.S[k_peak, 1, :, :]
-    Sy = o.S[k_peak, 2, :, :]
+function vortex_panel!(fig, pos, r, fieldname)
+    Sx = r.Sx_peak
+    Sy = r.Sy_peak
     Sphi = [(xg[i] * Sy[i, j] - yg[j] * Sx[i, j]) / max(hypot(xg[i], yg[j]), eps()) for i in 1:Nx, j in 1:Ny]
     gl = fig[pos...] = GridLayout()
-    ax = Axis(gl[1, 1]; width = 320, height = 320, xlabel = "x [a.u.]", ylabel = "y [a.u.]",
-        title = "$fieldname:   Sφ + (Sˣ,Sʸ)   @ k=$k_peak")
+    ax = Axis(
+        gl[1, 1]; width = 320, height = 320, xlabel = "x [a.u.]", ylabel = "y [a.u.]",
+        title = "$fieldname:   Sφ + (Sˣ,Sʸ)   @ k=$k_peak"
+    )
     hm = heatmap!(ax, xg, yg, Sphi; colormap = :seismic, colorrange = _crange(Sphi; diverging = true))
     Colorbar(gl[1, 2], hm, width = 12, height = 320)
     # subsampled, direction-normalized arrows (length ∝ subsample spacing, not |S⊥|)
@@ -142,8 +201,8 @@ end
 function vortex_figure(outfile)
     fig = Figure()
     Label(fig[0, :], "Transverse-Poynting circulation @ peak slot — $(basename(stem))", fontsize = 13, font = :bold)
-    vortex_panel!(fig, (1, 1), obs_tot, "total")
-    vortex_panel!(fig, (1, 2), obs_rad, "radiation")
+    vortex_panel!(fig, (1, 1), red_tot, "total")
+    vortex_panel!(fig, (1, 2), red_rad, "radiation")
     resize_to_layout!(fig)
     save(outfile, fig)
     println("saved → $outfile")
@@ -152,23 +211,24 @@ end
 
 # ── Temporal figure: radiated power P(t) and AM emission rate dLz/dt per slot ──
 function temporal_figure(outfile)
-    dA = step(screen.x_grid) * step(screen.y_grid)
-    Pt(o) = dropdims(sum(@view(o.S[:, 3, :, :]); dims = (2, 3)); dims = (2, 3)) .* dA
-    Lzt(o) = dropdims(sum(o.Lz_density; dims = (2, 3)); dims = (2, 3)) .* dA
     ks = 1:N_samples
     fig = Figure()
     Label(fig[0, :], "Temporal profiles — $(basename(stem))", fontsize = 13, font = :bold)
-    ax1 = Axis(fig[1, 1]; width = 460, height = 220, xlabel = "observer-time slot",
-        ylabel = L"P = \int S^z\,\mathrm{d}A", title = "radiated power")
-    lines!(ax1, ks, Pt(obs_tot); label = "total")
-    lines!(ax1, ks, Pt(obs_rad); label = "radiation", linestyle = :dash)
+    ax1 = Axis(
+        fig[1, 1]; width = 460, height = 220, xlabel = "observer-time slot",
+        ylabel = L"P = \int S^z\,\mathrm{d}A", title = "radiated power"
+    )
+    lines!(ax1, ks, red_tot.Pt; label = "total")
+    lines!(ax1, ks, red_rad.Pt; label = "radiation", linestyle = :dash)
     vlines!(ax1, [k_peak]; color = (:gray, 0.7), linestyle = :dot)
     axislegend(ax1; labelsize = 9)
-    ax2 = Axis(fig[2, 1]; width = 460, height = 220, xlabel = "observer-time slot",
+    ax2 = Axis(
+        fig[2, 1]; width = 460, height = 220, xlabel = "observer-time slot",
         ylabel = L"\mathrm{d}L_z/\mathrm{d}t = \int (\mathrm{d}L_z/\mathrm{d}A)\,\mathrm{d}A",
-        title = "angular-momentum emission rate")
-    lines!(ax2, ks, Lzt(obs_tot); label = "total")
-    lines!(ax2, ks, Lzt(obs_rad); label = "radiation", linestyle = :dash)
+        title = "angular-momentum emission rate"
+    )
+    lines!(ax2, ks, red_tot.Lzt; label = "total")
+    lines!(ax2, ks, red_rad.Lzt; label = "radiation", linestyle = :dash)
     vlines!(ax2, [k_peak]; color = (:gray, 0.7), linestyle = :dot)
     axislegend(ax2; labelsize = 9)
     resize_to_layout!(fig)
@@ -185,27 +245,33 @@ let pid = parent[1]
     if pid === nothing
         @warn "parent run manifest for $(basename(datafile)) has no run_id; skipping sidecar"
     else
-        for (fieldname, o, out) in (("total", obs_tot, out_tot), ("radiation", obs_rad, out_rad))
-            write_derived(dir; kind = "observables",
-                label = @sprintf("screen observables (%s): U=%.2e, Lz=%.2e", fieldname, o.energy_total, o.Lz_total),
+        for (fieldname, r, out) in (("total", red_tot, out_tot), ("radiation", red_rad, out_rad))
+            write_derived(
+                dir; kind = "observables",
+                label = @sprintf("screen observables (%s): U=%.2e, Lz=%.2e", fieldname, r.energy_total, r.Lz_total),
                 run_id = pid, plot = basename(out), source = basename(datafile),
                 setup = Dict("field" => fieldname),
                 description = "Screen observables (" * fieldname * " field). " *
                     raw"Top: time-integrated energy fluence $\int S^z\,dt$ and angular-momentum flux " *
                     raw"$\int \frac{dL_z}{dA}\,dt$. Bottom: instantaneous Poynting magnitude $|\mathbf{S}|$ and " *
                     raw"energy density $u=\tfrac{1}{2}\varepsilon_0(E^2+c^2B^2)$ at the peak emission slot. " *
-                    raw"Radiated angular momentum per energy: $L_z/U$ (×$\hbar\omega$ ⇒ per photon).")
+                    raw"Radiated angular momentum per energy: $L_z/U$ (×$\hbar\omega$ ⇒ per photon)."
+            )
         end
-        write_derived(dir; kind = "obs_vortex", label = "transverse-Poynting circulation @ peak",
+        write_derived(
+            dir; kind = "obs_vortex", label = "transverse-Poynting circulation @ peak",
             run_id = pid, plot = basename(out_vortex), source = basename(datafile),
             description = raw"Azimuthal Poynting $S_\varphi=(x\,S^y-y\,S^x)/r$ (colour; sign is the OAM handedness) " *
                 raw"with transverse $(S^x,S^y)$ arrows at the peak slot. Its radial moment integrates to " *
-                raw"$L_z=\int(x\,T^{zy}-y\,T^{zx})\,dA$, so the swirl is a direct picture of the radiated angular momentum.")
-        write_derived(dir; kind = "obs_temporal", label = "radiated power + L_z rate vs time",
+                raw"$L_z=\int(x\,T^{zy}-y\,T^{zx})\,dA$, so the swirl is a direct picture of the radiated angular momentum."
+        )
+        write_derived(
+            dir; kind = "obs_temporal", label = "radiated power + L_z rate vs time",
             run_id = pid, plot = basename(out_temporal), source = basename(datafile),
             description = raw"Radiated power $P(t)=\int S^z\,dA$ and angular-momentum emission rate " *
                 raw"$\mathrm{d}L_z/\mathrm{d}t=\int\frac{dL_z}{dA}\,dA$ per observer-time slot (total vs radiation field). " *
-                raw"The dotted line marks the peak-emission slot used for the snapshots above.")
+                raw"The dotted line marks the peak-emission slot used for the snapshots above."
+        )
         println("derived sidecars → observables (total/radiation) + obs_vortex + obs_temporal (parent run $pid)")
     end
 end
