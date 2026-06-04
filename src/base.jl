@@ -1,5 +1,5 @@
 function ReferenceFrame(iv; name, c, ε₀, μ₀, m_e, q_e)
-    @parameters gμν[1:4, 1:4] = diagm([1, -1, -1, -1])
+    @parameters gμν[1:4, 1:4] = collect(η)
     constants = @constants c=c ε₀=ε₀ μ₀=μ₀ m_e=m_e q_e=q_e
     System(Equation[], iv, [], GlobalScope.([constants..., gμν]); name)
 end

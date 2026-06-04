@@ -12,14 +12,27 @@
 using TOML
 using Dates
 
+# Git commit of the repo holding the post-processing scripts (this file lives in
+# scripts/), recorded in derived/analysis provenance so the dashboard can link the
+# *plotting* script on GitHub at the exact commit — alongside the run's own link.
+function _script_repo_commit()
+    return try
+        readchomp(Cmd(["git", "-C", @__DIR__, "rev-parse", "HEAD"]))
+    catch
+        "unknown"
+    end
+end
+
 """
-    find_parent_run(dir, datafile) -> run_id | nothing
+    find_parent_manifest(dir, datafile) -> (run_id, manifest::Dict) | nothing
 
 Find the run a derived plot was computed from: scan `dir` for a `run_*.toml` whose
-`[outputs].datafile` equals `datafile` (a basename) and return its `provenance.run_id`.
-Binds derived plots to their run without needing the run id encoded in filenames.
+`[outputs].datafile` equals `datafile` (a basename) and return its
+`provenance.run_id` together with the parsed manifest. Binds derived plots to
+their run — and lets post-processing read run parameters (e.g.
+`samples_per_period`) from the manifest rather than from filenames.
 """
-function find_parent_run(dir::AbstractString, datafile::AbstractString)
+function find_parent_manifest(dir::AbstractString, datafile::AbstractString)
     isdir(dir) || return nothing
     for f in readdir(dir)
         (startswith(f, "run_") && endswith(f, ".toml")) || continue
@@ -29,10 +42,37 @@ function find_parent_run(dir::AbstractString, datafile::AbstractString)
             continue
         end
         if get(get(m, "outputs", Dict()), "datafile", nothing) == datafile
-            return get(get(m, "provenance", Dict()), "run_id", nothing)
+            return (get(get(m, "provenance", Dict()), "run_id", nothing), m)
         end
     end
     return nothing
+end
+
+"""
+    find_parent_run(dir, datafile) -> run_id | nothing
+
+The `provenance.run_id` of the run that produced `datafile` (see
+[`find_parent_manifest`](@ref)), or `nothing` if no run manifest binds it.
+"""
+function find_parent_run(dir::AbstractString, datafile::AbstractString)
+    r = find_parent_manifest(dir, datafile)
+    return r === nothing ? nothing : r[1]
+end
+
+"""
+    spp_from_manifest(manifest; default = nothing) -> Int
+
+Read `samples_per_period` from a parsed run `manifest` (`[config]`, falling back to
+`[setup]`). Errors if absent and no `default` is given — post-processing should get
+this from the run TOML, not by parsing the data filename.
+"""
+function spp_from_manifest(manifest::AbstractDict; default = nothing)
+    for sec in ("config", "setup")
+        v = get(get(manifest, sec, Dict()), "samples_per_period", nothing)
+        v === nothing || return Int(v)
+    end
+    default === nothing && error("samples_per_period not found in run manifest [config]/[setup]")
+    return default
 end
 
 """
@@ -43,13 +83,15 @@ Write a `[derived]` sidecar TOML into `dir` binding `plot` (a basename in `dir`)
 in the dashboard; `source` records the input artifact as provenance.
 """
 function write_derived(dir::AbstractString; kind, label, run_id, plot,
-        source = nothing, datafile = nothing, setup = Dict())
+        source = nothing, datafile = nothing, setup = Dict(), description = nothing)
     d = Dict{String,Any}("kind" => kind, "label" => label, "depends_on" => [run_id], "plot" => plot)
     source === nothing || (d["source"] = source)
     datafile === nothing || (d["datafile"] = datafile)
+    # `description`: markdown + $…$ LaTeX, rendered (KaTeX) in the dashboard plot modal.
+    description === nothing || (d["description"] = description)
     m = Dict{String,Any}(
-        "provenance" => Dict("script" => basename(PROGRAM_FILE), "host" => gethostname(),
-            "timestamp" => string(now())),
+        "provenance" => Dict("script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
+            "host" => gethostname(), "timestamp" => string(now())),
         "derived" => d,
     )
     isempty(setup) || (m["setup"] = Dict{String,Any}(string(k) => v for (k, v) in setup))
@@ -69,7 +111,7 @@ run_id) to make the dashboard show it as an "analysis" with a lineage link to th
 """
 function write_run_manifest(dir::AbstractString; run_id, script, config = Dict(),
         laser = Dict(), setup = Dict(), derived_from = nothing, datafile = nothing, plots = String[])
-    prov = Dict{String,Any}("run_id" => run_id, "script" => script,
+    prov = Dict{String,Any}("run_id" => run_id, "script" => script, "repo_commit" => _script_repo_commit(),
         "host" => gethostname(), "timestamp" => string(now()))
     derived_from === nothing || (prov["derived_from"] = derived_from)
     outs = Dict{String,Any}("plots" => collect(plots))

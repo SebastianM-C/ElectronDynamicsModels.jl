@@ -49,7 +49,9 @@ function field_gradient(external_field, x, c)
         push!(∂B, ∂B_i)
     end
 
-    ∂Fμν = Matrix{SymbolicT}[]
+    # `faraday` now returns an SMatrix, so collect untyped (elements are
+    # SMatrix{4,4,Num}); the substitution comprehension below makes it concrete.
+    ∂Fμν = []
     for ν in 1:4
         push!(∂Fμν, faraday(∂E[ν], ∂B[ν], c))
     end
