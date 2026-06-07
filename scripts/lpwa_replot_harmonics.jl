@@ -35,7 +35,7 @@ function run_manifest(jls)
     return run_tag, TOML.parsefile(manifest)
 end
 
-"Reconstruct (x_grid, y_grid, ω, freqs, harmonic_bins) from a parsed manifest."
+"Reconstruct (x_grid, y_grid, w₀, ω, freqs, harmonic_bins) from a parsed manifest."
 function reconstruct_grid(meta)
     Nx = meta["setup"]["Nx"]
     Ny = meta["setup"]["Ny"]
@@ -50,7 +50,7 @@ function reconstruct_grid(meta)
     y_grid = LinRange(-25w₀, 25w₀, Ny)
     freqs = rfftfreq(N_samples, 1 / δt)
     harmonic_bins = [findmin(x -> abs(x - n * ω / 2π), freqs)[2] for n in HARMONICS]
-    return x_grid, y_grid, ω, freqs, harmonic_bins
+    return x_grid, y_grid, w₀, ω, freqs, harmonic_bins
 end
 
 "rfft each of the 6 field components along time, keep only the harmonic bins."
@@ -68,7 +68,7 @@ function harmonic_maps(fld, harmonic_bins, Nx, Ny)
     return fields_h
 end
 
-function plot_harmonic(k, n, fields_h, harmonic_bins, freqs, ω, x_grid, y_grid, out)
+function plot_harmonic(k, n, fields_h, harmonic_bins, freqs, ω, w₀, x_grid, y_grid, out)
     idx = harmonic_bins[k]
     fig = Figure()
     Label(
@@ -84,11 +84,11 @@ function plot_harmonic(k, n, fields_h, harmonic_bins, freqs, ω, x_grid, y_grid,
         col = (cc - 1) % 3 + 1
         gl = fig[row, col] = GridLayout()
         ax = Axis(
-            gl[1, 1], width = 300, height = 300, xlabel = "x", ylabel = "y",
+            gl[1, 1], width = 300, height = 300, xlabel = "x / w₀", ylabel = "y / w₀",
             title = @sprintf("%s  (peak %.2e)", COMPLABELS[cc], cr)
         )
         hm = heatmap!(
-            ax, collect(x_grid), collect(y_grid), field,
+            ax, collect(x_grid) ./ w₀, collect(y_grid) ./ w₀, field,
             colorrange = harmonic_colorrange(field), colormap = :jet
         )
         Colorbar(gl[1, 2], hm, width = 10, height = 300)
@@ -101,7 +101,7 @@ end
 
 function recolor(jls)
     run_tag, meta = run_manifest(jls)
-    x_grid, y_grid, ω, freqs, harmonic_bins = reconstruct_grid(meta)
+    x_grid, y_grid, w₀, ω, freqs, harmonic_bins = reconstruct_grid(meta)
     Nx, Ny = length(x_grid), length(y_grid)
     println("loading $jls …")
     fld = deserialize(jls)
@@ -111,7 +111,7 @@ function recolor(jls)
     outdir = dirname(jls)
     for (k, n) in enumerate(HARMONICS)
         out = joinpath(outdir, @sprintf("lpwa_field_h%d_%s.png", n, run_tag))
-        plot_harmonic(k, n, fields_h, harmonic_bins, freqs, ω, x_grid, y_grid, out)
+        plot_harmonic(k, n, fields_h, harmonic_bins, freqs, ω, w₀, x_grid, y_grid, out)
     end
     return
 end

@@ -215,11 +215,11 @@ function plot_harmonic(k, n)
         col = (cc - 1) % 3 + 1
         gl = fig[row, col] = GridLayout()
         ax = Axis(
-            gl[1, 1], width = 300, height = 300, xlabel = "x", ylabel = "y",
+            gl[1, 1], width = 300, height = 300, xlabel = "x / w₀", ylabel = "y / w₀",
             title = @sprintf("%s  (peak %.2e)", complabels[cc], cr)
         )
         hm = heatmap!(
-            ax, collect(screen.x_grid), collect(screen.y_grid), field,
+            ax, collect(screen.x_grid) ./ w₀, collect(screen.y_grid) ./ w₀, field,
             colorrange = extrema(field), colormap = :jet
         )
         Colorbar(gl[1, 2], hm, width = 10, height = 300)
