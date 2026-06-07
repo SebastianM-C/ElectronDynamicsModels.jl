@@ -387,6 +387,7 @@ function accumulate_field(
         ::GPUKernelRK4,
         backend::Backend;
         n_substeps::Int = 1,
+        mode::Val = Val(:split),
         sync_per_electron::Bool = true,
     )
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
@@ -435,5 +436,10 @@ function accumulate_field(
     B_vel = permutedims(Array(B_vel_buf), (4, 3, 1, 2))
     E = E_rad .+ E_vel
     B = B_rad .+ B_vel
-    return (; E, B, E_rad, B_rad)
+
+    if mode == Val(:split)
+        (; E, B, E_rad, B_rad)
+    else
+        (; E, B)
+    end
 end
