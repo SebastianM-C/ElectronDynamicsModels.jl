@@ -33,7 +33,11 @@ function trajectory(τ, ℜ₀)
     Δz = inv(2k) * (A(ρ₀) * qme / c)^2 * s / 2 * sqrt(π / 2) * (1 + erf(sqrt(2) * χ / s))
     ż = u⁰ / 2 * (A(ρ₀) * qme / c)^2 * exp(-2 * (χ / s)^2)
 
-    cγ = c^2 + hypot(ẋ, ẏ, ż)
+    # (u⁰)² − (uˣ² + uʸ² + uᶻ²) = c²
+    # u⁰ = √(c² + |u|²)
+    # u⁰ − uᶻ = c   for plane wave
+    cγ = c + ż #c^2 + hypot(ẋ, ẏ, ż)
+    x⁰ = c * τ + Δz
 
-    return [0.0, Δx, Δy, Δz, cγ, ẋ, ẏ, ż]
+    return [x⁰, x₀ + Δx, y₀ + Δy, z₀ + Δz, cγ, ẋ, ẏ, ż]
 end
