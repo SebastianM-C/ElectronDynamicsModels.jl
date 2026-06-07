@@ -10,6 +10,8 @@ using FFTW
 using CairoMakie
 using Printf
 
+include(joinpath(@__DIR__, "manifest.jl"))   # shared reproducibility / provenance helpers
+
 const ϕ₀ = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
 const OUTDIR = get(ENV, "EDM_OUTDIR", ".")
 mkpath(OUTDIR)   # fail-fast at the top, never after the (expensive) accumulation
@@ -32,6 +34,11 @@ elseif GPU_BACKEND == "rocm"
 else
     error("EDM_GPU_BACKEND must be \"cuda\" or \"rocm\", got $(repr(GPU_BACKEND))")
 end
+
+# Reproducibility guard: never run from uncommitted (tracked) code — the manifest's
+# repo_commit must reproduce this run. Set EDM_ALLOW_DIRTY=1 to override for throwaway runs.
+const REPO_DIR = pkgdir(ElectronDynamicsModels)
+assert_committed(REPO_DIR)
 
 a₀ = A0
 c = 137.03599908330932
@@ -189,8 +196,9 @@ for (cc, (arr, j)) in enumerate(comps)
     GC.gc()
 end
 
-# One figure per harmonic: 2×3 grid (E row, B row), each panel scaled to its own peak
-# (component amplitudes differ by orders); diverging colormap as in thomson_scattering.jl.
+# One figure per harmonic: 2×3 grid (E row, B row); each panel is scaled to its own
+# data extrema (min..max) under the :jet colormap (component amplitudes differ by
+# orders) — extrema + jet matches the reference article's imagesc-style scaling.
 function plot_harmonic(k, n)
     idx = harmonic_bins[k]
     fig = Figure()
@@ -212,7 +220,7 @@ function plot_harmonic(k, n)
         )
         hm = heatmap!(
             ax, collect(screen.x_grid), collect(screen.y_grid), field,
-            colorrange = cr > 1.0e-23 ? (-cr, cr) : (-1.0, 1.0), colormap = :seismic
+            colorrange = extrema(field), colormap = :jet
         )
         Colorbar(gl[1, 2], hm, width = 10, height = 300)
     end
@@ -226,33 +234,12 @@ end
 plotfiles = [plot_harmonic(k, n) for (k, n) in enumerate(harmonics)]
 
 # ── Reproducibility manifest (mirrors thomson_scattering.jl; analytic-LPWA variant,
-# so model params come from the script globals rather than an MTK `prob`) ──
-using TOML
-using Dates
-
-const _edm_dir = pkgdir(ElectronDynamicsModels)
-_git(args...) = try
-    readchomp(Cmd(["git", "-C", string(_edm_dir), args...]))
-catch
-    "unknown"
-end
-repo_status = _git("status", "--porcelain")
-
-provenance = Dict{String, Any}(
-    "run_id" => RUN_TAG,
-    "repo_commit" => _git("rev-parse", "HEAD"),
-    "repo_dirty" => !(repo_status == "" || repo_status == "unknown"),
-    "edm_pkgdir" => string(_edm_dir),
-    "script" => abspath(PROGRAM_FILE),
-    "host" => gethostname(),
-    "slurm_job_id" => get(ENV, "SLURM_JOB_ID", ""),
-    "gpu_backend" => GPU_BACKEND,
-    "julia_version" => string(VERSION),
-    "timestamp" => string(now()),
+# so model params come from the script globals rather than an MTK `prob`). The git
+# capture + provenance block are shared via manifest.jl's run_provenance. ──
+provenance = run_provenance(;
+    run_id = RUN_TAG, gpu_backend = GPU_BACKEND, repo_dir = REPO_DIR,
+    gpu_device = GPU_BACKEND == "cuda" ? CUDA.name(CUDA.device()) : nothing,
 )
-if GPU_BACKEND == "cuda"
-    provenance["gpu_device"] = string(CUDA.name(CUDA.device()))
-end
 
 config = Dict{String, Any}(
     "initial_phase" => ϕ₀,
