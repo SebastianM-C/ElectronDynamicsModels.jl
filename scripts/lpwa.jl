@@ -12,6 +12,7 @@ using Printf
 
 const ϕ₀ = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
 const OUTDIR = get(ENV, "EDM_OUTDIR", ".")
+mkpath(OUTDIR)   # fail-fast at the top, never after the (expensive) accumulation
 const NX = parse(Int, get(ENV, "EDM_NX", "400"))
 const NELEC = parse(Int, get(ENV, "EDM_N", "1000"))
 const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "6000"))
