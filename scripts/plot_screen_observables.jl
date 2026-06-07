@@ -78,14 +78,19 @@ function build_cache()
     scr = thomson_screen(nx, Ns)
     dt = step(scr.x⁰_samples) / c
     dA = step(scr.x_grid) * step(scr.y_grid)
-    println("computing screen_observables (total + radiation) …")
+    # `:total` runs (accumulate_field mode=Val(:total)) save only (E, B); the radiation
+    # field (E_far, B_far) exists only for `:split`. At the screen distance the near field
+    # is ~1e-9 of the far field, so the total observables ≈ the radiation ones anyway.
+    has_far = hasproperty(fld, :E_far) && hasproperty(fld, :B_far)
+    println("computing screen_observables (total$(has_far ? " + radiation" : "; :total run — no separate radiation field")) …")
     ot = screen_observables(fld, scr; ε₀)
-    orad = screen_observables((; E = fld.E_far, B = fld.B_far), scr; ε₀)
+    orad = has_far ? screen_observables((; E = fld.E_far, B = fld.B_far), scr; ε₀) : nothing
     se = dropdims(sum(ot.energy_density; dims = (2, 3)); dims = (2, 3))
     kp = argmax(se)
     return (;
         version = OBS_CACHE_VERSION,
-        total = reduce_field(ot, kp, dt, dA), radiation = reduce_field(orad, kp, dt, dA),
+        total = reduce_field(ot, kp, dt, dA),
+        radiation = has_far ? reduce_field(orad, kp, dt, dA) : nothing,
         k_peak = kp, slot_energy = se, Nx = nx, Ny = ny, N_samples = Ns,
     )
 end
@@ -114,12 +119,13 @@ end
 const cache = load_or_build()
 const Nx, Ny, N_samples, k_peak = cache.Nx, cache.Ny, cache.N_samples, cache.k_peak
 const red_tot, red_rad = cache.total, cache.radiation
+const has_rad = red_rad !== nothing   # :split saves the radiation field; :total does not
 const screen = thomson_screen(Nx, N_samples)
 const xg, yg = collect(screen.x_grid), collect(screen.y_grid)
 @printf("peak emission slot k = %d of %d  (x⁰ = %.4g)\n", k_peak, N_samples, screen.x⁰_samples[k_peak])
 
 @printf("\n%-12s %14s %14s %14s\n", "", "energy_total", "Lz_total", "Lz/U")
-for (name, r) in (("total", red_tot), ("radiation", red_rad))
+for (name, r) in (has_rad ? (("total", red_tot), ("radiation", red_rad)) : (("total", red_tot),))
     @printf(
         "%-12s %14.4e %14.4e %14.4e\n", name, r.energy_total, r.Lz_total,
         r.energy_total == 0 ? NaN : r.Lz_total / r.energy_total
@@ -169,7 +175,7 @@ function field_figure(r, fieldname, outfile)
 end
 
 out_tot = field_figure(red_tot, "total", stem * "_observables_total.png")
-out_rad = field_figure(red_rad, "radiation", stem * "_observables_radiation.png")
+out_rad = has_rad ? field_figure(red_rad, "radiation", stem * "_observables_radiation.png") : nothing
 
 # ── Vortex figure: azimuthal Poynting Sφ + (Sˣ,Sʸ) circulation at the peak slot ──
 # Sφ = (x Sʸ − y Sˣ)/r is the azimuthal energy flux (its r-moment integrates to L_z);
@@ -202,7 +208,7 @@ function vortex_figure(outfile)
     fig = Figure()
     Label(fig[0, :], "Transverse-Poynting circulation @ peak slot — $(basename(stem))", fontsize = 13, font = :bold)
     vortex_panel!(fig, (1, 1), red_tot, "total")
-    vortex_panel!(fig, (1, 2), red_rad, "radiation")
+    has_rad && vortex_panel!(fig, (1, 2), red_rad, "radiation")
     resize_to_layout!(fig)
     save(outfile, fig)
     println("saved → $outfile")
@@ -219,7 +225,7 @@ function temporal_figure(outfile)
         ylabel = L"P = \int S^z\,\mathrm{d}A", title = "radiated power"
     )
     lines!(ax1, ks, red_tot.Pt; label = "total")
-    lines!(ax1, ks, red_rad.Pt; label = "radiation", linestyle = :dash)
+    has_rad && lines!(ax1, ks, red_rad.Pt; label = "radiation", linestyle = :dash)
     vlines!(ax1, [k_peak]; color = (:gray, 0.7), linestyle = :dot)
     axislegend(ax1; labelsize = 9)
     ax2 = Axis(
@@ -228,7 +234,7 @@ function temporal_figure(outfile)
         title = "angular-momentum emission rate"
     )
     lines!(ax2, ks, red_tot.Lzt; label = "total")
-    lines!(ax2, ks, red_rad.Lzt; label = "radiation", linestyle = :dash)
+    has_rad && lines!(ax2, ks, red_rad.Lzt; label = "radiation", linestyle = :dash)
     vlines!(ax2, [k_peak]; color = (:gray, 0.7), linestyle = :dot)
     axislegend(ax2; labelsize = 9)
     resize_to_layout!(fig)
@@ -245,7 +251,7 @@ let pid = parent[1]
     if pid === nothing
         @warn "parent run manifest for $(basename(datafile)) has no run_id; skipping sidecar"
     else
-        for (fieldname, r, out) in (("total", red_tot, out_tot), ("radiation", red_rad, out_rad))
+        for (fieldname, r, out) in (has_rad ? (("total", red_tot, out_tot), ("radiation", red_rad, out_rad)) : (("total", red_tot, out_tot),))
             write_derived(
                 dir; kind = "observables",
                 label = @sprintf("screen observables (%s): U=%.2e, Lz=%.2e", fieldname, r.energy_total, r.Lz_total),
