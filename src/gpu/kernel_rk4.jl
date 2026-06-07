@@ -283,7 +283,7 @@ end
 # Writes pixel-fastest into {E,B}_{rad,vel}_buf[ix, iy, j, k] for coalesced
 # accumulation; the caller permutes back to the public (N_samples, 3, Nx, Ny).
 function _gpu_unified_field_one_electron!(
-        E_rad_buf, B_rad_buf, E_vel_buf, B_vel_buf, gpu_traj, c,
+        mode::Val, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
         x_grid, y_grid, z_screen,
         x⁰_first, δx⁰, N_samples, Nx, Ny,
         τi, τf, pixel_iter, backend, n_substeps
@@ -344,11 +344,21 @@ function _gpu_unified_field_one_electron!(
             Eᵥ, Bᵥ = extract_EB(F_vel, c)
             Eᵣ, Bᵣ = extract_EB(F_rad, c)
 
+            # `:split` keeps radiation (buffer 1) and velocity (buffer 2) separate; `:total`
+            # sums them into buffer 1 alone (E2/B2 alias E1/B1 in :total — never written here).
+            # The branch is on a `Val` singleton, so it folds at compile time (zero per-pixel
+            # cost) and the `:split` arm stays byte-identical. The small-a0 conditioning lives
+            # in `lienard_wiechert_F_split`, so the collapsed sum is the bit-faithful total.
             for j in 1:3
-                @inbounds E_rad_buf[ix, iy, j, k] += Eᵣ[j]
-                @inbounds B_rad_buf[ix, iy, j, k] += Bᵣ[j]
-                @inbounds E_vel_buf[ix, iy, j, k] += Eᵥ[j]
-                @inbounds B_vel_buf[ix, iy, j, k] += Bᵥ[j]
+                if mode === Val(:split)
+                    @inbounds E1_buf[ix, iy, j, k] += Eᵣ[j]
+                    @inbounds B1_buf[ix, iy, j, k] += Bᵣ[j]
+                    @inbounds E2_buf[ix, iy, j, k] += Eᵥ[j]
+                    @inbounds B2_buf[ix, iy, j, k] += Bᵥ[j]
+                else
+                    @inbounds E1_buf[ix, iy, j, k] += Eᵣ[j] + Eᵥ[j]
+                    @inbounds B1_buf[ix, iy, j, k] += Bᵣ[j] + Bᵥ[j]
+                end
             end
 
             if k < k_end
@@ -395,12 +405,19 @@ function accumulate_field(
     N_samples = length(screen.x⁰_samples)
     c = screen.c
 
-    # Four pixel-fastest buckets for coalesced writes (radiation + velocity, each
-    # E and B); permuted back and combined to the total on return.
-    E_rad_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
-    B_rad_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
-    E_vel_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
-    B_vel_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
+    # Pixel-fastest accumulators for coalesced writes. `:split` keeps radiation and velocity
+    # in separate buckets (4 buffers); `:total` collapses rad+vel in the kernel into a single
+    # (E, B) pair (2 buffers), halving device memory — the win that lets a bigger screen fit.
+    # In `:total`, E2/B2 alias E1/B1 and are never written.
+    E1_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
+    B1_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
+    if mode == Val(:split)
+        E2_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
+        B2_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
+    else
+        E2_buf = E1_buf
+        B2_buf = B1_buf
+    end
 
     x⁰_first = first(screen.x⁰_samples)
     δx⁰ = step(screen.x⁰_samples)
@@ -412,7 +429,7 @@ function accumulate_field(
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
         _gpu_unified_field_one_electron!(
-            E_rad_buf, B_rad_buf, E_vel_buf, B_vel_buf, gpu_traj, c,
+            mode, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_substeps,
@@ -431,16 +448,18 @@ function accumulate_field(
         finalize(gpu_traj.a_itp.c2)
     end
 
-    E_rad = permutedims(Array(E_rad_buf), (4, 3, 1, 2))
-    B_rad = permutedims(Array(B_rad_buf), (4, 3, 1, 2))
-    E_vel = permutedims(Array(E_vel_buf), (4, 3, 1, 2))
-    B_vel = permutedims(Array(B_vel_buf), (4, 3, 1, 2))
-    E = E_rad .+ E_vel
-    B = B_rad .+ B_vel
-
     if mode == Val(:split)
-        (; E, B, E_rad, B_rad)
+        E_rad = permutedims(Array(E1_buf), (4, 3, 1, 2))
+        B_rad = permutedims(Array(B1_buf), (4, 3, 1, 2))
+        E_vel = permutedims(Array(E2_buf), (4, 3, 1, 2))
+        B_vel = permutedims(Array(B2_buf), (4, 3, 1, 2))
+        E = E_rad .+ E_vel
+        B = B_rad .+ B_vel
+        return (; E, B, E_rad, B_rad)
     else
-        (; E, B)
+        # Level-2: rad+vel already summed in the kernel → E1/B1 hold the total directly.
+        E = permutedims(Array(E1_buf), (4, 3, 1, 2))
+        B = permutedims(Array(B1_buf), (4, 3, 1, 2))
+        return (; E, B)
     end
 end
