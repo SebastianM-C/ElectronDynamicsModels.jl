@@ -359,7 +359,7 @@ function _retarded_integ_pool(traj0, screen, alg; solve_kwargs...)
 end
 
 """
-    accumulate_field(trajs, screen, alg; solve_kwargs...)
+    accumulate_field(trajs, screen, alg; mode = Val(:split), solve_kwargs...)
 
 Compute the radiated electromagnetic field on `screen` from electron `trajs`.
 
@@ -378,8 +378,11 @@ Returns `(; E, B, E_rad, B_rad)`, each `Array{Float64,4}` of shape
 velocity, including their cross term) for [`screen_observables`](@ref); `E_rad,
 B_rad` are the radiation field alone, whose observables are the radiated
 energy/angular momentum exactly (the velocity is recoverable as `E − E_rad`).
+
+`mode = Val(:total)` returns only `(; E, B)` (the total), a type-stable trim for
+callers that don't need the split; `Val(:split)` (the default) keeps all four.
 """
-function accumulate_field(trajs::Vector{<:TrajectoryInterpolant}, screen::ObserverScreen, alg; solve_kwargs...)
+function accumulate_field(trajs::Vector{<:TrajectoryInterpolant}, screen::ObserverScreen, alg; mode::Val = Val(:split), solve_kwargs...)
     N_samples = length(screen.x⁰_samples)
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
 
@@ -413,7 +416,14 @@ function accumulate_field(trajs::Vector{<:TrajectoryInterpolant}, screen::Observ
     end
     E = E_rad .+ E_vel
     B = B_rad .+ B_vel
-    return (; E, B, E_rad, B_rad)
+
+    # Dispatch on the Val type so each branch has one concrete return type (type-stable
+    # trim); mirrors the GPU `accumulate_field`.
+    if mode == Val(:split)
+        return (; E, B, E_rad, B_rad)
+    else
+        return (; E, B)
+    end
 end
 
 function _accumulate_field_pixel!(E_rad, B_rad, E_vel, B_vel, traj, screen, τ_samples, t_samples, ix, iy)

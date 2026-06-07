@@ -364,7 +364,7 @@ function _gpu_unified_field_one_electron!(
 end
 
 """
-    accumulate_field(trajs, screen, ::GPUKernelRK4, backend; n_substeps = 1, sync_per_electron = true)
+    accumulate_field(trajs, screen, ::GPUKernelRK4, backend; n_substeps = 1, mode = Val(:split), sync_per_electron = true)
 
 GPU counterpart of the CPU [`accumulate_field`](@ref): per-electron kernel launch
 performs the retarded-time RK4 integration *and* Liénard–Wiechert (E, B)
@@ -376,7 +376,8 @@ the radiation field needs 𝔞μ, and accumulates the split (radiation/velocity)
 Liénard–Wiechert field instead of the 4-potential. Returns
 `(; E, B, E_rad, B_rad)`, each `(N_samples, 3, Nx, Ny)` — identical shape to the
 CPU [`accumulate_field`](@ref): `E, B` total, `E_rad, B_rad` the radiation field
-alone (see [`lienard_wiechert_F_split`](@ref)).
+alone (see [`lienard_wiechert_F_split`](@ref)). `mode = Val(:total)` returns only
+`(; E, B)` (a type-stable trim); `Val(:split)` (the default) keeps all four.
 
 `n_substeps` and `sync_per_electron` behave exactly as in the potential kernel;
 see [`accumulate_potential`](@ref) and [`recommended_n_substeps`](@ref).
