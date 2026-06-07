@@ -126,13 +126,13 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         ref = accumulate_field(trajs, screen, Vern9())
         gpu = accumulate_field(trajs, screen, GPUKernelRK4(), CPU(); n_substeps = 8)
 
-        @test keys(gpu) == (:E, :B, :E_rad, :B_rad)
+        @test keys(gpu) == (:E, :B, :E_far, :B_far)
         @test size(gpu.E) == size(ref.E)
         @test all(isfinite, gpu.E) && all(isfinite, gpu.B)
-        @test maximum(abs, ref.E_rad) > 0           # the reference actually radiates
+        @test maximum(abs, ref.E_far) > 0           # the reference actually radiates
         @test rel_l2(gpu.E, ref.E) < 5.0e-3         # total field matches
         @test rel_l2(gpu.B, ref.B) < 5.0e-3
-        @test rel_l2(gpu.E_rad, ref.E_rad) < 5.0e-3 # radiation bucket matches
-        @test rel_l2(gpu.B_rad, ref.B_rad) < 5.0e-3
+        @test rel_l2(gpu.E_far, ref.E_far) < 5.0e-3 # radiation bucket matches
+        @test rel_l2(gpu.B_far, ref.B_far) < 5.0e-3
     end
 end

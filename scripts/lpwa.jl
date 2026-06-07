@@ -154,8 +154,8 @@ screen = ObserverScreen(
 
 # Exact field via the split Liénard–Wiechert GPU kernel.
 # mode = Val(:total) returns just (; E, B), each (N_samples, 3, Nx, Ny) — the total
-# field, summed from the radiation (1/R) and velocity (1/R²) pieces on the device.
-# (Switch to Val(:split) to also recover E_rad, B_rad for radiation-only diagnostics.)
+# field, summed from the far (1/R) and near (1/R²) pieces on the device.
+# (Switch to Val(:split) to also recover E_far, B_far for far-field-only diagnostics.)
 @time fld = accumulate_field(
     trajs, screen, GPUKernelRK4(), gpu_backend;
     mode = Val(:total),

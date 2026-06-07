@@ -273,10 +273,10 @@ end
 # ── Field variant of the unified RK4 kernel ──
 # Identical retarded-time march to `_gpu_unified_one_electron!`, but each saveat
 # slot writes the Liénard–Wiechert (E, B) field rather than the 4-potential, and
-# splits it into separately-accumulated radiation (1/R) and velocity (1/R²)
+# splits it into separately-accumulated far (1/R) and near (1/R²)
 # pieces via `lienard_wiechert_F_split` (see `accumulate_field`). Differences from
 # the potential kernel:
-#   - it needs the 4-acceleration spline `gpu_traj.a_itp` (the radiation field is
+#   - it needs the 4-acceleration spline `gpu_traj.a_itp` (the far field is
 #     ∝ 𝔞), uploaded via `to_gpu(traj; with_acceleration = true)`
 #   - it needs the speed of light `c`, since `Eⁱ = c·Fⁱ⁰` in `extract_EB`
 #   - it writes four buckets, not two.
@@ -340,11 +340,11 @@ function _gpu_unified_field_one_electron!(
 
             disp = r_obs - xμ[SA[2, 3, 4]]
             X = SVector{4}(norm(disp), disp[1], disp[2], disp[3])
-            F_vel, F_rad = lienard_wiechert_F_split(X, uμ, 𝔞μ, K, c)
-            Eᵥ, Bᵥ = extract_EB(F_vel, c)
-            Eᵣ, Bᵣ = extract_EB(F_rad, c)
+            F_near, F_far = lienard_wiechert_F_split(X, uμ, 𝔞μ, K, c)
+            Eᵥ, Bᵥ = extract_EB(F_near, c)
+            Eᵣ, Bᵣ = extract_EB(F_far, c)
 
-            # `:split` keeps radiation (buffer 1) and velocity (buffer 2) separate; `:total`
+            # `:split` keeps far (buffer 1) and near (buffer 2) separate; `:total`
             # sums them into buffer 1 alone (E2/B2 alias E1/B1 in :total — never written here).
             # The branch is on a `Val` singleton, so it folds at compile time (zero per-pixel
             # cost) and the `:split` arm stays byte-identical. The small-a0 conditioning lives
@@ -382,10 +382,10 @@ accumulation in one pass, coherently summing over electrons on the device.
 
 Mirrors `accumulate_potential(trajs, screen, ::GPUKernelRK4, backend)`, but
 uploads the acceleration spline (`to_gpu(traj; with_acceleration = true)`) since
-the radiation field needs 𝔞μ, and accumulates the split (radiation/velocity)
+the far field needs 𝔞μ, and accumulates the split (far/near)
 Liénard–Wiechert field instead of the 4-potential. Returns
-`(; E, B, E_rad, B_rad)`, each `(N_samples, 3, Nx, Ny)` — identical shape to the
-CPU [`accumulate_field`](@ref): `E, B` total, `E_rad, B_rad` the radiation field
+`(; E, B, E_far, B_far)`, each `(N_samples, 3, Nx, Ny)` — identical shape to the
+CPU [`accumulate_field`](@ref): `E, B` total, `E_far, B_far` the far field
 alone (see [`lienard_wiechert_F_split`](@ref)). `mode = Val(:total)` returns only
 `(; E, B)` (a type-stable trim); `Val(:split)` (the default) keeps all four.
 
@@ -405,7 +405,7 @@ function accumulate_field(
     N_samples = length(screen.x⁰_samples)
     c = screen.c
 
-    # Pixel-fastest accumulators for coalesced writes. `:split` keeps radiation and velocity
+    # Pixel-fastest accumulators for coalesced writes. `:split` keeps the far and near fields
     # in separate buckets (4 buffers); `:total` collapses rad+vel in the kernel into a single
     # (E, B) pair (2 buffers), halving device memory — the win that lets a bigger screen fit.
     # In `:total`, E2/B2 alias E1/B1 and are never written.
@@ -449,13 +449,13 @@ function accumulate_field(
     end
 
     if mode == Val(:split)
-        E_rad = permutedims(Array(E1_buf), (4, 3, 1, 2))
-        B_rad = permutedims(Array(B1_buf), (4, 3, 1, 2))
-        E_vel = permutedims(Array(E2_buf), (4, 3, 1, 2))
-        B_vel = permutedims(Array(B2_buf), (4, 3, 1, 2))
-        E = E_rad .+ E_vel
-        B = B_rad .+ B_vel
-        return (; E, B, E_rad, B_rad)
+        E_far = permutedims(Array(E1_buf), (4, 3, 1, 2))
+        B_far = permutedims(Array(B1_buf), (4, 3, 1, 2))
+        E_near = permutedims(Array(E2_buf), (4, 3, 1, 2))
+        B_near = permutedims(Array(B2_buf), (4, 3, 1, 2))
+        E = E_far .+ E_near
+        B = B_far .+ B_near
+        return (; E, B, E_far, B_far)
     else
         # Level-2: rad+vel already summed in the kernel → E1/B1 hold the total directly.
         E = permutedims(Array(E1_buf), (4, 3, 1, 2))

@@ -1,6 +1,6 @@
 # Screen-observable maps for a field-accumulation run (the field .jls from
 # thomson_scattering.jl), via `screen_observables`. Total field (E,B) and the
-# radiation-only field (E_rad,B_rad) get *separate* figures, each with:
+# radiation-only field (E_far,B_far) get *separate* figures, each with:
 #   - energy fluence   ∫Sᶻ dt        (time-integrated — "what got radiated where")
 #   - L_z flux         ∫(dLz/dA) dt  (time-integrated angular-momentum pattern)
 #   - |S| at peak slot               (instantaneous Poynting magnitude)
@@ -80,7 +80,7 @@ function build_cache()
     dA = step(scr.x_grid) * step(scr.y_grid)
     println("computing screen_observables (total + radiation) …")
     ot = screen_observables(fld, scr; ε₀)
-    orad = screen_observables((; E = fld.E_rad, B = fld.B_rad), scr; ε₀)
+    orad = screen_observables((; E = fld.E_far, B = fld.B_far), scr; ε₀)
     se = dropdims(sum(ot.energy_density; dims = (2, 3)); dims = (2, 3))
     kp = argmax(se)
     return (;
