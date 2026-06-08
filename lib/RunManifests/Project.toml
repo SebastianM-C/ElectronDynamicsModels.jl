@@ -1,0 +1,17 @@
+name = "RunManifests"
+uuid = "0ceb0180-3879-49c5-80aa-5670d4da308b"
+authors = ["Sebastian Micluța-Câmpeanu <sebastian.mc95@proton.me> and contributors"]
+version = "0.1.0"
+
+[deps]
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
+
+[compat]
+julia = "1.10"
+
+[extras]
+Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
+
+[targets]
+test = ["Test"]

@@ -2,7 +2,7 @@
 
 julia_version = "1.12.6"
 manifest_format = "2.0"
-project_hash = "417e1d0ccbd3878a401411d7c27f551d3602b2b0"
+project_hash = "57414fd8bc40a6427611fe8b0219f197a1b87a0b"
 
 [[deps.ADTypes]]
 git-tree-sha1 = "bbc22a9a08a0ef6460041086d8a7b27940ed4ffd"
@@ -800,6 +800,10 @@ deps = ["AcceleratedKernels", "Adapt", "DataInterpolations", "FFTW", "Hypergeome
 path = ".."
 uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
 version = "0.1.0-DEV"
+weakdeps = ["CairoMakie"]
+
+    [deps.ElectronDynamicsModels.extensions]
+    EDMPlotsExt = "CairoMakie"
 
 [[deps.EnumX]]
 git-tree-sha1 = "c49898e8438c828577f04b92fc9368c388ac783c"
@@ -1008,9 +1012,9 @@ version = "1.3.7"
 
 [[deps.ForwardDiff]]
 deps = ["CommonSubexpressions", "DiffResults", "DiffRules", "LinearAlgebra", "LogExpFunctions", "NaNMath", "Preferences", "Printf", "Random", "SpecialFunctions"]
-git-tree-sha1 = "cddeab6487248a39dae1a960fff0ac17b2a28888"
+git-tree-sha1 = "52856013604f3442ab8ef776ae576b533a6de301"
 uuid = "f6369f11-7733-5829-9624-2563aa707210"
-version = "1.3.3"
+version = "1.4.0"
 weakdeps = ["StaticArrays"]
 
     [deps.ForwardDiff.extensions]
@@ -1569,9 +1573,9 @@ version = "1.12.0"
 
 [[deps.LinearSolve]]
 deps = ["AMD", "ArrayInterface", "ConcreteStructs", "DocStringExtensions", "EnumX", "GPUArraysCore", "InteractiveUtils", "Krylov", "Libdl", "LinearAlgebra", "MKL_jll", "Markdown", "OpenBLAS_jll", "PrecompileTools", "Preferences", "PureKLU", "RecursiveArrayTools", "Reexport", "SciMLBase", "SciMLLogging", "SciMLOperators", "Setfield", "SparseColumnPivotedQR", "StaticArraysCore"]
-git-tree-sha1 = "0234b41d43ff591010816b30896d42a7950b193f"
+git-tree-sha1 = "7ffd2f0b385845507700eba89ea34dd03614f1b0"
 uuid = "7ed4a6bd-45f5-4d41-b270-4a48e9bafcae"
-version = "3.84.0"
+version = "3.85.0"
 
     [deps.LinearSolve.extensions]
     LinearSolveAMDGPUExt = "AMDGPU"
@@ -2430,6 +2434,12 @@ version = "3.0.0"
 git-tree-sha1 = "40b9edad2e5287e05bd413a38f61a8ff55b9557b"
 uuid = "5eaf0fd0-dfba-4ccb-bf02-d820a40db705"
 version = "0.2.1"
+
+[[deps.RunManifests]]
+deps = ["Dates", "TOML"]
+path = "../lib/RunManifests"
+uuid = "0ceb0180-3879-49c5-80aa-5670d4da308b"
+version = "0.1.0"
 
 [[deps.RuntimeGeneratedFunctions]]
 deps = ["ExprTools", "SHA", "Serialization"]
