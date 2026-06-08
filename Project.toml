@@ -26,9 +26,16 @@ Symbolics = "0c5d862f-8b57-4792-8d23-62f2024744c7"
 Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 UnitfulAtomic = "a7773ee8-282e-5fa2-be4e-bd808c38a91a"
 
+[weakdeps]
+CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+
+[extensions]
+EDMPlotsExt = "CairoMakie"
+
 [compat]
 AcceleratedKernels = "0.4.3"
 Adapt = "4.5.0"
+CairoMakie = "0.15"
 DataInterpolations = "8.9.0"
 FFTW = "1.10.0"
 HypergeometricFunctions = "0.3.28"
