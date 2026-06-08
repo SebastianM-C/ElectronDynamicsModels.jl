@@ -220,6 +220,19 @@ plot_power_spectrum(freqs, power_spectrum(A_s); ω, labels = complabels, title =
 println("saved → $psfile")
 push!(plotfiles, psfile)
 
+# phase maps ∠A per component at each harmonic (x/w₀, y/w₀), every run
+function plot_phase(k, n)
+    out = joinpath(OUTDIR, @sprintf("thomson_phase_h%d_%s.png", n, RUN_TAG))
+    plot_phase_grid(
+        fields[k, :, :, :], screen.x_grid, screen.y_grid;
+        w₀, labels = complabels, ncols = 2, panelsize = 340,
+        title = @sprintf("Thomson — ∠A at %dω₁", n), outfile = out,
+    )
+    println("saved → $out")
+    return out
+end
+append!(plotfiles, [plot_phase(k, n) for (k, n) in enumerate(harmonics)])
+
 # ── Reproducibility manifest ──
 # Drop a TOML next to the outputs capturing provenance (repo commit, script,
 # host, GPU) and the physical setup, so any result can be traced and rerun.

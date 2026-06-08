@@ -220,6 +220,18 @@ plot_power_spectrum(freqs, power_spectrum(fld); ω, labels = complabels, title =
 println("saved → $psfile")
 push!(plotfiles, psfile)
 
+# phase maps ∠F per component at each harmonic (x/w₀, y/w₀), every run
+function plot_phase(k, n)
+    out = joinpath(OUTDIR, @sprintf("thomson_phase_h%d_%s.png", n, RUN_TAG))
+    plot_phase_grid(
+        fields_h[k, :, :, :], screen.x_grid, screen.y_grid;
+        w₀, labels = complabels, title = @sprintf("Thomson (field) — ∠F at %dω₁", n), outfile = out,
+    )
+    println("saved → $out")
+    return out
+end
+append!(plotfiles, [plot_phase(k, n) for (k, n) in enumerate(harmonics)])
+
 # ── Reproducibility manifest (same schema as thomson_scattering_A.jl) ──
 using TOML
 using Dates
