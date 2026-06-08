@@ -22,7 +22,7 @@ const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
-const RUN_TAG = string(uuid4())
+const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "cuda"))
 if GPU_BACKEND == "cuda"
@@ -287,6 +287,7 @@ setup = Dict{String, Any}(
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
+    "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
     "harmonic_maps" => basename(hmapsfile),
     "plots" => basename.(plotfiles),
 )
