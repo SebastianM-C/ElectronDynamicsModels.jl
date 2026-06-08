@@ -40,7 +40,7 @@ const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "8000")) # observer-time sa
 const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))        # samples per optical period
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))   # RK4 substeps per sample
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))    # normalized vector potential a₀
-const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "true"))  # false = overlap uploads
+const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))  # false = overlap uploads
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG; shared by .jls/log/manifest
 mkpath(OUTDIR)
 @info "Thomson run config" RUN_TAG GPU_BACKEND ϕ₀ A0 SYNC OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
