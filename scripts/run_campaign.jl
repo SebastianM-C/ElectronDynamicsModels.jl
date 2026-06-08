@@ -35,7 +35,7 @@ const REPO_URL = "https://github.com/SebastianM-C/ElectronDynamicsModels.jl.git"
 const SCRIPT = get(ENV, "EDM_CAMPAIGN_SCRIPT", "lpwa.jl")   # which solver to run on the VM
 const LOCAL_OUT = abspath(get(ENV, "EDM_CAMPAIGN_OUT", "campaign_out"))
 const MAX_PULL = get(ENV, "EDM_CAMPAIGN_MAX_PULL", "2G")   # pull all derived artifacts; skip only the regenerable raw cube (GB-scale)
-const SSH = `/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=20`
+const SSH = `/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20`
 
 # ── Hot Aisle REST via curl; responses parsed with JSON.jl ──
 function api(method, path; body = nothing)
@@ -96,7 +96,7 @@ function run_one(ip, env)
     )
     dest = joinpath(LOCAL_OUT, "out_$tag")
     mkpath(dest)
-    sshe = "/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
+    sshe = "/usr/bin/ssh -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null"
     run(`/usr/bin/rsync -az -e $sshe --max-size=$MAX_PULL hotaisle@$ip:out_$tag/ $dest/`)
     return @info "pulled reductions → $dest"
 end
