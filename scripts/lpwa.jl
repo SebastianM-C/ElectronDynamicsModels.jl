@@ -212,6 +212,12 @@ end
 
 plotfiles = [plot_harmonic(k, n) for (k, n) in enumerate(harmonics)]
 
+# field-component power spectra, every run (shows which components carry harmonic structure)
+psfile = joinpath(OUTDIR, "powspec_$(RUN_TAG).png")
+plot_power_spectrum(freqs, power_spectrum(fld); ω, labels = complabels, title = "LPWA — field power spectra", outfile = psfile)
+println("saved → $psfile")
+push!(plotfiles, psfile)
+
 # ── Reproducibility manifest (mirrors thomson_scattering.jl; analytic-LPWA variant,
 # so model params come from the script globals rather than an MTK `prob`). The git
 # capture + provenance block are shared via manifest.jl's run_provenance. ──

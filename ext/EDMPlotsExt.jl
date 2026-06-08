@@ -42,7 +42,7 @@ end
 
 function ElectronDynamicsModels.plot_power_spectrum(
         freqs, power_spec; ω, labels,
-        colors = [:black, :dodgerblue, :seagreen, :crimson],
+        colors = [:black, :dodgerblue, :seagreen, :crimson, :darkorange, :purple],
         linestyles = nothing, title = "", outfile = nothing,
     )
     xh = collect(freqs) ./ (ω / 2π)            # frequency in units of the fundamental

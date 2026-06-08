@@ -1,5 +1,5 @@
 # Azimuthal-phase diagnostic for a Thomson-scattering run, computed offline from
-# its .jls (same pattern as plot_harmonics.jl). Two plots:
+# its .jls. Two plots:
 #   (left)  phase map  angle.(Â[bin, comp, :, :])  over the screen, and
 #   (right) the phase of the pixels on each test circle of radius R, scattered
 #           against azimuth φ — a vortex of charge ℓ shows ℓ phase windings as φ

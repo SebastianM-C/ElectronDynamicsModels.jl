@@ -63,3 +63,6 @@ function power_spectrum(cube::AbstractArray{<:Number, 4})
     end
     return out
 end
+
+# Field method: E in columns 1:3, B in 4:6 (matches harmonic_maps' component order).
+power_spectrum(field::NamedTuple) = hcat(power_spectrum(field.E), power_spectrum(field.B))

@@ -191,7 +191,6 @@ serialize(datafile, fld)
 println("serialized → $datafile")
 
 # ── Harmonic maps of the total field: Re(Ẽ), Re(B̃) at 1ω₁, 2ω₁ ──
-# rfft one component at a time (memory-conscious, mirroring plot_harmonics.jl).
 const complabels = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
 const harmonics = (1, 2)
 
@@ -214,6 +213,12 @@ function plot_harmonic(k, n)
 end
 
 plotfiles = [plot_harmonic(k, n) for (k, n) in enumerate(harmonics)]
+
+# field-component power spectra, every run (shows which components carry harmonic structure)
+psfile = joinpath(OUTDIR, "powspec_$(RUN_TAG).png")
+plot_power_spectrum(freqs, power_spectrum(fld); ω, labels = complabels, title = "Thomson — field power spectra", outfile = psfile)
+println("saved → $psfile")
+push!(plotfiles, psfile)
 
 # ── Reproducibility manifest (same schema as thomson_scattering_A.jl) ──
 using TOML

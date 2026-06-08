@@ -185,16 +185,12 @@ screen = ObserverScreen(
 
 A_s = A_rk4
 
-# Serialize the raw 4-potential so the offline scripts (plot_harmonics.jl,
-# plot_power_spectrum.jl) can read this run directly.
+# Serialize the raw 4-potential — the run's archived cube.
 datafile = joinpath(OUTDIR, "A_rk4_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(RUN_TAG).jls")
 serialize(datafile, A_s)
 println("serialized → $datafile")
 
-# ── Harmonic maps ──
-# Extract the first two harmonics of ω₁ for all four 4-potential components.
-# rfft one component at a time (the full complex spectrum is 4× the raw array),
-# mirroring plot_harmonics.jl's memory-conscious slicing.
+# ── Harmonic maps: first two harmonics of ω₁ for the four 4-potential components ──
 const complabels = ("A⁰", "Aˣ", "Aʸ", "Aᶻ")
 const harmonics = (1, 2)
 
@@ -217,6 +213,12 @@ function plot_harmonic(k, n)
 end
 
 plotfiles = [plot_harmonic(k, n) for (k, n) in enumerate(harmonics)]
+
+# 4-potential power spectra, every run (shows which components carry harmonic structure)
+psfile = joinpath(OUTDIR, "powspec_$(RUN_TAG).png")
+plot_power_spectrum(freqs, power_spectrum(A_s); ω, labels = complabels, title = "Thomson — 4-potential power spectra", outfile = psfile)
+println("saved → $psfile")
+push!(plotfiles, psfile)
 
 # ── Reproducibility manifest ──
 # Drop a TOML next to the outputs capturing provenance (repo commit, script,
