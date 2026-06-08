@@ -195,49 +195,20 @@ println("serialized → $datafile")
 const complabels = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
 const harmonics = (1, 2)
 
-freqs = rfftfreq(N_samples, 1 / δt)
-harmonic_bins = [findmin(x -> abs(x - n * ω / 2π), freqs)[2] for n in harmonics]
+freqs = rfftfreq(N_samples, 1 / δt)              # kept for the per-harmonic title
+hbins = harmonic_bins(N_samples, δt, ω, harmonics)
+# fields_h[k, c, :, :]: harmonic k, component c = (Eˣ,Eʸ,Eᶻ,Bˣ,Bʸ,Bᶻ) — E in 1:3, B in 4:6.
+fields_h = harmonic_maps(fld, hbins)
 
-# fields_h[k, c, :, :]: harmonic k, component c = (Eˣ,Eʸ,Eᶻ,Bˣ,Bʸ,Bᶻ).
-comps = ((fld.E, 1), (fld.E, 2), (fld.E, 3), (fld.B, 1), (fld.B, 2), (fld.B, 3))
-fields_h = Array{ComplexF64, 4}(undef, length(harmonics), 6, Nx, Ny)
-for (cc, (arr, j)) in enumerate(comps)
-    Fω = rfft(arr[:, j, :, :], 1)
-    for (k, idx) in enumerate(harmonic_bins)
-        fields_h[k, cc, :, :] = Fω[idx, :, :]
-    end
-    Fω = nothing
-    GC.gc()
-end
-
-# One figure per harmonic: 2×3 grid (E row, B row), each panel scaled to its own
-# peak (component amplitudes differ by orders); diverging colormap as in `_A`.
+# One figure per harmonic — the unified 2×3 E/B grid (diverging :seismic, symmetric range),
+# raw a.u. axes. Rendering lives in EDMPlotsExt, active via `using CairoMakie`.
 function plot_harmonic(k, n)
-    idx = harmonic_bins[k]
-    fig = Figure()
-    Label(
-        fig[0, :], @sprintf("Thomson scattering (field) — %dω₁ (%.3f× fundamental)",
-            n, freqs[idx] / (ω / 2π)), fontsize = 16, font = :bold
-    )
-    for cc in 1:6
-        field = real.(fields_h[k, cc, :, :])
-        cr = maximum(abs, field)
-        row = cc ≤ 3 ? 1 : 2          # E components on the top row, B on the bottom
-        col = (cc - 1) % 3 + 1
-        gl = fig[row, col] = GridLayout()
-        ax = Axis(
-            gl[1, 1], width = 300, height = 300, xlabel = "x", ylabel = "y",
-            title = @sprintf("%s  (peak %.2e)", complabels[cc], cr)
-        )
-        hm = heatmap!(
-            ax, collect(screen.x_grid), collect(screen.y_grid), field,
-            colorrange = cr > 0 ? (-cr, cr) : (-1.0, 1.0), colormap = :seismic
-        )
-        Colorbar(gl[1, 2], hm, width = 10, height = 300)
-    end
-    resize_to_layout!(fig)
+    title = @sprintf("Thomson scattering (field) — %dω₁ (%.3f× fundamental)", n, freqs[hbins[k]] / (ω / 2π))
     out = joinpath(OUTDIR, @sprintf("thomson_field_h%d_%s.png", n, RUN_TAG))
-    save(out, fig)
+    plot_harmonic_grid(
+        fields_h[k, :, :, :], screen.x_grid, screen.y_grid;
+        labels = complabels, colormap = :seismic, colorrange = symmetric_colorrange, title, outfile = out,
+    )
     println("saved → $out")
     return out
 end

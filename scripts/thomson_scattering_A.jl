@@ -198,56 +198,25 @@ println("serialized → $datafile")
 const complabels = ("A⁰", "Aˣ", "Aʸ", "Aᶻ")
 const harmonics = (1, 2)
 
-freqs = rfftfreq(N_samples, 1 / δt)
-harmonic_bins = [findmin(x -> abs(x - n * ω / 2π), freqs)[2] for n in harmonics]
+freqs = rfftfreq(N_samples, 1 / δt)              # kept for the per-harmonic title
+hbins = harmonic_bins(N_samples, δt, ω, harmonics)
+fields = harmonic_maps(A_s, hbins)               # (length(harmonics), 4, Nx, Ny): A⁰ Aˣ Aʸ Aᶻ
 
-fields = Array{ComplexF64, 4}(undef, length(harmonics), 4, Nx, Ny)
-for μ in 1:4
-    A_ω_c = rfft(A_s[:, μ, :, :], 1)
-    for (k, idx) in enumerate(harmonic_bins)
-        fields[k, μ, :, :] = A_ω_c[idx, :, :]
-    end
-    A_ω_c = nothing
-    GC.gc()
-end
-
-# One figure per harmonic, 2×2 over the four components; each panel scaled to its
-# own peak since component amplitudes differ by orders.
+# One figure per harmonic — the unified 2×2 grid over the four potential components
+# (:seismic, symmetric range). Rendering lives in EDMPlotsExt (via `using CairoMakie`).
 function plot_harmonic(k, n)
-    idx = harmonic_bins[k]
-    fig = Figure()
-    Label(
-        fig[0, :], @sprintf(
-            "Thomson scattering — %dω₁ (%.3f× fundamental)",
-            n, freqs[idx] / (ω / 2π)
-        ), fontsize = 16, font = :bold
-    )
-    for μ in 1:4
-        field = real.(fields[k, μ, :, :])
-        cr = maximum(abs, field)
-        gl = fig[cld(μ, 2), (μ - 1) % 2 + 1] = GridLayout()
-        ax = Axis(
-            gl[1, 1], width = 340, height = 340, xlabel = "x", ylabel = "y",
-            title = @sprintf("%s  (peak %.2e)", complabels[μ], cr)
-        )
-        hm = heatmap!(
-            ax, collect(screen.x_grid), collect(screen.y_grid), field,
-            colorrange = (-cr, cr), colormap = :seismic
-        )
-        Colorbar(gl[1, 2], hm, width = 12, height = 340)
-    end
-    resize_to_layout!(fig)
+    title = @sprintf("Thomson scattering — %dω₁ (%.3f× fundamental)", n, freqs[hbins[k]] / (ω / 2π))
     out = joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, RUN_TAG))
-    save(out, fig)
+    plot_harmonic_grid(
+        fields[k, :, :, :], screen.x_grid, screen.y_grid;
+        labels = complabels, colormap = :seismic, colorrange = symmetric_colorrange,
+        ncols = 2, panelsize = 340, title, outfile = out,
+    )
     println("saved → $out")
-    return fig
+    return out
 end
 
-plotfiles = String[]
-for (k, n) in enumerate(harmonics)
-    plot_harmonic(k, n)
-    push!(plotfiles, joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, RUN_TAG)))
-end
+plotfiles = [plot_harmonic(k, n) for (k, n) in enumerate(harmonics)]
 
 # ── Reproducibility manifest ──
 # Drop a TOML next to the outputs capturing provenance (repo commit, script,
