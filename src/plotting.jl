@@ -32,6 +32,15 @@ and a legend. Saves to `outfile` if given; returns the `Figure`.
 function plot_power_spectrum end
 
 """
+    plot_phase_grid(maps, x_grid, y_grid; w₀=1, labels, title="", ncols=3, panelsize=300, outfile=nothing)
+
+Like [`plot_harmonic_grid`] but plots the **phase** `angle.(maps[c])` of each component on a
+cyclic `:phase` colormap over `(-π, π)` — the `(x/w₀, y/w₀, ∠F)` view. The panel title still
+reports each component's peak complex amplitude. **Requires CairoMakie** (package extension).
+"""
+function plot_phase_grid end
+
+"""
     harmonic_colorrange(data) -> (lo, hi)
 
 Default per-panel color range for harmonic maps: the data extrema, guarded against a

@@ -9,7 +9,7 @@ using CairoMakie
 function ElectronDynamicsModels.plot_harmonic_grid(
         maps::AbstractArray{<:Number, 3}, x_grid, y_grid;
         w₀ = 1, labels, title = "",
-        colormap = :jet, colorrange = harmonic_colorrange,
+        colormap = :jet, colorrange = harmonic_colorrange, transform = real,
         ncols = 3, panelsize = 300, outfile = nothing,
     )
     ncomp = size(maps, 1)
@@ -23,12 +23,13 @@ function ElectronDynamicsModels.plot_harmonic_grid(
         f = Figure()
         isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
         for c in 1:ncomp
-            data = real.(maps[c, :, :])
+            cmap_c = @view maps[c, :, :]
+            data = transform.(cmap_c)
             row, col = (c - 1) ÷ ncols + 1, (c - 1) % ncols + 1
             gl = f[row, col] = GridLayout()
             ax = Axis(
                 gl[1, 1]; width = panelsize, height = panelsize, xlabel = xlab, ylabel = ylab,
-                title = "$(labels[c])  (peak $(round(maximum(abs, data); sigdigits = 3)))",
+                title = "$(labels[c])  (peak $(round(maximum(abs, cmap_c); sigdigits = 3)))",
             )
             hm = heatmap!(ax, xs, ys, data; colormap, colorrange = colorrange(data))
             Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
@@ -62,6 +63,16 @@ function ElectronDynamicsModels.plot_power_spectrum(
     end
     outfile === nothing || save(outfile, fig)
     return fig
+end
+
+function ElectronDynamicsModels.plot_phase_grid(
+        maps::AbstractArray{<:Number, 3}, x_grid, y_grid;
+        w₀ = 1, labels, title = "", ncols = 3, panelsize = 300, outfile = nothing,
+    )
+    return ElectronDynamicsModels.plot_harmonic_grid(
+        maps, x_grid, y_grid; w₀, labels, title, ncols, panelsize, outfile,
+        transform = angle, colormap = :phase, colorrange = _ -> (-Float64(π), Float64(π)),
+    )
 end
 
 end # module EDMPlotsExt

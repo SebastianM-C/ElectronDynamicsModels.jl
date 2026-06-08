@@ -41,7 +41,7 @@ export ReferenceFrame, Worldline,
     ObserverScreen, trajectory_interpolants, TrajectoryInterpolant, accumulate_potential,
     accumulate_field, screen_observables, screen_spectrum,
     harmonic_bins, harmonic_maps, power_spectrum,
-    plot_harmonic_grid, plot_power_spectrum, harmonic_colorrange, symmetric_colorrange,
+    plot_harmonic_grid, plot_phase_grid, plot_power_spectrum, harmonic_colorrange, symmetric_colorrange,
     lienard_wiechert_F, lienard_wiechert_F_split, extract_EB, faraday, stress_energy,
     GPUCubicSpline, GPUKernelRK4, GPUKernelTsit5, recommended_n_substeps,
     retarded_time_problem
