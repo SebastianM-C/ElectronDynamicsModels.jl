@@ -264,13 +264,8 @@ setup = Dict{String, Any}(
     "τi" => τi,
     "τf" => τf,
     "Rmax" => Rmax,
-    "N" => N,
     "Z" => Z,
-    "samples_per_period" => samples_per_period,
-    "N_samples" => N_samples,
-    "Nx" => Nx,
-    "Ny" => Ny,
-)
+)   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is just the integration window + screen depth
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
@@ -278,15 +273,8 @@ outputs = Dict{String, Any}(
     "plots" => basename.(plotfiles),
 )
 
-manifest = Dict{String, Any}(
-    "provenance" => provenance,
-    "config" => config,
-    "laser" => laser_params,
-    "model" => model_params,
-    "setup" => setup,
-    "outputs" => outputs,
+manifestfile = write_solver_manifest(
+    OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs,
+    extra = Dict("model" => model_params),
 )
-
-manifestfile = joinpath(OUTDIR, "run_$(RUN_TAG).toml")
-open(io -> TOML.print(io, manifest; sorted = true), manifestfile, "w")
 println("manifest → $manifestfile")

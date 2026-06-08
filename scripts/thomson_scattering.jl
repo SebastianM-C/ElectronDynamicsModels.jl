@@ -24,6 +24,8 @@ using Serialization
 using Printf
 using UUIDs
 
+include(joinpath(@__DIR__, "manifest.jl"))   # RunManifests: run_provenance, write_solver_manifest
+
 # GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
 if GPU_BACKEND == "cuda"
@@ -246,29 +248,10 @@ plotfiles = [plot_harmonic(k, n) for (k, n) in enumerate(harmonics)]
 using TOML
 using Dates
 
-const _edm_dir = pkgdir(ElectronDynamicsModels)
-_git(args...) = try
-    readchomp(Cmd(["git", "-C", string(_edm_dir), args...]))
-catch
-    "unknown"
-end
-repo_status = _git("status", "--porcelain")
-
-provenance = Dict{String, Any}(
-    "run_id" => RUN_TAG,
-    "repo_commit" => _git("rev-parse", "HEAD"),
-    "repo_dirty" => !(repo_status == "" || repo_status == "unknown"),
-    "edm_pkgdir" => string(_edm_dir),
-    "script" => abspath(PROGRAM_FILE),
-    "host" => gethostname(),
-    "slurm_job_id" => get(ENV, "SLURM_JOB_ID", ""),
-    "gpu_backend" => GPU_BACKEND,
-    "julia_version" => string(VERSION),
-    "timestamp" => string(now()),
+provenance = run_provenance(;
+    run_id = RUN_TAG, gpu_backend = GPU_BACKEND, repo_dir = pkgdir(ElectronDynamicsModels),
+    gpu_device = GPU_BACKEND == "cuda" ? CUDA.name(CUDA.device()) : nothing,
 )
-if GPU_BACKEND == "cuda"
-    provenance["gpu_device"] = string(CUDA.name(CUDA.device()))
-end
 
 config = Dict{String, Any}(
     "initial_phase" => ϕ₀,
@@ -304,22 +287,10 @@ setup = Dict{String, Any}(
     "τi" => τi,
     "τf" => τf,
     "Rmax" => Rmax,
-    "N" => N,
     "Z" => Z,
-    "samples_per_period" => samples_per_period,
-    "N_samples" => N_samples,
-    "Nx" => Nx,
-    "Ny" => Ny,
-)
+)   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is just the integration window + screen depth
 
-manifest = Dict{String, Any}(
-    "provenance" => provenance,
-    "config" => config,
-    "laser" => laser_params,
-    "setup" => setup,
-    "outputs" => outputs
+manifestfile = write_solver_manifest(
+    OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs
 )
-
-manifestfile = joinpath(OUTDIR, "run_$(RUN_TAG).toml")
-open(io -> TOML.print(io, manifest; sorted = true), manifestfile, "w")
 println("manifest → $manifestfile")

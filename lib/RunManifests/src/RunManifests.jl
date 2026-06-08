@@ -22,7 +22,7 @@ using Dates
 
 export git_state, assert_committed, run_provenance, run_spec_from_manifest, expand_sweep
 export find_parent_manifest, find_parent_run, spp_from_manifest
-export write_derived, write_run_manifest
+export write_derived, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
 
 # Git commit of the repo holding this package (lib/ lives inside the EDM repo, so this is
 # the EDM repo's HEAD), recorded in derived/analysis provenance so the dashboard can link
@@ -152,10 +152,7 @@ axes combined by cartesian product. The many-runs counterpart to [`run_spec_from
 (which yields a single env from one stored run); this yields many from a compact grid spec.
 """
 function expand_sweep(base::AbstractDict, vary::AbstractDict)
-    # TODO(human): build the run matrix. Prefix every knob name with "EDM_" and stringify
-    # its value. `base` goes into every env. Combine the `vary` axes by cartesian product —
-    # `Iterators.product` over the value-lists is dimension-agnostic, so 1/2/3+ axes all work,
-    # and an empty `vary` yields a single env (base alone). Merge each combination over `base`.
+    # cartesian product over the vary value-lists — dimension-agnostic (1/2/3+ axes, or none)
     ks = sort(collect(keys(vary)))
     vals = [vary[k] for k in ks]
     runs = Dict{String, String}[]
@@ -279,6 +276,57 @@ function write_run_manifest(
     isempty(setup)  || (m["setup"] = Dict{String, Any}(string(k) => v for (k, v) in setup))
     open(io -> TOML.print(io, m; sorted = true), joinpath(dir, "run_$(run_id).toml"), "w")
     return joinpath(dir, "run_$(run_id).toml")
+end
+
+# Required [config] keys — the write side of run_spec_from_manifest's replay contract.
+const REQUIRED_CONFIG_KEYS = (
+    "initial_phase",
+    "a0",
+    "Nx",
+    "N",
+    "N_samples",
+    "samples_per_period",
+    "n_substeps",
+    "sync_per_electron",
+)
+
+"""
+    write_solver_manifest(dir; run_id, provenance, config, laser, setup, outputs, extra = Dict())
+
+Canonical `run_<run_id>.toml` writer for a PRIMARY solver run (one that produces a `.jls`
++ plots). The single owner of the section layout, so the producer scripts
+(`thomson_scattering.jl`, `_A.jl`, `lpwa.jl`) can no longer drift apart:
+
+  [provenance] — pass `run_provenance(...)`         [config]  — replay-input knobs
+  [laser]      — beam params (dashboard PARAM_SPEC)  [setup]   — Z/Rmax + integration window
+  [outputs]    — `datafile` + `plots` (+ any extras the script records)
+
+`extra` maps any further top-level section name to its dict, written verbatim (e.g. lpwa's
+lpwa-only `"model"` bookkeeping). Errors if `config` lacks a `REQUIRED_CONFIG_KEYS` entry,
+so the replay contract is enforced at write time, not discovered at replay time.
+"""
+function write_solver_manifest(
+        dir::AbstractString; run_id, provenance::AbstractDict,
+        config::AbstractDict, laser::AbstractDict, setup::AbstractDict,
+        outputs::AbstractDict, extra::AbstractDict = Dict()
+    )
+    miss = [k for k in REQUIRED_CONFIG_KEYS if !haskey(config, k)]
+    isempty(miss) || error(
+        "write_solver_manifest: [config] is missing replay key(s) $(join(miss, ", ")); " *
+            "run_spec_from_manifest needs them to reproduce this run."
+    )
+    sec(d) = Dict{String, Any}(string(k) => v for (k, v) in d)
+    m = Dict{String, Any}(
+        "provenance" => Dict{String, Any}(provenance),
+        "config" => sec(config), "laser" => sec(laser),
+        "setup" => sec(setup), "outputs" => sec(outputs),
+    )
+    for (name, d) in extra
+        m[string(name)] = sec(d)
+    end
+    path = joinpath(dir, "run_$(run_id).toml")
+    open(io -> TOML.print(io, m; sorted = true), path, "w")
+    return path
 end
 
 end # module RunManifests
