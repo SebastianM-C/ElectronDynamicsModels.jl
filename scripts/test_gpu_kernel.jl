@@ -1,7 +1,10 @@
-# Standalone smoke test for the unified GPU kernel path.
-# Compares accumulate_potential(..., Tsit5())  (CPU adaptive reference)
-# against accumulate_potential(..., GPUKernelRK4(), CUDABackend())  on a
-# tiny problem (~5 electrons, 21×21 pixels, 500 saveat slots).
+# Standalone smoke test for the unified GPU kernel path. On a tiny problem (~5 electrons,
+# 21×21 pixels, 500 saveat slots) it checks two things:
+#   1. accumulate_potential(..., GPUKernelRK4()) tracks the adaptive CPU reference
+#      (accumulate_potential(..., Tsit5())) within RK4 tolerance; and
+#   2. sync_per_electron=false reproduces the sync=true result — i.e. dropping the
+#      per-electron `synchronize` (so electron N+1's upload overlaps kernel N) does NOT
+#      race the async buffer free against the kernel still reading that trajectory.
 
 using ElectronDynamicsModels
 using ModelingToolkit
@@ -108,23 +111,41 @@ println("\nProblem size: Nx=$Nx, Ny=$Ny, N_macro=$N_macro, N_samples=$N_samples"
 println("\n── CPU reference (Tsit5 adaptive) ──")
 @time A_cpu = accumulate_potential(trajs, screen, Tsit5())
 
-# ── GPU unified kernel ──
-println("\n── GPU unified kernel (RK4 fixed-step) ──")
-@time A_gpu = accumulate_potential(trajs, screen, GPUKernelRK4(), CUDA.CUDABackend())
+# ── GPU unified kernel, both sync modes ──
+# sync_per_electron=true: synchronize before freeing each trajectory's device buffers
+#   (safe, but serializes the electron loop). false: drop the per-electron sync and rely on
+#   stream-ordered async free so electron N+1's upload overlaps kernel N.
+backend = CUDA.CUDABackend()
+println("\n── GPU unified kernel (RK4 fixed-step), sync_per_electron=true ──")
+@time A_sync = accumulate_potential(trajs, screen, GPUKernelRK4(), backend; sync_per_electron = true)
+println("\n── GPU unified kernel (RK4 fixed-step), sync_per_electron=false ──")
+@time A_async = accumulate_potential(trajs, screen, GPUKernelRK4(), backend; sync_per_electron = false)
 
 # ── Compare ──
-abs_err = maximum(abs, A_cpu .- A_gpu)
+relerr(A, ref) = maximum(abs, A .- ref) / max(maximum(abs, ref), eps())
 ref_max = maximum(abs, A_cpu)
-rel_err = abs_err / max(ref_max, eps())
+rel_sync_cpu   = relerr(A_sync, A_cpu)      # GPU(sync)  ↔ adaptive CPU — RK4 discretization error
+rel_async_cpu  = relerr(A_async, A_cpu)     # GPU(async) ↔ adaptive CPU — should match sync's
+rel_async_sync = relerr(A_async, A_sync)    # async ↔ sync — the race check: should be ≈ 0 (same math)
 
 println("\n── Results ──")
-println("  CPU peak |A|       : $ref_max")
-println("  GPU peak |A|       : $(maximum(abs, A_gpu))")
-println("  max |A_cpu - A_gpu|: $abs_err")
-println("  relative error     : $rel_err")
+println("  CPU peak |A|              : $ref_max")
+println("  rel err  GPU(sync)  ↔ CPU : $rel_sync_cpu")
+println("  rel err  GPU(async) ↔ CPU : $rel_async_cpu")
+println("  rel err  async ↔ sync     : $rel_async_sync")
 
-if rel_err < 1.0e-4
+# (1) physics: the GPU RK4 path must track the adaptive CPU reference.
+if rel_sync_cpu < 1.0e-4
     println("\n✓ GPU path agrees with CPU within 1e-4 (RK4 vs adaptive-Tsit5 tolerance acceptable)")
 else
     println("\n✗ GPU path disagrees with CPU — investigate before trusting on the full problem")
+end
+
+# (2) is sync_per_electron=false safe? It changes only scheduling, not arithmetic, so async
+# must reproduce sync to within FP noise; a buffer-free race would diverge by O(peak). Require
+# async↔sync ≈ 0 (well below the 1e-4 RK4 floor) and async↔CPU no worse than sync↔CPU.
+if rel_async_sync < 1.0e-10 && rel_async_cpu ≤ max(rel_sync_cpu, 1.0e-4)
+    println("✓ sync_per_electron=false reproduces sync (Δ=$rel_async_sync) — safe; the async free is stream-ordered")
+else
+    println("✗ sync_per_electron=false diverges (Δ=$rel_async_sync) — likely a buffer-free race; keep sync=true")
 end
