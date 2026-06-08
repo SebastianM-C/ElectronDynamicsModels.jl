@@ -90,8 +90,9 @@ function run_one(ip, env)
     ssh_run(
         ip, """
             set -e
-            cd EDM/scripts
-            $envline EDM_OUTDIR=\$HOME/out_$tag \$HOME/.juliaup/bin/julia -t auto --startup=no --project=. $SCRIPT
+            cd EDM
+            export PATH=\$HOME/.juliaup/bin:\$PATH
+            $envline EDM_OUTDIR=\$HOME/out_$tag EDM_RUN_TAG=$tag bash scripts/run_logged.sh scripts/$SCRIPT
         """
     )
     dest = joinpath(LOCAL_OUT, "out_$tag")
