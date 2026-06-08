@@ -10,7 +10,7 @@ using FFTW
 using CairoMakie
 using Printf
 
-include(joinpath(@__DIR__, "manifest.jl"))   # shared reproducibility / provenance helpers
+using RunManifests
 
 const ϕ₀ = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
 const OUTDIR = get(ENV, "EDM_OUTDIR", ".")
@@ -124,8 +124,22 @@ K = q_e / (4π * ε₀ * c)
 τi = -8τ
 τf = 8τ
 
+# verify trajectory
+for f in (0.0, 11, 120)
+    tau = f * λ / c
+    δtau = 1.0e-6 * λ / c
+    𝔯 = w₀ * [rand(2); 0.0]
+
+    t2 = trajectory(tau + δtau, 𝔯)
+    t1 = trajectory(tau, 𝔯)
+
+    t′ = (t2 - t1) / δtau
+
+    @assert all(isapprox.(t′[1:4], t1[5:8], rtol = 1.0e-4, atol = 1.0e-8))
+end
+
 function build_traj(ℜ₀)
-    us = [SVector{8}(trajectory(τₚ, ℜ₀)) for τₚ in τs]
+    us = [trajectory(τₚ, ℜ₀) for τₚ in τs]
     itp = CubicSpline(us, τs; extrapolation = ExtrapolationType.Extension)
     a_itp = CubicSpline(
         [DataInterpolations.derivative(itp, τₚ)[u_idxs] for τₚ in τs], τs;
