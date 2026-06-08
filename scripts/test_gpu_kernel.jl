@@ -15,7 +15,17 @@ using StaticArrays
 using SymbolicIndexingInterface
 using LinearAlgebra
 using Unitful, UnitfulAtomic
-using CUDA
+# GPU backend via ENV: "cuda" (default; NVIDIA) or "rocm" (AMD MI300X VMs).
+const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "cuda"))
+if GPU_BACKEND == "cuda"
+    using CUDA
+    const gpu_backend = CUDA.CUDABackend()
+elseif GPU_BACKEND == "rocm"
+    using AMDGPU
+    const gpu_backend = AMDGPU.ROCBackend()
+else
+    error("EDM_GPU_BACKEND must be \"cuda\" or \"rocm\", got $(repr(GPU_BACKEND))")
+end
 
 @named world = Worldline(:τ, :atomic)
 
@@ -115,7 +125,7 @@ println("\n── CPU reference (Tsit5 adaptive) ──")
 # sync_per_electron=true: synchronize before freeing each trajectory's device buffers
 #   (safe, but serializes the electron loop). false: drop the per-electron sync and rely on
 #   stream-ordered async free so electron N+1's upload overlaps kernel N.
-backend = CUDA.CUDABackend()
+backend = gpu_backend
 println("\n── GPU unified kernel (RK4 fixed-step), sync_per_electron=true ──")
 @time A_sync = accumulate_potential(trajs, screen, GPUKernelRK4(), backend; sync_per_electron = true)
 println("\n── GPU unified kernel (RK4 fixed-step), sync_per_electron=false ──")
