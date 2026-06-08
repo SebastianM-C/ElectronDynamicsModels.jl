@@ -40,4 +40,28 @@ function ElectronDynamicsModels.plot_harmonic_grid(
     return fig
 end
 
+function ElectronDynamicsModels.plot_power_spectrum(
+        freqs, power_spec; ω, labels,
+        colors = [:black, :dodgerblue, :seagreen, :crimson],
+        linestyles = nothing, title = "", outfile = nothing,
+    )
+    xh = collect(freqs) ./ (ω / 2π)            # frequency in units of the fundamental
+    yfloor = maximum(power_spec) * 1.0e-30     # log axis needs a positive floor
+    fig = with_theme(theme_latexfonts()) do
+        f = Figure(size = (1150, 560))
+        ax = Axis(f[1, 1]; xlabel = "frequency / ω₁", ylabel = "Σ_pixels |Â_μ|²", yscale = log10, title)
+        vlines!(ax, 1:floor(Int, last(xh)); color = (:gray, 0.35), linestyle = :dash)
+        for c in axes(power_spec, 2)
+            lines!(ax, xh, max.(power_spec[:, c], yfloor); label = labels[c],
+                color = colors[(c - 1) % length(colors) + 1],
+                linestyle = linestyles === nothing ? :solid : linestyles[c], linewidth = 1.8)
+        end
+        xlims!(ax, 0, last(xh))
+        axislegend(ax; position = :rt)
+        f
+    end
+    outfile === nothing || save(outfile, fig)
+    return fig
+end
+
 end # module EDMPlotsExt

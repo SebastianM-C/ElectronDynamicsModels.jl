@@ -45,3 +45,21 @@ end
 
 harmonic_maps(field::NamedTuple, bins::AbstractVector{<:Integer}) =
     cat(harmonic_maps(field.E, bins), harmonic_maps(field.B, bins); dims = 2)
+
+"""
+    power_spectrum(cube) -> Matrix{Float64}
+
+Per-component frequency power spectrum of a `(N_samples, n_components, Nx, Ny)` cube, summed
+over the screen: `out[ν, c] = Σ_pixels |rfft(cube[:,c,:,:], 1)[ν]|²`. Returns `(N÷2+1, n_components)`;
+pair with `rfftfreq(N_samples, 1/δt)` for the frequency axis. One component at a time (memory).
+"""
+function power_spectrum(cube::AbstractArray{<:Number, 4})
+    out = zeros(Float64, size(cube, 1) ÷ 2 + 1, size(cube, 2))
+    for c in axes(cube, 2)
+        Fω = rfft(cube[:, c, :, :], 1)
+        out[:, c] = dropdims(sum(abs2, Fω; dims = (2, 3)); dims = (2, 3))
+        Fω = nothing
+        GC.gc()
+    end
+    return out
+end

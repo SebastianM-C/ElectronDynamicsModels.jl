@@ -10,6 +10,7 @@ using Serialization
 using FFTW
 using CairoMakie
 using Printf
+using ElectronDynamicsModels   # power_spectrum + plot_power_spectrum (EDMPlotsExt)
 
 const c = 137.03599908330932
 const ω = 0.057
@@ -41,18 +42,7 @@ else
     println("loading $datafile (slow path)…")
     A = deserialize(datafile)
     N_samples = size(A, 1)
-    Nf = N_samples ÷ 2 + 1
-    power_spec = zeros(Nf, 4)
-    for μ in 1:4
-        Aμ = A[:, μ, :, :]
-        Aω = rfft(Aμ, 1)
-        Aμ = nothing
-        GC.gc()
-        power_spec[:, μ] = dropdims(sum(abs2, Aω; dims = (2, 3)); dims = (2, 3))
-        Aω = nothing
-        GC.gc()
-        println("  component μ=$μ ($(labels[μ])) done")
-    end
+    power_spec = power_spectrum(A)
     A = nothing
     GC.gc()
     freqs = rfftfreq(N_samples, 1 / δt)
@@ -61,21 +51,13 @@ else
     println("cached → $cachefile")
 end
 
-xh = cache.freqs ./ (ω / 2π)               # frequency in units of the fundamental
-yfloor = maximum(cache.power_spec) * 1e-30
+xh = cache.freqs ./ (ω / 2π)               # frequency in units of the fundamental (for the table below)
 
-fig = Figure(size = (1150, 560))
-ax = Axis(fig[1, 1],
-    xlabel = "frequency / ω₁", ylabel = "Σ_pixels |A_ω,μ|²", yscale = log10,
-    title = "4-potential power spectra  —  $(basename(datafile))  ($(cache.samples_per_period) samples/period)")
-vlines!(ax, 1:floor(Int, last(xh)), color = (:gray, 0.35), linestyle = :dash)
-for μ in 1:4
-    lines!(ax, xh, max.(cache.power_spec[:, μ], yfloor),
-        color = colors[μ], linestyle = linestyles[μ], linewidth = 1.8, label = labels[μ])
-end
-xlims!(ax, 0, last(xh))
-axislegend(ax, position = :rt)
-save(stem * "_powspec_all.png", fig)
+plot_power_spectrum(
+    cache.freqs, cache.power_spec; ω, labels, colors, linestyles,
+    title = "4-potential power spectra — $(basename(datafile))  ($(cache.samples_per_period) samples/period)",
+    outfile = stem * "_powspec_all.png",
+)
 
 # Per-component power at each integer harmonic.
 @printf("\n%-4s" , "n")

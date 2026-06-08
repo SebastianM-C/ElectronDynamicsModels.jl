@@ -21,6 +21,17 @@ calling this without it raises a `MethodError`.
 function plot_harmonic_grid end
 
 """
+    plot_power_spectrum(freqs, power_spec; ω, labels, colors=…, linestyles=nothing, title="", outfile=nothing)
+
+Log-y plot of per-component power spectra `power_spec` (`(Nf, n)`, from [`power_spectrum`]) vs
+`freqs`, x-axis in units of the fundamental ω₁ (= `ω/2π`), with dashed integer-harmonic markers
+and a legend. Saves to `outfile` if given; returns the `Figure`.
+
+**Requires CairoMakie** — `using CairoMakie` activates the implementation (package extension).
+"""
+function plot_power_spectrum end
+
+"""
     harmonic_colorrange(data) -> (lo, hi)
 
 Default per-panel color range for harmonic maps: the data extrema, guarded against a
