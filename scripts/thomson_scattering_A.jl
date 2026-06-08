@@ -205,7 +205,7 @@ function plot_harmonic(k, n)
     out = joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, RUN_TAG))
     plot_harmonic_grid(
         fields[k, :, :, :], screen.x_grid, screen.y_grid;
-        labels = complabels, colormap = :seismic, colorrange = symmetric_colorrange,
+        w₀, labels = complabels, colormap = :seismic, colorrange = symmetric_colorrange,
         ncols = 2, panelsize = 340, title, outfile = out,
     )
     println("saved → $out")
