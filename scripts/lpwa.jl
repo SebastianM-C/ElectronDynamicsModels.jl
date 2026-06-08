@@ -190,8 +190,10 @@ fields_h = harmonic_maps(fld, hbins)
 hmapsfile = joinpath(OUTDIR, "hmaps_$(RUN_TAG).jls")
 serialize(
     hmapsfile,
-    (; fields_h, harmonics, ffund = [freqs[b] / (ω / 2π) for b in hbins],
-        x_grid = collect(screen.x_grid), y_grid = collect(screen.y_grid), w₀),
+    (;
+        fields_h, harmonics, ffund = [freqs[b] / (ω / 2π) for b in hbins],
+        x_grid = collect(screen.x_grid), y_grid = collect(screen.y_grid), w₀,
+    ),
 )
 println("serialized harmonic maps → $hmapsfile")
 
@@ -233,17 +235,27 @@ config = Dict{String, Any}(
     "trajectory_source" => "lpwa_analytic",   # distinguishes from the ODE-solved field runs
 )
 
-# Physics parameters of the analytic LPWA model. Unlike thomson_scattering.jl these come
-# straight from the script globals (there is no MTK `prob.ps` to read). Record exactly
-# what's needed to reconstruct the trajectory + screen.
-model_params = Dict{String, Any}(
+# Beam/laser parameters → [laser]. The dashboard's PARAM_SPEC reads beam params
+# (wavelength, w0, p, m, pol, profile, …) from [laser]; emitting them here — instead of
+# the old [model] section — is what lets them line up with the ODE-solved
+# thomson_scattering.jl runs in the compare view. Unlike thomson these come straight from
+# the script globals (there is no MTK `prob.ps` to read).
+laser_params = Dict{String, Any}(
     "wavelength" => λ,
-    "a0" => A0,
     "w0" => w₀,
     "p" => p,
     "m" => m,
-    "pulse_width" => s,
+    "profile" => "gaussian",
+    "pol" => "circular",
+    "a0" => A0,
     "phi0" => ϕ₀,
+)
+
+# lpwa-only model bookkeeping that is NOT a shared comparison axis (so it does not belong
+# in [laser]). The dashboard builder ignores [model]; these stay purely for
+# reproducibility / inspection of the analytic trajectory.
+model_params = Dict{String, Any}(
+    "pulse_width" => s,
     "amplitude" => A₀,
     "trajectory_sample_points" => Nτ,
 )
@@ -269,6 +281,7 @@ outputs = Dict{String, Any}(
 manifest = Dict{String, Any}(
     "provenance" => provenance,
     "config" => config,
+    "laser" => laser_params,
     "model" => model_params,
     "setup" => setup,
     "outputs" => outputs,
