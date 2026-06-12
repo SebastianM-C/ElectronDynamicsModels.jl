@@ -191,10 +191,10 @@ println("serialized → $datafile")
 # LPWA maps come from exactly the same code as the ODE-solved run they're compared against.
 hprod = write_harmonic_products(
     fld, screen.x_grid, screen.y_grid, ω, δt;
-    w₀, run_tag = RUN_TAG, outdir = OUTDIR,
+    w₀, run_tag = RUN_TAG, outdir = OUTDIR, source_datafile = basename(datafile),
     title_prefix = "LPWA", fileprefix = "lpwa",
 )
-plotfiles = hprod.plotfiles
+plotfiles = hprod.plots
 
 # ── Reproducibility manifest (mirrors thomson_scattering.jl; analytic-LPWA variant,
 # so model params come from the script globals rather than an MTK `prob`). The git

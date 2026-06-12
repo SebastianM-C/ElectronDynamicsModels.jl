@@ -21,17 +21,24 @@ const COMPLABELS = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
 const C_LIGHT = 137.03599908330932
 
 """
-    write_harmonic_products(fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir,
+    write_harmonic_products(fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
         harmonics = (1, 2), title_prefix, fileprefix, colormap = :jet, colorrange = nothing)
-        -> (; hmapsfile, plotfiles, fields_h)
+        -> (; hmapsfile, plots, fields_h)
 
 Reduce `fld = (; E, B)` to `fields_h` at the `harmonics` bins, serialize the reduced
-`hmaps_<run_tag>.jls`, and write the E/B harmonic grids, ∠F phase grids, and field power
-spectrum into `outdir`. `title_prefix`/`fileprefix` name the run family ("Thomson
-scattering"/"thomson", "LPWA"/"lpwa"); `colormap`/`colorrange` carry its house style.
+`hmaps_<run_tag>.jls`, and write the per-run plots into `outdir`:
+
+  * **field E/B grids + power spectrum** → the run's *intrinsic* plots, returned in `plots`
+    for the solver's `[outputs].plots` (kinds `h<n>` + `powspec`).
+  * **∠F phase grids** → a single parametrized `phase` derived chip — one
+    `derived_phase_<n>_*.toml` per harmonic via `write_derived` (`setup.harmonic = n`,
+    `source = source_datafile`), so the builder shows ONE phase chip with a harmonic
+    selector and the phase maps never collide with the field maps on `h<n>`.
+
+`title_prefix`/`fileprefix` name the run family; `colormap`/`colorrange` carry its style.
 """
 function write_harmonic_products(
-        fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir,
+        fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
         harmonics = (1, 2), title_prefix, fileprefix, colormap = :jet, colorrange = nothing
     )
     N_samples = size(fld.E, 1)
@@ -49,7 +56,8 @@ function write_harmonic_products(
     )
     println("serialized harmonic maps → $hmapsfile")
 
-    plotfiles = String[]
+    # Intrinsic plots ([outputs].plots): the E/B field maps (kinds h1/h2) + power spectrum.
+    plots = String[]
     gridkw = colorrange === nothing ? (; colormap) : (; colormap, colorrange)
     for (k, n) in enumerate(harmonics)
         out = joinpath(outdir, @sprintf("%s_field_h%d_%s.png", fileprefix, n, run_tag))
@@ -60,7 +68,7 @@ function write_harmonic_products(
             outfile = out,
         )
         println("saved → $out")
-        push!(plotfiles, out)
+        push!(plots, out)
     end
 
     psfile = joinpath(outdir, "powspec_$(run_tag).png")
@@ -69,8 +77,10 @@ function write_harmonic_products(
         ω, labels = COMPLABELS, title = "$title_prefix — field power spectra", outfile = psfile,
     )
     println("saved → $psfile")
-    push!(plotfiles, psfile)
+    push!(plots, psfile)
 
+    # Phase maps → ONE parametrized "phase" derived chip (harmonic selector), like the
+    # phaserings diagnostic — NOT intrinsic, so they never overwrite the field maps on h<n>.
     for (k, n) in enumerate(harmonics)
         out = joinpath(outdir, @sprintf("%s_phase_h%d_%s.png", fileprefix, n, run_tag))
         plot_phase_grid(
@@ -78,10 +88,13 @@ function write_harmonic_products(
             w₀, labels = COMPLABELS, title = @sprintf("%s (field) — ∠F at %dω₁", title_prefix, n), outfile = out,
         )
         println("saved → $out")
-        push!(plotfiles, out)
+        write_derived(
+            outdir; kind = "phase", label = "$title_prefix ∠F", run_id = run_tag,
+            plot = basename(out), source = source_datafile, setup = Dict("harmonic" => n),
+        )
     end
 
-    return (; hmapsfile, plotfiles, fields_h)
+    return (; hmapsfile, plots, fields_h)
 end
 
 # ── Standalone recovery: rebuild reduced maps + plots from a serialized cube via its manifest ──
@@ -107,7 +120,8 @@ function recover_from_manifest(toml)
     GC.gc()
     return write_harmonic_products(
         fld, x_grid, y_grid, ω, δt;
-        w₀ = las["w0"], run_tag = m["provenance"]["run_id"], outdir = dir, title_prefix, fileprefix,
+        w₀ = las["w0"], run_tag = m["provenance"]["run_id"], outdir = dir,
+        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
     )
 end
 

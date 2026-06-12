@@ -197,10 +197,10 @@ println("serialized → $datafile")
 # (:jet, per-panel extrema — same style as the LPWA maps), the ∠F phase grids, and the power spectrum.
 hprod = write_harmonic_products(
     fld, screen.x_grid, screen.y_grid, ω, δt;
-    w₀, run_tag = RUN_TAG, outdir = OUTDIR,
+    w₀, run_tag = RUN_TAG, outdir = OUTDIR, source_datafile = basename(datafile),
     title_prefix = "Thomson scattering", fileprefix = "thomson",
 )
-plotfiles = hprod.plotfiles
+plotfiles = hprod.plots
 
 # ── Reproducibility manifest (same schema as thomson_scattering_A.jl) ──
 using TOML
