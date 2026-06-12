@@ -25,6 +25,7 @@ using Printf
 using UUIDs
 
 include(joinpath(@__DIR__, "manifest.jl"))   # RunManifests: run_provenance, write_solver_manifest
+include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with the recovery path)
 
 # GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
@@ -190,47 +191,16 @@ datafile = joinpath(OUTDIR, "field_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_p
 serialize(datafile, fld)
 println("serialized → $datafile")
 
-# ── Harmonic maps of the total field: Re(Ẽ), Re(B̃) at 1ω₁, 2ω₁ ──
-const complabels = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
-const harmonics = (1, 2)
-
-freqs = rfftfreq(N_samples, 1 / δt)              # kept for the per-harmonic title
-hbins = harmonic_bins(N_samples, δt, ω, harmonics)
-# fields_h[k, c, :, :]: harmonic k, component c = (Eˣ,Eʸ,Eᶻ,Bˣ,Bʸ,Bᶻ) — E in 1:3, B in 4:6.
-fields_h = harmonic_maps(fld, hbins)
-
-# One figure per harmonic — the unified 2×3 E/B grid (diverging :seismic, symmetric range),
-# raw a.u. axes. Rendering lives in EDMPlotsExt, active via `using CairoMakie`.
-function plot_harmonic(k, n)
-    title = @sprintf("Thomson scattering (field) — %dω₁ (%.3f× fundamental)", n, freqs[hbins[k]] / (ω / 2π))
-    out = joinpath(OUTDIR, @sprintf("thomson_field_h%d_%s.png", n, RUN_TAG))
-    plot_harmonic_grid(
-        fields_h[k, :, :, :], screen.x_grid, screen.y_grid;
-        w₀, labels = complabels, colormap = :seismic, colorrange = symmetric_colorrange, title, outfile = out,
-    )
-    println("saved → $out")
-    return out
-end
-
-plotfiles = [plot_harmonic(k, n) for (k, n) in enumerate(harmonics)]
-
-# field-component power spectra, every run (shows which components carry harmonic structure)
-psfile = joinpath(OUTDIR, "powspec_$(RUN_TAG).png")
-plot_power_spectrum(freqs, power_spectrum(fld); ω, labels = complabels, title = "Thomson — field power spectra", outfile = psfile)
-println("saved → $psfile")
-push!(plotfiles, psfile)
-
-# phase maps ∠F per component at each harmonic (x/w₀, y/w₀), every run
-function plot_phase(k, n)
-    out = joinpath(OUTDIR, @sprintf("thomson_phase_h%d_%s.png", n, RUN_TAG))
-    plot_phase_grid(
-        fields_h[k, :, :, :], screen.x_grid, screen.y_grid;
-        w₀, labels = complabels, title = @sprintf("Thomson (field) — ∠F at %dω₁", n), outfile = out,
-    )
-    println("saved → $out")
-    return out
-end
-append!(plotfiles, [plot_phase(k, n) for (k, n) in enumerate(harmonics)])
+# ── Harmonic maps + ∠F phase + power spectrum (reduce + serialize + plot) ──
+# Shared with the standalone recovery path in harmonic_products.jl, so the reduction and
+# rendering live in one place. Emits hmaps_<tag>.jls + the per-harmonic 2×3 E/B grids
+# (:jet, per-panel extrema — same style as the LPWA maps), the ∠F phase grids, and the power spectrum.
+hprod = write_harmonic_products(
+    fld, screen.x_grid, screen.y_grid, ω, δt;
+    w₀, run_tag = RUN_TAG, outdir = OUTDIR,
+    title_prefix = "Thomson scattering", fileprefix = "thomson",
+)
+plotfiles = hprod.plotfiles
 
 # ── Reproducibility manifest (same schema as thomson_scattering_A.jl) ──
 using TOML
@@ -257,6 +227,7 @@ config = Dict{String, Any}(
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
     "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
+    "harmonic_maps" => basename(hprod.hmapsfile),   # reduced maps → resolve_hmaps finds them directly
     "plots" => basename.(plotfiles),
 )
 
