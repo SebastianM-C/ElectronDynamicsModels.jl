@@ -101,7 +101,10 @@ function recover_from_manifest(toml)
     title_prefix, fileprefix = lpwa ? ("LPWA", "lpwa") : ("Thomson scattering", "thomson")
 
     println("loading $(m["outputs"]["datafile"]) …")
-    fld = deserialize(joinpath(dir, m["outputs"]["datafile"]))
+    raw = deserialize(joinpath(dir, m["outputs"]["datafile"]))
+    fld = (; E = raw.E, B = raw.B)   # total-field maps only; drop any split E_rad/B_rad to halve resident RAM
+    raw = nothing
+    GC.gc()
     return write_harmonic_products(
         fld, x_grid, y_grid, ω, δt;
         w₀ = las["w0"], run_tag = m["provenance"]["run_id"], outdir = dir, title_prefix, fileprefix,
