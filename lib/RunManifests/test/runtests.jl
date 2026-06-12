@@ -51,4 +51,21 @@ end
             laser = Dict(), setup = Dict(), outputs = Dict("plots" => String[]),
         )
     end
+
+    # Schema version: the writer stamps the current version at top level, and it survives
+    # the TOML round-trip as a top-level Int (not buried in a section).
+    @test m["schema_version"] == MANIFEST_SCHEMA_VERSION
+    @test manifest_schema_version(m) == MANIFEST_SCHEMA_VERSION
+    @test check_schema_version(m) == MANIFEST_SCHEMA_VERSION
+end
+
+@testset "check_schema_version — policy" begin
+    cur = MANIFEST_SCHEMA_VERSION
+    # current ⇒ accepted, returns the version
+    @test check_schema_version(Dict("schema_version" => cur)) == cur
+    # missing ⇒ legacy v0, warns but proceeds
+    @test (@test_logs (:warn,) check_schema_version(Dict{String, Any}())) == 0
+    @test manifest_schema_version(Dict{String, Any}()) == 0
+    # newer than we understand ⇒ hard error
+    @test_throws ErrorException check_schema_version(Dict("schema_version" => cur + 1))
 end

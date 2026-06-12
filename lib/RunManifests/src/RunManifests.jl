@@ -23,6 +23,45 @@ using Dates
 export git_state, assert_committed, run_provenance, run_spec_from_manifest, expand_sweep
 export find_parent_manifest, find_parent_run, spp_from_manifest
 export write_derived, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
+export MANIFEST_SCHEMA_VERSION, manifest_schema_version, check_schema_version
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Manifest schema version. `schema_version` is a top-level Int in every run_*.toml /
+# derived_*.toml; bump MANIFEST_SCHEMA_VERSION whenever the section layout changes so a
+# reader refuses a layout it can't read instead of silently mis-reading a renamed key.
+# Policy (check_schema_version): missing ⇒ legacy v0 (warn, proceed); newer than we know
+# ⇒ error. Migration of an older-but-known layout goes here once the first such change
+# lands (v0 and v1 are structurally identical — v0 just predates the field).
+# ─────────────────────────────────────────────────────────────────────────────
+const MANIFEST_SCHEMA_VERSION = 1
+
+"""
+    manifest_schema_version(manifest) -> Int
+
+The `schema_version` at the top of a parsed manifest, or `0` for a pre-versioning
+("legacy") manifest written before the field existed.
+"""
+manifest_schema_version(m::AbstractDict) = Int(get(m, "schema_version", 0))
+
+"""
+    check_schema_version(manifest; source = "manifest") -> Int
+
+Validate a parsed manifest against `MANIFEST_SCHEMA_VERSION` and return its detected
+version. Missing ⇒ warn and treat as legacy `v0`; a version newer than this package
+knows ⇒ error (it was written by a newer RunManifests — update this one to read it).
+"""
+function check_schema_version(m::AbstractDict; source::AbstractString = "manifest")
+    v = manifest_schema_version(m)
+    if v == 0
+        @warn "$source has no schema_version — assuming legacy layout (v0)" expected = MANIFEST_SCHEMA_VERSION
+    elseif v > MANIFEST_SCHEMA_VERSION
+        error(
+            "$source has schema_version=$v, newer than this RunManifests understands " *
+                "(v$MANIFEST_SCHEMA_VERSION); update RunManifests to read it."
+        )
+    end
+    return v
+end
 
 # Git commit of the repo holding this package (lib/ lives inside the EDM repo, so this is
 # the EDM repo's HEAD), recorded in derived/analysis provenance so the dashboard can link
@@ -123,6 +162,7 @@ scripts read `ENV` at the top and write the manifest at the end — keeping both
 in one place is what stops a "reproduce" from silently diverging from the original run.
 """
 function run_spec_from_manifest(manifest::AbstractDict)
+    check_schema_version(manifest; source = "run manifest")
     prov = get(manifest, "provenance", Dict())
     commit = get(prov, "repo_commit", "unknown")
     cfg = get(manifest, "config", Dict())
@@ -238,6 +278,7 @@ function write_derived(
     # `description`: markdown + $…$ LaTeX, rendered (KaTeX) in the dashboard plot modal.
     description === nothing || (d["description"] = description)
     m = Dict{String, Any}(
+        "schema_version" => MANIFEST_SCHEMA_VERSION,
         "provenance" => Dict(
             "script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
             "host" => gethostname(), "timestamp" => string(now())
@@ -270,7 +311,7 @@ function write_run_manifest(
     derived_from === nothing || (prov["derived_from"] = derived_from)
     outs = Dict{String, Any}("plots" => collect(plots))
     datafile === nothing || (outs["datafile"] = datafile)
-    m = Dict{String, Any}("provenance" => prov, "outputs" => outs)
+    m = Dict{String, Any}("schema_version" => MANIFEST_SCHEMA_VERSION, "provenance" => prov, "outputs" => outs)
     isempty(config) || (m["config"] = Dict{String, Any}(string(k) => v for (k, v) in config))
     isempty(laser)  || (m["laser"] = Dict{String, Any}(string(k) => v for (k, v) in laser))
     isempty(setup)  || (m["setup"] = Dict{String, Any}(string(k) => v for (k, v) in setup))
@@ -303,7 +344,9 @@ Canonical `run_<run_id>.toml` writer for a PRIMARY solver run (one that produces
 
 `extra` maps any further top-level section name to its dict, written verbatim (e.g. lpwa's
 lpwa-only `"model"` bookkeeping). Errors if `config` lacks a `REQUIRED_CONFIG_KEYS` entry,
-so the replay contract is enforced at write time, not discovered at replay time.
+so the replay contract is enforced at write time, not discovered at replay time. Stamps a
+top-level `schema_version = MANIFEST_SCHEMA_VERSION` that readers validate via
+[`check_schema_version`](@ref).
 """
 function write_solver_manifest(
         dir::AbstractString; run_id, provenance::AbstractDict,
@@ -317,6 +360,7 @@ function write_solver_manifest(
     )
     sec(d) = Dict{String, Any}(string(k) => v for (k, v) in d)
     m = Dict{String, Any}(
+        "schema_version" => MANIFEST_SCHEMA_VERSION,
         "provenance" => Dict{String, Any}(provenance),
         "config" => sec(config), "laser" => sec(laser),
         "setup" => sec(setup), "outputs" => sec(outputs),
