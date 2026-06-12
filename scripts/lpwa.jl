@@ -6,11 +6,9 @@ using DataInterpolations
 using UUIDs
 using ElectronDynamicsModels
 using Serialization
-using FFTW
-using CairoMakie
-using Printf
 
 using RunManifests
+include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with thomson + recovery)
 
 const ϕ₀ = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
 const OUTDIR = get(ENV, "EDM_OUTDIR", ".")
@@ -188,61 +186,15 @@ datafile = joinpath(OUTDIR, "field_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_p
 serialize(datafile, fld)
 println("serialized → $datafile")
 
-# ── Harmonic maps of the total field: Re(Ẽ), Re(B̃) at 1ω₁, 2ω₁ ──
-# rfft one component at a time (memory-conscious), mirroring thomson_scattering.jl so
-# the LPWA maps are directly comparable to the ODE-solved run. fld holds only (; E, B)
-# under Val(:total), which is exactly what these maps consume.
-const complabels = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
-const harmonics = (1, 2)
-
-freqs = rfftfreq(N_samples, 1 / δt)                  # kept for the per-harmonic title
-hbins = harmonic_bins(N_samples, δt, ω, harmonics)
-# fields_h[k, c, :, :]: harmonic k, component c = (Eˣ,Eʸ,Eᶻ,Bˣ,Bʸ,Bᶻ) — E in 1:3, B in 4:6.
-fields_h = harmonic_maps(fld, hbins)
-
-# reduced harmonic maps — re-plottable without the raw cube
-hmapsfile = joinpath(OUTDIR, "hmaps_$(RUN_TAG).jls")
-serialize(
-    hmapsfile,
-    (;
-        fields_h, harmonics, ffund = [freqs[b] / (ω / 2π) for b in hbins],
-        x_grid = collect(screen.x_grid), y_grid = collect(screen.y_grid), w₀,
-    ),
+# ── Harmonic maps + ∠F phase + power spectrum (reduce + serialize + plot) ──
+# Shared with thomson_scattering.jl + the recovery path via harmonic_products.jl, so the
+# LPWA maps come from exactly the same code as the ODE-solved run they're compared against.
+hprod = write_harmonic_products(
+    fld, screen.x_grid, screen.y_grid, ω, δt;
+    w₀, run_tag = RUN_TAG, outdir = OUTDIR,
+    title_prefix = "LPWA", fileprefix = "lpwa",
 )
-println("serialized harmonic maps → $hmapsfile")
-
-# One figure per harmonic — the unified 2×3 E/B grid (defaults: :jet, per-panel extrema),
-# axes in units of w₀. Rendering lives in EDMPlotsExt, active via `using CairoMakie`.
-function plot_harmonic(k, n)
-    title = @sprintf("LPWA (field) — %dω₁ (%.3f× fundamental)", n, freqs[hbins[k]] / (ω / 2π))
-    out = joinpath(OUTDIR, @sprintf("lpwa_field_h%d_%s.png", n, RUN_TAG))
-    plot_harmonic_grid(
-        fields_h[k, :, :, :], screen.x_grid, screen.y_grid;
-        w₀, labels = complabels, title, outfile = out,
-    )
-    println("saved → $out")
-    return out
-end
-
-plotfiles = [plot_harmonic(k, n) for (k, n) in enumerate(harmonics)]
-
-# field-component power spectra, every run (shows which components carry harmonic structure)
-psfile = joinpath(OUTDIR, "powspec_$(RUN_TAG).png")
-plot_power_spectrum(freqs, power_spectrum(fld); ω, labels = complabels, title = "LPWA — field power spectra", outfile = psfile)
-println("saved → $psfile")
-push!(plotfiles, psfile)
-
-# phase maps ∠F per component at each harmonic (x/w₀, y/w₀), every run
-function plot_phase(k, n)
-    out = joinpath(OUTDIR, @sprintf("lpwa_phase_h%d_%s.png", n, RUN_TAG))
-    plot_phase_grid(
-        fields_h[k, :, :, :], screen.x_grid, screen.y_grid;
-        w₀, labels = complabels, title = @sprintf("LPWA (field) — ∠F at %dω₁", n), outfile = out,
-    )
-    println("saved → $out")
-    return out
-end
-append!(plotfiles, [plot_phase(k, n) for (k, n) in enumerate(harmonics)])
+plotfiles = hprod.plotfiles
 
 # ── Reproducibility manifest (mirrors thomson_scattering.jl; analytic-LPWA variant,
 # so model params come from the script globals rather than an MTK `prob`). The git
@@ -302,7 +254,7 @@ setup = Dict{String, Any}(
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
     "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
-    "harmonic_maps" => basename(hmapsfile),
+    "harmonic_maps" => basename(hprod.hmapsfile),
     "plots" => basename.(plotfiles),
 )
 

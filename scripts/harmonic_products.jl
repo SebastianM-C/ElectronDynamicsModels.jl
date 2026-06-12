@@ -9,8 +9,8 @@
 #   julia +release --project=scripts scripts/harmonic_products.jl runs/.../run_<UUID>.toml [...]
 #
 # Reading run params goes through the manifest's CURRENT sections ([config]/[laser]) via
-# RunManifests, so this can't silently drift on a schema change the way the hand-parsed
-# lpwa_replot_harmonics.jl did.
+# RunManifests, so this can't silently drift on a schema change the way hand-parsing the
+# raw TOML would.
 
 using TOML, Serialization, FFTW, Printf
 using ElectronDynamicsModels    # harmonic_bins, harmonic_maps, power_spectrum, plot_*, symmetric_colorrange
