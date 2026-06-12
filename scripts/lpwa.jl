@@ -133,7 +133,10 @@ for f in (0.0, 11, 120)
 
     t′ = (t2 - t1) / δtau
 
-    @assert all(isapprox.(t′[1:4], t1[5:8], rtol = 1.0e-4, atol = 1.0e-8))
+    # atol floors the finite-diff resolution: differencing absolute positions (x₀ ~ w₀ ~ 1e6)
+    # caps accuracy near eps(w₀)/δτ, and forward-diff truncation peaks ~3e-5 at a0=0.1; an
+    # rtol-only check fails once the velocity (∝ a0) drops below that at small a0.
+    @assert all(isapprox.(t′[1:4], t1[5:8], rtol = 1.0e-4, atol = 1.0e-4))
 end
 
 function build_traj(ℜ₀)
