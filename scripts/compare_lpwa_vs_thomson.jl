@@ -190,7 +190,7 @@ for (k, n) in enumerate(L.harmonics)
     write_derived(
         OUTDIR; kind = "ez_overlay", label = "Eᶻ along rays LPWA vs numeric",
         run_id = [lpwa_id, thom_id], plot = basename(oout), setup = Dict("harmonic" => n),
-        description = "Re(Eᶻ) vs ρ along $(length(φovl)) rays (0…180°) at $(n)ω₁ (a0=$(La["laser"]["a0"])); LPWA solid, numeric dashed."
+        description = "Re(Eᶻ) vs ρ along $(length(φovl)) rays ($(round(Int, rad2deg(first(φovl))))–$(round(Int, rad2deg(last(φovl))))°, within Eᶻ's 120° azimuthal period) at $(n)ω₁ (a0=$(La["laser"]["a0"])); LPWA solid, numeric dashed."
     )
     println("derived → ez_ratio + ez_overlay h$n  (parents $lpwa_id, $thom_id)")
 end
