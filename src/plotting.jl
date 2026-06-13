@@ -41,16 +41,23 @@ reports each component's peak complex amplitude. **Requires CairoMakie** (packag
 function plot_phase_grid end
 
 """
-    plot_phase_rings_grid(maps, x_grid, y_grid; w₀=1, labels, radii, tol, title="", ncols=3,
+    plot_phase_with_rings(maps, x_grid, y_grid; w₀=1, labels, radii, tol, title="",
                           panelsize=300, outfile=nothing)
 
-Per-component grid of the **azimuthal phase winding**: for each component of `maps`
-(`(n_components, Nx, Ny)`), scatter `angle(F)` of the pixels on each test circle of radius
-`R ∈ radii` (a thin annulus, half-width `tol`, about the grid centre) against their azimuth
-`atan(y, x)`. A vortex of topological charge ℓ shows ℓ phase windings as φ runs once around —
-the ring counterpart of [`plot_phase_grid`]'s heatmap. **Requires CairoMakie** (package extension).
+Combined per-field phase view for *one* field type (`maps` is `(3, Nx, Ny)` — e.g. the E or B
+slice `fields_h[k, 1:3, :, :]` / `[k, 4:6, :, :]`). One row per component, two columns:
+
+  * **left** — the phase heatmap `angle.(maps[c])` on the cyclic `:phase` colormap over `(-π, π)`,
+    with the test annuli drawn as dashed circles at `R ± tol` (in `w₀` units, to match the axes),
+    one colour per radius;
+  * **right** — the **azimuthal phase winding**: `angle(F)` of the pixels on each test circle of
+    radius `R ∈ radii` (a thin annulus, half-width `tol`, about the grid centre) scattered against
+    azimuth `atan(y, x)`, coloured to match the circles on the left. A vortex of topological
+    charge ℓ shows ℓ phase windings as φ runs once around.
+
+**Requires CairoMakie** (package extension).
 """
-function plot_phase_rings_grid end
+function plot_phase_with_rings end
 
 """
     harmonic_colorrange(data) -> (lo, hi)

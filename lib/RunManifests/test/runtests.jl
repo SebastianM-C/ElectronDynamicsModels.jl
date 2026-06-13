@@ -85,4 +85,17 @@ end
     m2 = TOML.parsefile(p2)
     @test m2["derived"]["depends_on"] == ["aaaaaaaa-1111-2222", "bbbbbbbb-3333-4444"]
     @test occursin("aaaaaaaa-bbbbbbbb", basename(p2))
+
+    # no `[plot_params]` unless asked for (the common single-channel call)
+    @test !haskey(m1, "plot_params")
+
+    # plot_params → display-only [plot_params] section; round-trips, and (unlike setup)
+    # does NOT influence the filename suffix.
+    p3 = write_derived(dir; kind = "phaseE", label = "∠F E", run_id = "cccccccc-5555-6666",
+        plot = "e.png", setup = Dict("harmonic" => 1),
+        plot_params = Dict("ringtol" => 0.188, "radii" => [0.2, 0.4, 0.6]))
+    m3 = TOML.parsefile(p3)
+    @test m3["plot_params"]["ringtol"] == 0.188
+    @test m3["plot_params"]["radii"] == [0.2, 0.4, 0.6]
+    @test occursin("_1_", basename(p3))   # suffix from setup (harmonic=1) only, not plot_params
 end

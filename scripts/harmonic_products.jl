@@ -79,36 +79,71 @@ function write_harmonic_products(
     println("saved → $psfile")
     push!(plots, psfile)
 
-    # Phase maps → ONE parametrized "phase" derived chip (harmonic selector); NOT intrinsic,
-    # so they never overwrite the field maps on h<n>. Plus the ∠F-vs-azimuth ring view, which
-    # makes the vortex winding (charge ℓ → ℓ windings) legible — its own "phaserings" chip.
+    # Phase view (phaseE/phaseB chips). Factored out so the cached-hmaps recovery path can
+    # rebuild it without the cube.
+    write_phase_products(
+        fields_h, x_grid, y_grid;
+        w₀, harmonics, run_tag, outdir, source_datafile, title_prefix, fileprefix,
+    )
+
+    return (; hmapsfile, plots, fields_h)
+end
+
+"""
+    write_phase_products(fields_h, x_grid, y_grid; w₀, harmonics, run_tag, outdir,
+        source_datafile, title_prefix, fileprefix) -> Vector{String}
+
+The per-field-type ∠F view from reduced harmonic maps `fields_h` (`(length(harmonics), 6, Nx,
+Ny)`): for E (comps `1:3`) and B (`4:6`), one parametrized derived chip (`phaseE`/`phaseB`,
+harmonic selector) — each component's ∠F heatmap with the test annuli drawn as dashed R±ringtol
+circles, beside the ∠F-vs-azimuth winding (charge ℓ → ℓ windings). Ring radii + tolerance are
+recorded in `[plot_params]` (w₀ units, as on the plot). Takes `fields_h` (not the cube), so the
+live solve and the cached-hmaps recovery share one implementation; `x_grid`/`y_grid` may be
+ranges or plain vectors (hmaps stores them collected, hence `x_grid[2] - x_grid[1]` not `step`).
+"""
+function write_phase_products(
+        fields_h, x_grid, y_grid; w₀, harmonics, run_tag, outdir, source_datafile,
+        title_prefix, fileprefix,
+    )
     ringradii = maximum(abs, x_grid) .* (0.2, 0.4, 0.6)
-    ringtol = 1.5 * step(x_grid)
-    for (k, n) in enumerate(harmonics)
-        out = joinpath(outdir, @sprintf("%s_phase_h%d_%s.png", fileprefix, n, run_tag))
-        plot_phase_grid(
-            fields_h[k, :, :, :], x_grid, y_grid;
-            w₀, labels = COMPLABELS, title = @sprintf("%s (field) — ∠F at %dω₁", title_prefix, n), outfile = out,
+    ringtol = 0.5 * (x_grid[2] - x_grid[1])   # ½ pixel pitch; annulus ≈1.3% of innermost R at Nx=400
+    pparams = Dict(
+        "ringtol/w₀" => round(ringtol / w₀; sigdigits = 3),
+        "radii/w₀" => round.(collect(ringradii) ./ w₀; sigdigits = 3),
+    )
+    plots = String[]
+    for (fld_tag, comps) in (("E", 1:3), ("B", 4:6)), (k, n) in enumerate(harmonics)
+        out = joinpath(outdir, @sprintf("%s_phase%s_h%d_%s.png", fileprefix, fld_tag, n, run_tag))
+        plot_phase_with_rings(
+            fields_h[k, comps, :, :], x_grid, y_grid;
+            w₀, labels = COMPLABELS[comps], radii = ringradii, tol = ringtol,
+            title = @sprintf("%s — ∠F %s-field at %dω₁", title_prefix, fld_tag, n), outfile = out,
         )
         println("saved → $out")
         write_derived(
-            outdir; kind = "phase", label = "$title_prefix ∠F", run_id = run_tag,
-            plot = basename(out), source = source_datafile, setup = Dict("harmonic" => n),
+            outdir; kind = "phase$fld_tag", label = "$title_prefix ∠F $fld_tag", run_id = run_tag,
+            plot = basename(out), source = source_datafile,
+            setup = Dict("harmonic" => n), plot_params = pparams,
         )
-        rout = joinpath(outdir, @sprintf("%s_phaserings_h%d_%s.png", fileprefix, n, run_tag))
-        plot_phase_rings_grid(
-            fields_h[k, :, :, :], x_grid, y_grid;
-            w₀, labels = COMPLABELS, radii = ringradii, tol = ringtol,
-            title = @sprintf("%s (field) — ∠F vs azimuth at %dω₁", title_prefix, n), outfile = rout,
-        )
-        println("saved → $rout")
-        write_derived(
-            outdir; kind = "phaserings", label = "$title_prefix ∠F vs φ", run_id = run_tag,
-            plot = basename(rout), source = source_datafile, setup = Dict("harmonic" => n),
-        )
+        push!(plots, out)
     end
+    return plots
+end
 
-    return (; hmapsfile, plots, fields_h)
+# Delete the superseded single-grid phase artifacts (kinds `phase`/`phaserings`) for `run_tag` so
+# a re-plotted run doesn't show both old and new (phaseE/phaseB) chips. Matches the OLD names only
+# (NOT `phaseE`/`phaseB`): `derived_phase_<n>_<id8>` / `derived_phaserings_…` sidecars carrying this
+# run's id8, and `*_phase_h<n>_<tag>.png` / `*_phaserings_h<n>_<tag>.png`.
+function _retire_stale_phase(dir, run_tag)
+    id8 = first(run_tag, 8)
+    for f in readdir(dir)
+        stale = ((occursin(r"^derived_phase_\d", f) || startswith(f, "derived_phaserings_")) && occursin(id8, f)) ||
+                occursin(Regex("_phase_h\\d+_" * run_tag * "\\.png\$"), f) ||
+                occursin(Regex("_phaserings_h\\d+_" * run_tag * "\\.png\$"), f)
+        stale || continue
+        rm(joinpath(dir, f))
+        println("retired stale → $f")
+    end
 end
 
 # ── Standalone recovery: rebuild reduced maps + plots from a serialized cube via its manifest ──
@@ -117,24 +152,41 @@ function recover_from_manifest(toml)
     check_schema_version(m; source = basename(toml))
     dir = dirname(abspath(toml))
     cfg, las = m["config"], m["laser"]
-    λ = las["wavelength"]
-    ω = C_LIGHT * 2π / λ
-    δt = 2π / ω / spp_from_manifest(m)
-    x_grid = LinRange(-25las["w0"], 25las["w0"], cfg["Nx"])
-    y_grid = LinRange(-25las["w0"], 25las["w0"], cfg["Ny"])
-    # lpwa runs already serialize hmaps; recovery is mainly the Thomson cube. Only title/
-    # filename differ by family — both use the shared :jet/per-panel default colormap.
+    # Only title/filename differ by family — both use the shared :jet/per-panel default colormap.
     lpwa = get(cfg, "trajectory_source", "") == "lpwa_analytic"
     title_prefix, fileprefix = lpwa ? ("LPWA", "lpwa") : ("Thomson scattering", "thomson")
+    run_tag = m["provenance"]["run_id"]
+    cube = joinpath(dir, m["outputs"]["datafile"])
 
-    println("loading $(m["outputs"]["datafile"]) …")
-    raw = deserialize(joinpath(dir, m["outputs"]["datafile"]))
-    fld = (; E = raw.E, B = raw.B)   # total-field maps only; drop any split E_rad/B_rad to halve resident RAM
-    raw = nothing
-    GC.gc()
-    return write_harmonic_products(
-        fld, x_grid, y_grid, ω, δt;
-        w₀ = las["w0"], run_tag = m["provenance"]["run_id"], outdir = dir,
+    if isfile(cube)
+        λ = las["wavelength"]
+        ω = C_LIGHT * 2π / λ
+        δt = 2π / ω / spp_from_manifest(m)
+        x_grid = LinRange(-25las["w0"], 25las["w0"], cfg["Nx"])
+        y_grid = LinRange(-25las["w0"], 25las["w0"], cfg["Ny"])
+        println("loading $(m["outputs"]["datafile"]) …")
+        raw = deserialize(cube)
+        fld = (; E = raw.E, B = raw.B)   # total-field maps only; drop any split E_rad/B_rad to halve resident RAM
+        raw = nothing
+        GC.gc()
+        return write_harmonic_products(
+            fld, x_grid, y_grid, ω, δt;
+            w₀ = las["w0"], run_tag, outdir = dir,
+            source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
+        )
+    end
+
+    # Cube absent (e.g. a published run that shipped only the reduced hmaps): rebuild just the
+    # phase view from the cached harmonic maps. Field grids + powspec need the cube — left as-is.
+    hmapsfile = joinpath(dir, "hmaps_$(run_tag).jls")
+    isfile(hmapsfile) ||
+        error("neither cube ($(basename(cube))) nor hmaps ($(basename(hmapsfile))) found in $dir")
+    println("cube absent — replotting phase from $(basename(hmapsfile)) …")
+    h = deserialize(hmapsfile)
+    _retire_stale_phase(dir, run_tag)
+    return write_phase_products(
+        h.fields_h, h.x_grid, h.y_grid;
+        w₀ = h.w₀, harmonics = h.harmonics, run_tag, outdir = dir,
         source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
     )
 end

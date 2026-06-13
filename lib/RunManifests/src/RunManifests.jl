@@ -262,17 +262,28 @@ function spp_from_manifest(manifest::AbstractDict; default = nothing)
 end
 
 """
-    write_derived(dir; kind, label, run_id, plot, source=nothing, datafile=nothing, setup=Dict())
+    write_derived(dir; kind, label, run_id, plot, source=nothing, datafile=nothing,
+                  setup=Dict(), plot_params=Dict(), description=nothing)
 
 Write a `[derived]` sidecar TOML into `dir` binding `plot` (a basename in `dir`) to its parent
 run(s). `run_id` is a single id OR a vector of ids — the builder attaches the artifact to EVERY
 parent in `depends_on`, so a cross-run comparison passes both run ids and shows up (with lineage)
-under both. `setup` keys that vary across same-kind sidecars become a secondary picker axis in the
-dashboard; `source` records the input artifact as provenance.
+under both. `source` records the input artifact as provenance.
+
+Two distinct parameter channels (don't conflate them):
+
+  * `setup` → the `[setup]` section. Keys that **vary** across same-kind sidecars become a
+    secondary *picker axis* in the dashboard (cf. runs → sweeps); non-varying keys are dropped.
+  * `plot_params` → the `[plot_params]` section. **Display-only** diagnostic parameters of how
+    the plot was made (e.g. ring radii, an annulus tolerance) — surfaced verbatim in the plot
+    modal, never a picker. Use this for values that are constant across the sidecar family and
+    so would silently vanish from `setup`. Orthogonal to `[config]`/`[laser]`/`[setup]`,
+    analogous to the optional `[timing]` block on runs.
 """
 function write_derived(
         dir::AbstractString; kind, label, run_id, plot,
-        source = nothing, datafile = nothing, setup = Dict(), description = nothing
+        source = nothing, datafile = nothing, setup = Dict(), plot_params = Dict(),
+        description = nothing
     )
     deps = run_id isa AbstractString ? [string(run_id)] : [string(x) for x in run_id]
     d = Dict{String, Any}("kind" => kind, "label" => label, "depends_on" => deps, "plot" => plot)
@@ -289,7 +300,8 @@ function write_derived(
         "derived" => d,
     )
     isempty(setup) || (m["setup"] = Dict{String, Any}(string(k) => v for (k, v) in setup))
-    suffix = isempty(setup) ? "" : "_" * join(string.(values(setup)), "-")
+    isempty(plot_params) || (m["plot_params"] = Dict{String, Any}(string(k) => v for (k, v) in plot_params))
+    suffix = isempty(setup) ? "" : "_" * join(string.(values(setup)), "-")   # filename: setup keys only
     idtag = join((first(x, 8) for x in deps), "-")   # <id8> for one parent, <id8a>-<id8b> for a comparison
     name = "derived_$(kind)$(suffix)_$(idtag).toml"
     open(io -> TOML.print(io, m; sorted = true), joinpath(dir, name), "w")
