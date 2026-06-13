@@ -128,7 +128,7 @@ EZ = 3
 xg, yg = collect(L.x_grid), collect(L.y_grid)   # ascending screen axes (asserted == Thomson's)
 ρmax = maximum(abs, xg)
 ρs = range(0, ρmax; length = length(xg))
-φovl = range(0, π; length = 4)                  # representative rays (0…180°; ±φ degenerate by symmetry)
+φovl = range(0, π / 2; length = 4)              # 0°,30°,60°,90° — distinct rays within Eᶻ's 120° (ℓ≈3) period
 
 # bilinear sample of grid array M at (px, py); NaN outside the screen
 function bilin(M, px, py)
