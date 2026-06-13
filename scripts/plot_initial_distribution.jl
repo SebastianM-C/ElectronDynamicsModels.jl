@@ -18,6 +18,7 @@ using StaticArrays
 using LinearAlgebra
 using Printf
 using CairoMakie
+include(joinpath(@__DIR__, "plot_theme.jl"))   # LaTeX (Computer Modern) fonts
 using UUIDs
 
 const c = 137.03599908330932

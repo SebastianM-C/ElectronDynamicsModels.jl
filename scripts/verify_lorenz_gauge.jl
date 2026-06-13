@@ -43,6 +43,7 @@ using Serialization
 using Statistics
 using Printf
 using CairoMakie
+include(joinpath(@__DIR__, "plot_theme.jl"))   # LaTeX (Computer Modern) fonts
 
 const backend = AMDGPU.ROCBackend()
 const c = 137.03599908330932

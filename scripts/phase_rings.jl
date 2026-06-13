@@ -24,6 +24,7 @@ using FFTW
 using LinearAlgebra
 using Printf
 using CairoMakie
+include(joinpath(@__DIR__, "plot_theme.jl"))   # LaTeX (Computer Modern) fonts
 
 # ── Thomson screen constants (identical to scripts/thomson_scattering.jl) ──
 const c = 137.03599908330932

@@ -12,6 +12,7 @@
 using TOML, Serialization, LinearAlgebra, Printf
 using RunManifests: check_schema_version, write_derived
 using CairoMakie
+include(joinpath(@__DIR__, "plot_theme.jl"))   # LaTeX (Computer Modern) fonts
 
 const lpwa_toml, thom_toml = ARGS[1], ARGS[2]
 const OUTDIR = get(ENV, "EDM_OUTDIR", ".")
