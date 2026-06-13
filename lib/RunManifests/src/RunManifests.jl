@@ -264,15 +264,18 @@ end
 """
     write_derived(dir; kind, label, run_id, plot, source=nothing, datafile=nothing, setup=Dict())
 
-Write a `[derived]` sidecar TOML into `dir` binding `plot` (a basename in `dir`) to parent
-`run_id`. `setup` keys that vary across same-kind sidecars become a secondary picker axis
-in the dashboard; `source` records the input artifact as provenance.
+Write a `[derived]` sidecar TOML into `dir` binding `plot` (a basename in `dir`) to its parent
+run(s). `run_id` is a single id OR a vector of ids — the builder attaches the artifact to EVERY
+parent in `depends_on`, so a cross-run comparison passes both run ids and shows up (with lineage)
+under both. `setup` keys that vary across same-kind sidecars become a secondary picker axis in the
+dashboard; `source` records the input artifact as provenance.
 """
 function write_derived(
         dir::AbstractString; kind, label, run_id, plot,
         source = nothing, datafile = nothing, setup = Dict(), description = nothing
     )
-    d = Dict{String, Any}("kind" => kind, "label" => label, "depends_on" => [run_id], "plot" => plot)
+    deps = run_id isa AbstractString ? [string(run_id)] : [string(x) for x in run_id]
+    d = Dict{String, Any}("kind" => kind, "label" => label, "depends_on" => deps, "plot" => plot)
     source === nothing || (d["source"] = source)
     datafile === nothing || (d["datafile"] = datafile)
     # `description`: markdown + $…$ LaTeX, rendered (KaTeX) in the dashboard plot modal.
@@ -287,7 +290,8 @@ function write_derived(
     )
     isempty(setup) || (m["setup"] = Dict{String, Any}(string(k) => v for (k, v) in setup))
     suffix = isempty(setup) ? "" : "_" * join(string.(values(setup)), "-")
-    name = "derived_$(kind)$(suffix)_$(first(string(run_id), 8)).toml"
+    idtag = join((first(x, 8) for x in deps), "-")   # <id8> for one parent, <id8a>-<id8b> for a comparison
+    name = "derived_$(kind)$(suffix)_$(idtag).toml"
     open(io -> TOML.print(io, m; sorted = true), joinpath(dir, name), "w")
     return joinpath(dir, name)
 end

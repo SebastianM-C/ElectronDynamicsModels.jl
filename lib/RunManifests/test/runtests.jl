@@ -69,3 +69,20 @@ end
     # newer than we understand ⇒ hard error
     @test_throws ErrorException check_schema_version(Dict("schema_version" => cur + 1))
 end
+
+@testset "write_derived — single + multi-parent" begin
+    dir = mktempdir()
+    # single parent: depends_on is a 1-list, filename tagged by its id8 (backward-compatible)
+    p1 = write_derived(dir; kind = "phase", label = "∠F", run_id = "aaaaaaaa-1111-2222",
+        plot = "p.png", setup = Dict("harmonic" => 1))
+    m1 = TOML.parsefile(p1)
+    @test m1["derived"]["depends_on"] == ["aaaaaaaa-1111-2222"]
+    @test occursin("aaaaaaaa", basename(p1)) && m1["schema_version"] == MANIFEST_SCHEMA_VERSION
+
+    # multi-parent (a comparison): both ids in depends_on, filename tags both
+    p2 = write_derived(dir; kind = "comparison", label = "cmp",
+        run_id = ["aaaaaaaa-1111-2222", "bbbbbbbb-3333-4444"], plot = "c.png", setup = Dict("harmonic" => 2))
+    m2 = TOML.parsefile(p2)
+    @test m2["derived"]["depends_on"] == ["aaaaaaaa-1111-2222", "bbbbbbbb-3333-4444"]
+    @test occursin("aaaaaaaa-bbbbbbbb", basename(p2))
+end
