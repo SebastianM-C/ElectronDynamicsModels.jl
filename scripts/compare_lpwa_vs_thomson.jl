@@ -69,7 +69,7 @@ T = deserialize(resolve_hmaps(Ta, thom_toml))
 @assert size(L.fields_h) == size(T.fields_h) "fields_h shapes differ"
 
 lpwa_id, thom_id = run_id(La, lpwa_toml), run_id(Ta, thom_toml)
-@printf("comparing LPWA %s  vs  Thomson %s\n", lpwa_id, thom_id)
+@printf("comparing LPWA %s  vs  numeric %s\n", lpwa_id, thom_id)
 @printf("  a0 = %s,  harmonics = %s\n", La["laser"]["a0"], L.harmonics)
 
 const complabels = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
@@ -83,21 +83,26 @@ xw, yw = collect(L.x_grid) ./ L.w₀, collect(L.y_grid) ./ L.w₀
 
 for (k, n) in enumerate(L.harmonics)
     fig = Figure(size = (1080, 680))
-    Label(fig[0, 1:3], @sprintf("|F̃_LPWA − F̃_Thomson| at %dω₁", n); fontsize = 18)
+    Label(fig[0, 1:3], @sprintf("|F̃_LPWA − F̃_numeric| at %dω₁", n); fontsize = 18)
     errs = Float64[]
     for comp in 1:6
         a = L.fields_h[k, comp, :, :]
         b = T.fields_h[k, comp, :, :]
         d = abserr(a, b)
         push!(errs, d)
-        @printf("h=%dω₁  %-3s   |Δ|₂ = %.4e   (‖ref‖₂ = %.4e)\n", n, complabels[comp], d, norm(b))
+        nrm = norm(b)
+        relL2 = nrm == 0 ? 0.0 : d / nrm   # ‖Δ‖₂/‖F_num‖₂ — dimensionless gap (≈√2 for the transverse fundamental)
+        @printf("h=%dω₁  %-3s   |Δ|₂ = %.4e   (‖ref‖₂ = %.4e,  ‖Δ‖/‖F‖ = %.3f)\n", n, complabels[comp], d, nrm, relL2)
         r, c = fldmod1(comp, 3)
+        # Plot |Δ| as a fraction of the numeric field's own peak so the colorbar is dimensionless
+        max_b = maximum(abs, b)
+        scale = iszero(max_b) ? 1.0 : max_b
         ax = Axis(
-            fig[r, c][1, 1]; title = complabels[comp], xlabel = "x/w₀", ylabel = "y/w₀",
-            aspect = DataAspect()
+            fig[r, c][1, 1]; title = @sprintf("%s   ‖Δ‖/‖F‖=%.2f", complabels[comp], relL2),
+            xlabel = "x/w₀", ylabel = "y/w₀", aspect = DataAspect()
         )
-        hm = heatmap!(ax, xw, yw, abs.(a .- b); colormap = :inferno)
-        Colorbar(fig[r, c][1, 2], hm)
+        hm = heatmap!(ax, xw, yw, abs.(a .- b) ./ scale; colormap = :inferno)
+        Colorbar(fig[r, c][1, 2], hm; label = "|Δ| / peak|F_num|")
     end
     out = joinpath(OUTDIR, @sprintf("compare_abs_h%d_%s-%s.png", n, first(lpwa_id, 8), first(thom_id, 8)))
     save(out, fig)
@@ -106,9 +111,9 @@ for (k, n) in enumerate(L.harmonics)
     # builder attaches it under each, with the per-component |Δ|₂ in the description. setup.harmonic
     # makes it ONE parametrized "comparison" chip with a harmonic selector.
     write_derived(
-        OUTDIR; kind = "comparison", label = "LPWA vs Thomson |ΔF|",
+        OUTDIR; kind = "comparison", label = "LPWA vs numeric |ΔF|",
         run_id = [lpwa_id, thom_id], plot = basename(out), setup = Dict("harmonic" => n),
-        description = "|F̃_LPWA − F̃_Thomson|₂ at $(n)ω₁ (a0=$(La["laser"]["a0"])): " *
+        description = "|F̃_LPWA − F̃_numeric|₂ at $(n)ω₁ (a0=$(La["laser"]["a0"])): " *
             join((@sprintf("%s=%.2e", complabels[c], errs[c]) for c in 1:6), ", "),
     )
     println("derived → comparison h$n  (parents $lpwa_id, $thom_id)")
@@ -131,7 +136,7 @@ function bilin(M, px, py)
     j = clamp(searchsortedlast(yg, py), 1, length(yg) - 1)
     tx = (px - xg[i]) / (xg[i + 1] - xg[i])
     ty = (py - yg[j]) / (yg[j + 1] - yg[j])
-    (1 - tx) * (1 - ty) * M[i, j] + tx * (1 - ty) * M[i + 1, j] +
+    return (1 - tx) * (1 - ty) * M[i, j] + tx * (1 - ty) * M[i + 1, j] +
         (1 - tx) * ty * M[i, j + 1] + tx * ty * M[i + 1, j + 1]
 end
 
@@ -143,34 +148,48 @@ for (k, n) in enumerate(L.harmonics)
     floorT = 1.0e-3 * maximum(abs, ReT)
     ratio = map((l, t) -> abs(t) < floorT ? NaN : l / t, ReL, ReT)
     figr = Figure(size = (560, 520))
-    axr = Axis(figr[1, 1]; aspect = DataAspect(), xlabel = "x/w₀", ylabel = "y/w₀",
-        title = @sprintf("Re(Eᶻ) LPWA/Thomson at %dω₁ (a0=%s)", n, La["laser"]["a0"]))
-    hmr = heatmap!(axr, xw, yw, ratio;
-        colormap = cgrad([:white, :steelblue, :firebrick]), colorrange = (0, 2), nan_color = :white)
-    Colorbar(figr[1, 2], hmr; label = "Re(Eᶻ_L)/Re(Eᶻ_T)")
+    axr = Axis(
+        figr[1, 1]; aspect = DataAspect(), xlabel = "x/w₀", ylabel = "y/w₀",
+        title = @sprintf("Re(Eᶻ) LPWA/numeric at %dω₁ (a0=%s)", n, La["laser"]["a0"])
+    )
+    hmr = heatmap!(
+        axr, xw, yw, ratio;
+        colormap = cgrad([:white, :steelblue, :firebrick]), colorrange = (0, 2), nan_color = :white
+    )
+    Colorbar(figr[1, 2], hmr; label = "Re(Eᶻ_LPWA)/Re(Eᶻ_num)")
     rout = joinpath(OUTDIR, @sprintf("compare_ez_ratio_h%d_%s-%s.png", n, first(lpwa_id, 8), first(thom_id, 8)))
     save(rout, figr)
     println("saved → ", rout)
-    write_derived(OUTDIR; kind = "ez_ratio", label = "Eᶻ ratio LPWA/Thomson",
+    write_derived(
+        OUTDIR; kind = "ez_ratio", label = "Eᶻ ratio LPWA/numeric",
         run_id = [lpwa_id, thom_id], plot = basename(rout), setup = Dict("harmonic" => n),
-        description = "Re(Eᶻ_LPWA)/Re(Eᶻ_Thomson) over the screen at $(n)ω₁ (a0=$(La["laser"]["a0"])); white = |Re(Eᶻ_T)| below the node floor.")
+        description = "Re(Eᶻ_LPWA)/Re(Eᶻ_numeric) over the screen at $(n)ω₁ (a0=$(La["laser"]["a0"])); white = |Re(Eᶻ_numeric)| below the node floor."
+    )
 
-    # (b) overlay along rays: LPWA (solid) vs Thomson (dashed), one colour per φ
+    # (b) overlay along rays: LPWA (solid, semi-transparent so the numeric dashed line shows
+    # through where the two coincide) vs numeric (dashed), one colour per φ
     figo = Figure(size = (780, 480))
-    axo = Axis(figo[1, 1]; xlabel = "ρ/w₀", ylabel = "Re(Eᶻ)",
-        title = @sprintf("Re(Eᶻ) along rays at %dω₁ — LPWA solid, Thomson dashed", n))
+    axo = Axis(
+        figo[1, 1]; xlabel = "ρ/w₀", ylabel = "Re(Eᶻ)",
+        title = @sprintf("Re(Eᶻ) along rays at %dω₁ — LPWA solid, numeric dashed", n)
+    )
     for (j, φ) in enumerate(φovl)
         rl = [bilin(ReL, ρ * cos(φ), ρ * sin(φ)) for ρ in ρs]
         rt = [bilin(ReT, ρ * cos(φ), ρ * sin(φ)) for ρ in ρs]
-        lines!(axo, ρs ./ L.w₀, rl; color = Cycled(j), label = @sprintf("φ=%.0f°", rad2deg(φ)))
-        lines!(axo, ρs ./ L.w₀, rt; color = Cycled(j), linestyle = :dash)
+        lines!(
+            axo, ρs ./ L.w₀, rl; color = Cycled(j), alpha = 0.5, linewidth = 3,
+            label = @sprintf("φ=%.0f°", rad2deg(φ))
+        )
+        lines!(axo, ρs ./ L.w₀, rt; color = Cycled(j), linestyle = :dash, linewidth = 1.5)
     end
     axislegend(axo; labelsize = 9)
     oout = joinpath(OUTDIR, @sprintf("compare_ez_overlay_h%d_%s-%s.png", n, first(lpwa_id, 8), first(thom_id, 8)))
     save(oout, figo)
     println("saved → ", oout)
-    write_derived(OUTDIR; kind = "ez_overlay", label = "Eᶻ along rays L vs T",
+    write_derived(
+        OUTDIR; kind = "ez_overlay", label = "Eᶻ along rays LPWA vs numeric",
         run_id = [lpwa_id, thom_id], plot = basename(oout), setup = Dict("harmonic" => n),
-        description = "Re(Eᶻ) vs ρ along $(length(φovl)) rays (0…180°) at $(n)ω₁ (a0=$(La["laser"]["a0"])); LPWA solid, Thomson dashed.")
+        description = "Re(Eᶻ) vs ρ along $(length(φovl)) rays (0…180°) at $(n)ω₁ (a0=$(La["laser"]["a0"])); LPWA solid, numeric dashed."
+    )
     println("derived → ez_ratio + ez_overlay h$n  (parents $lpwa_id, $thom_id)")
 end
