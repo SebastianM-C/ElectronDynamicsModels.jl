@@ -41,6 +41,18 @@ reports each component's peak complex amplitude. **Requires CairoMakie** (packag
 function plot_phase_grid end
 
 """
+    plot_phase_rings_grid(maps, x_grid, y_grid; w₀=1, labels, radii, tol, title="", ncols=3,
+                          panelsize=300, outfile=nothing)
+
+Per-component grid of the **azimuthal phase winding**: for each component of `maps`
+(`(n_components, Nx, Ny)`), scatter `angle(F)` of the pixels on each test circle of radius
+`R ∈ radii` (a thin annulus, half-width `tol`, about the grid centre) against their azimuth
+`atan(y, x)`. A vortex of topological charge ℓ shows ℓ phase windings as φ runs once around —
+the ring counterpart of [`plot_phase_grid`]'s heatmap. **Requires CairoMakie** (package extension).
+"""
+function plot_phase_rings_grid end
+
+"""
     harmonic_colorrange(data) -> (lo, hi)
 
 Default per-panel color range for harmonic maps: the data extrema, guarded against a

@@ -113,3 +113,64 @@ for (k, n) in enumerate(L.harmonics)
     )
     println("derived → comparison h$n  (parents $lpwa_id, $thom_id)")
 end
+
+# ── Eᶻ physical-field comparison (the Re part the heatmaps plot) ──
+# (a) ratio Re(Eᶻ_L)/Re(Eᶻ_T) over the screen, masked at the Thomson node floor → NaN (white);
+# (b) the physical Re(Eᶻ) overlaid along a few rays, LPWA vs Thomson. Both two-parent comparison
+# derived. Eᶻ is component 3 (Eˣ Eʸ Eᶻ = 1 2 3).
+EZ = 3
+xg, yg = collect(L.x_grid), collect(L.y_grid)   # ascending screen axes (asserted == Thomson's)
+ρmax = maximum(abs, xg)
+ρs = range(0, ρmax; length = length(xg))
+φovl = range(0, π; length = 4)                  # representative rays (0…180°; ±φ degenerate by symmetry)
+
+# bilinear sample of grid array M at (px, py); NaN outside the screen
+function bilin(M, px, py)
+    (px < xg[1] || px > xg[end] || py < yg[1] || py > yg[end]) && return NaN
+    i = clamp(searchsortedlast(xg, px), 1, length(xg) - 1)
+    j = clamp(searchsortedlast(yg, py), 1, length(yg) - 1)
+    tx = (px - xg[i]) / (xg[i + 1] - xg[i])
+    ty = (py - yg[j]) / (yg[j + 1] - yg[j])
+    (1 - tx) * (1 - ty) * M[i, j] + tx * (1 - ty) * M[i + 1, j] +
+        (1 - tx) * ty * M[i, j + 1] + tx * ty * M[i + 1, j + 1]
+end
+
+for (k, n) in enumerate(L.harmonics)
+    ReL = real.(L.fields_h[k, EZ, :, :])
+    ReT = real.(T.fields_h[k, EZ, :, :])
+
+    # (a) ratio map: white where |Re(Eᶻ_T)| is below the node floor (NaN) or the ratio ≈ 0
+    floorT = 1.0e-3 * maximum(abs, ReT)
+    ratio = map((l, t) -> abs(t) < floorT ? NaN : l / t, ReL, ReT)
+    figr = Figure(size = (560, 520))
+    axr = Axis(figr[1, 1]; aspect = DataAspect(), xlabel = "x/w₀", ylabel = "y/w₀",
+        title = @sprintf("Re(Eᶻ) LPWA/Thomson at %dω₁ (a0=%s)", n, La["laser"]["a0"]))
+    hmr = heatmap!(axr, xw, yw, ratio;
+        colormap = cgrad([:white, :steelblue, :firebrick]), colorrange = (0, 2), nan_color = :white)
+    Colorbar(figr[1, 2], hmr; label = "Re(Eᶻ_L)/Re(Eᶻ_T)")
+    rout = joinpath(OUTDIR, @sprintf("compare_ez_ratio_h%d_%s-%s.png", n, first(lpwa_id, 8), first(thom_id, 8)))
+    save(rout, figr)
+    println("saved → ", rout)
+    write_derived(OUTDIR; kind = "ez_ratio", label = "Eᶻ ratio LPWA/Thomson",
+        run_id = [lpwa_id, thom_id], plot = basename(rout), setup = Dict("harmonic" => n),
+        description = "Re(Eᶻ_LPWA)/Re(Eᶻ_Thomson) over the screen at $(n)ω₁ (a0=$(La["laser"]["a0"])); white = |Re(Eᶻ_T)| below the node floor.")
+
+    # (b) overlay along rays: LPWA (solid) vs Thomson (dashed), one colour per φ
+    figo = Figure(size = (780, 480))
+    axo = Axis(figo[1, 1]; xlabel = "ρ/w₀", ylabel = "Re(Eᶻ)",
+        title = @sprintf("Re(Eᶻ) along rays at %dω₁ — LPWA solid, Thomson dashed", n))
+    for (j, φ) in enumerate(φovl)
+        rl = [bilin(ReL, ρ * cos(φ), ρ * sin(φ)) for ρ in ρs]
+        rt = [bilin(ReT, ρ * cos(φ), ρ * sin(φ)) for ρ in ρs]
+        lines!(axo, ρs ./ L.w₀, rl; color = Cycled(j), label = @sprintf("φ=%.0f°", rad2deg(φ)))
+        lines!(axo, ρs ./ L.w₀, rt; color = Cycled(j), linestyle = :dash)
+    end
+    axislegend(axo; labelsize = 9)
+    oout = joinpath(OUTDIR, @sprintf("compare_ez_overlay_h%d_%s-%s.png", n, first(lpwa_id, 8), first(thom_id, 8)))
+    save(oout, figo)
+    println("saved → ", oout)
+    write_derived(OUTDIR; kind = "ez_overlay", label = "Eᶻ along rays L vs T",
+        run_id = [lpwa_id, thom_id], plot = basename(oout), setup = Dict("harmonic" => n),
+        description = "Re(Eᶻ) vs ρ along $(length(φovl)) rays (0…180°) at $(n)ω₁ (a0=$(La["laser"]["a0"])); LPWA solid, Thomson dashed.")
+    println("derived → ez_ratio + ez_overlay h$n  (parents $lpwa_id, $thom_id)")
+end

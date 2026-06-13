@@ -79,8 +79,11 @@ function write_harmonic_products(
     println("saved → $psfile")
     push!(plots, psfile)
 
-    # Phase maps → ONE parametrized "phase" derived chip (harmonic selector), like the
-    # phaserings diagnostic — NOT intrinsic, so they never overwrite the field maps on h<n>.
+    # Phase maps → ONE parametrized "phase" derived chip (harmonic selector); NOT intrinsic,
+    # so they never overwrite the field maps on h<n>. Plus the ∠F-vs-azimuth ring view, which
+    # makes the vortex winding (charge ℓ → ℓ windings) legible — its own "phaserings" chip.
+    ringradii = maximum(abs, x_grid) .* (0.2, 0.4, 0.6)
+    ringtol = 1.5 * step(x_grid)
     for (k, n) in enumerate(harmonics)
         out = joinpath(outdir, @sprintf("%s_phase_h%d_%s.png", fileprefix, n, run_tag))
         plot_phase_grid(
@@ -91,6 +94,17 @@ function write_harmonic_products(
         write_derived(
             outdir; kind = "phase", label = "$title_prefix ∠F", run_id = run_tag,
             plot = basename(out), source = source_datafile, setup = Dict("harmonic" => n),
+        )
+        rout = joinpath(outdir, @sprintf("%s_phaserings_h%d_%s.png", fileprefix, n, run_tag))
+        plot_phase_rings_grid(
+            fields_h[k, :, :, :], x_grid, y_grid;
+            w₀, labels = COMPLABELS, radii = ringradii, tol = ringtol,
+            title = @sprintf("%s (field) — ∠F vs azimuth at %dω₁", title_prefix, n), outfile = rout,
+        )
+        println("saved → $rout")
+        write_derived(
+            outdir; kind = "phaserings", label = "$title_prefix ∠F vs φ", run_id = run_tag,
+            plot = basename(rout), source = source_datafile, setup = Dict("harmonic" => n),
         )
     end
 
