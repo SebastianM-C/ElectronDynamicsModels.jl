@@ -202,14 +202,14 @@ end
 # in (−π,π]) per (component, radius). A Δb constant across the two radii ⇒ a radius-independent
 # phase offset — the suspected origin of the constant √2 transverse gap (see lpwa-vs-numeric notes).
 let
-    offset_comps = (1, 2)                          # Eˣ, Eʸ
+    offset_comps = (1, 2, 3)                       # Eˣ, Eʸ, Eᶻ (Eᶻ winding ℓ differs: num 3 vs LPWA 1)
     offset_radii = L.w₀ .* (4, 12)
     tol = 0.5 * (xg[2] - xg[1])
     palette = (:dodgerblue, :crimson)
     ringcolor(i) = palette[(i - 1) % length(palette) + 1]
     for (k, n) in enumerate(L.harmonics)
-        fig = Figure(size = (980, 460))
-        Label(fig[0, 1:2], @sprintf("∠F unwrapped vs φ — LPWA solid, numeric dashed (%dω₁, a0=%s)", n, La["laser"]["a0"]); fontsize = 16)
+        fig = Figure(size = (1440, 460))
+        Label(fig[0, 1:3], @sprintf("∠F unwrapped vs φ — LPWA solid, numeric dashed (%dω₁, a0=%s)", n, La["laser"]["a0"]); fontsize = 16)
         pp = Dict{String, Any}("R/w₀" => collect(offset_radii ./ L.w₀))
         for (ci, comp) in enumerate(offset_comps)
             ax = Axis(fig[1, ci]; xlabel = "azimuth φ", ylabel = "∠F (unwrapped)", title = complabels[comp])
@@ -245,7 +245,7 @@ let
             run_id = [lpwa_id, thom_id], plot = basename(out), setup = Dict("harmonic" => n),
             plot_params = pp,
             description = "Δb = b_LPWA − b_numeric (nearest 2π branch, in (−π,π]) of the ∠F ≈ slope·φ + b " *
-                "fit on Eˣ,Eʸ at R/w₀=4,12, $(n)ω₁ (a0=$(La["laser"]["a0"])). Constant Δb across R ⇒ a pure " *
+                "fit on Eˣ,Eʸ,Eᶻ at R/w₀=4,12, $(n)ω₁ (a0=$(La["laser"]["a0"])). Constant Δb across R ⇒ a pure " *
                 "radius-independent phase offset; a slope (ℓ) mismatch — see ℓ_LPWA vs ℓ_num in the " *
                 "plot parameters — means the offset is φ-dependent, not a constant b.",
         )
