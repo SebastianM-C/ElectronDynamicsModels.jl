@@ -211,7 +211,6 @@ let
         fig = Figure(size = (980, 460))
         Label(fig[0, 1:2], @sprintf("∠F unwrapped vs φ — LPWA solid, numeric dashed (%dω₁, a0=%s)", n, La["laser"]["a0"]); fontsize = 16)
         pp = Dict{String, Any}("R/w₀" => collect(offset_radii ./ L.w₀))
-        slopenote = String[]
         for (ci, comp) in enumerate(offset_comps)
             ax = Axis(fig[1, ci]; xlabel = "azimuth φ", ylabel = "∠F (unwrapped)", title = complabels[comp])
             db = Float64[]; slL = Float64[]; slT = Float64[]
@@ -235,8 +234,8 @@ let
             end
             ci == 1 && axislegend(ax; labelsize = 9, position = :lt)
             pp["Δb/π $(complabels[comp])"] = round.(db ./ π; sigdigits = 3)
-            push!(slopenote, @sprintf("%s ℓ_L/ℓ_T=%s/%s", complabels[comp],
-                string(round.(slL; sigdigits = 3)), string(round.(slT; sigdigits = 3))))
+            pp["ℓ_LPWA $(complabels[comp])"] = round.(slL; sigdigits = 3)
+            pp["ℓ_num $(complabels[comp])"] = round.(slT; sigdigits = 3)
         end
         out = joinpath(OUTDIR, @sprintf("compare_phase_offset_h%d_%s-%s.png", n, first(lpwa_id, 8), first(thom_id, 8)))
         save(out, fig)
@@ -247,7 +246,8 @@ let
             plot_params = pp,
             description = "Δb = b_LPWA − b_numeric (nearest 2π branch, in (−π,π]) of the ∠F ≈ slope·φ + b " *
                 "fit on Eˣ,Eʸ at R/w₀=4,12, $(n)ω₁ (a0=$(La["laser"]["a0"])). Constant Δb across R ⇒ a pure " *
-                "radius-independent phase offset. Slopes (≈ℓ): " * join(slopenote, "; ") * ".",
+                "radius-independent phase offset; a slope (ℓ) mismatch — see ℓ_LPWA vs ℓ_num in the " *
+                "plot parameters — means the offset is φ-dependent, not a constant b.",
         )
         println("derived → phase_offset h$n  (parents $lpwa_id, $thom_id)")
     end
