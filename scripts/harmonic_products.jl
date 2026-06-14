@@ -122,10 +122,10 @@ function write_phase_products(
             title = @sprintf("%s — ∠F %s-field at %dω₁", title_prefix, fld_tag, n), outfile = out,
         )
         println("saved → $out")
-        # Per-(field, harmonic) plot_params: the shared ring geometry + the transverse winding fits
-        # (slope ≈ ℓ, intercept b/π) per radius — surfaced in the modal "Plot parameters" panel.
+        # Per-(field, harmonic) plot_params: the shared ring geometry + the per-component winding
+        # fits (slope ≈ ℓ, intercept b/π) per radius — surfaced in the modal "Plot parameters" panel.
         pp = copy(base_pp)
-        for (c, fit) in res.fits          # c ∈ 1:2 (Eˣ/Eʸ or Bˣ/Bʸ)
+        for (c, fit) in res.fits          # one entry per component (Eˣ/Eʸ/Eᶻ or Bˣ/Bʸ/Bᶻ)
             pp["slope $(lbls[c])"] = round.(fit.slope; sigdigits = 3)
             pp["b/π $(lbls[c])"] = round.(fit.b ./ π; sigdigits = 3)
         end
@@ -133,6 +133,11 @@ function write_phase_products(
             outdir; kind = "phase$fld_tag", label = "$title_prefix ∠F $fld_tag", run_id = run_tag,
             plot = basename(out), source = source_datafile,
             setup = Dict("harmonic" => n), plot_params = pp,
+            description = "Each row is a component. Left: ∠F heatmap with white dashed circles at " *
+                "R ± ringtol marking the test rings sampled on the right. Right: ∠F vs azimuth on " *
+                "each ring (colour-matched to its circle), with the unwrapped linear fit " *
+                "∠F ≈ slope·φ + b overlaid — slope ≈ winding ℓ; fitted slope and b/π per radius are " *
+                "in the Plot parameters.",
         )
         push!(plots, out)
 

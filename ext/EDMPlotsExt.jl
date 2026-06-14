@@ -93,7 +93,7 @@ function ElectronDynamicsModels.plot_phase_with_rings(
         idxs, az = ElectronDynamicsModels.ring_pixels(x_grid, y_grid, R; tol)
         (R = R, color = ringcolor(i), idxs = idxs, az = az)
     end
-    ntr = min(2, ncomp)                  # transverse (x,y) components get a winding fit ∠F ≈ slope·φ + b
+    ntr = ncomp                          # every component gets the unwrapped fit ∠F ≈ slope·φ + b (Eᶻ/Bᶻ wind too)
     fits = Dict{Int, NamedTuple}()       # component => (; slope, b) vectors over radii (NaN for empty rings)
     θ = range(-Float64(π), Float64(π), 200)
     # Fit line on the wrapped ±π scatter axis: re-wrap slope·φ+b and break the polyline at 2π jumps.
@@ -125,8 +125,8 @@ function ElectronDynamicsModels.plot_phase_with_rings(
                 lines!(axh, cx, cy; color = :white, linewidth = 2.2)
                 lines!(axh, cx, cy; color = r.color, linestyle = :dash, linewidth = 1.0)
             end
-            # right: ∠F vs azimuth on each ring, colour-matched to its annulus; transverse
-            # components also get the unwrapped linear-winding fit overlaid (slope ≈ ℓ).
+            # right: ∠F vs azimuth on each ring, colour-matched to its annulus; each component
+            # also gets the unwrapped linear-winding fit overlaid (slope ≈ ℓ).
             axr = Axis(
                 f[c, 3]; width = panelsize, height = panelsize,
                 xlabel = "azimuth φ", ylabel = "∠F", limits = (-π, π, -π, π),
