@@ -55,6 +55,7 @@ const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
 @info "Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 SYNC OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
+const T_START = time()   # wall-clock start → [timing].total in the manifest
 
 # Laser parameters
 ω = 0.057
@@ -67,7 +68,7 @@ a₀ = A0
 
 p_radial = 2
 m_azimuthal = -2
-pol = :circular
+pol = :circular_minus   # opposite circular handedness — matches the LPWA analytic trajectory's spin; recorded in [laser].pol
 profile = :gaussian
 z_focus = 0.0
 
@@ -148,10 +149,11 @@ function abserr(a₀)
 end
 
 ensemble = EnsembleProblem(prob; prob_func, safetycopy = false)
-solution = solve(
+t_trajectories = @elapsed solution = solve(
     ensemble, Vern9(), EnsembleThreads();
     reltol = 1.0e-12, abstol = abserr(a₀), trajectories = N
 )
+@info "trajectories solved" t_trajectories
 
 # Radiation computation
 trajs = trajectory_interpolants(solution)
@@ -179,10 +181,11 @@ screen = ObserverScreen(
 # Exact field via the split Liénard–Wiechert GPU kernel.
 # Returns (; E, B, E_rad, B_rad), each (N_samples, 3, Nx, Ny): E, B are the total
 # field (for the harmonic maps below); E_rad, B_rad the radiation field alone.
-@time fld = accumulate_field(
+t_field = @elapsed fld = accumulate_field(
     trajs, screen, GPUKernelRK4(), gpu_backend;
     n_substeps = NSUBSTEPS, sync_per_electron = SYNC
 )
+@info "field accumulated" t_field
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default
@@ -250,7 +253,14 @@ setup = Dict{String, Any}(
     "Z" => Z,
 )   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is just the integration window + screen depth
 
+# Wall-clock phase timings → [timing] (dashboard renders total/trajectories/field, in seconds).
+timing = Dict{String, Any}(
+    "total" => time() - T_START,
+    "trajectories" => t_trajectories,
+    "field" => t_field,
+)
 manifestfile = write_solver_manifest(
-    OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs
+    OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs,
+    extra = Dict("timing" => timing),
 )
 println("manifest → $manifestfile")
