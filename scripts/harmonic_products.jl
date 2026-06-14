@@ -94,38 +94,62 @@ end
         source_datafile, title_prefix, fileprefix) -> Vector{String}
 
 The per-field-type ∠F view from reduced harmonic maps `fields_h` (`(length(harmonics), 6, Nx,
-Ny)`): for E (comps `1:3`) and B (`4:6`), one parametrized derived chip (`phaseE`/`phaseB`,
-harmonic selector) — each component's ∠F heatmap with the test annuli drawn as dashed R±ringtol
-circles, beside the ∠F-vs-azimuth winding (charge ℓ → ℓ windings). Ring radii + tolerance are
-recorded in `[plot_params]` (w₀ units, as on the plot). Takes `fields_h` (not the cube), so the
-live solve and the cached-hmaps recovery share one implementation; `x_grid`/`y_grid` may be
-ranges or plain vectors (hmaps stores them collected, hence `x_grid[2] - x_grid[1]` not `step`).
+Ny)`): for E (comps `1:3`) and B (`4:6`), per harmonic, two derived chips — `phaseE`/`phaseB`
+(heatmap with dashed R±ringtol annuli beside the ∠F-vs-azimuth winding + per-radius linear fit on
+the transverse components) and a separate polar companion `phasePolarE`/`phasePolarB`. Test radii
+are `4,8,12 w₀`. `[plot_params]` records the ring geometry (`ringtol/w₀`, `radii/w₀`) plus, per
+transverse component, the winding `slope` (≈ ℓ) and offset `b/π` over the radii. Takes `fields_h`
+(not the cube), so the live solve and the cached-hmaps recovery share one implementation;
+`x_grid`/`y_grid` may be ranges or vectors (hmaps stores them collected, hence `x_grid[2]-x_grid[1]`).
 """
 function write_phase_products(
         fields_h, x_grid, y_grid; w₀, harmonics, run_tag, outdir, source_datafile,
         title_prefix, fileprefix,
     )
-    ringradii = maximum(abs, x_grid) .* (0.2, 0.4, 0.6)
-    ringtol = 0.5 * (x_grid[2] - x_grid[1])   # ½ pixel pitch; annulus ≈1.3% of innermost R at Nx=400
-    pparams = Dict(
+    ringradii = w₀ .* (4, 8, 12)              # test radii in beam waists
+    ringtol = 0.5 * (x_grid[2] - x_grid[1])   # ½ pixel pitch; thin annulus (vector x_grid ⇒ not `step`)
+    base_pp = Dict{String, Any}(
         "ringtol/w₀" => round(ringtol / w₀; sigdigits = 3),
         "radii/w₀" => round.(collect(ringradii) ./ w₀; sigdigits = 3),
     )
     plots = String[]
     for (fld_tag, comps) in (("E", 1:3), ("B", 4:6)), (k, n) in enumerate(harmonics)
+        lbls = COMPLABELS[comps]
         out = joinpath(outdir, @sprintf("%s_phase%s_h%d_%s.png", fileprefix, fld_tag, n, run_tag))
-        plot_phase_with_rings(
+        res = plot_phase_with_rings(
             fields_h[k, comps, :, :], x_grid, y_grid;
-            w₀, labels = COMPLABELS[comps], radii = ringradii, tol = ringtol,
+            w₀, labels = lbls, radii = ringradii, tol = ringtol,
             title = @sprintf("%s — ∠F %s-field at %dω₁", title_prefix, fld_tag, n), outfile = out,
         )
         println("saved → $out")
+        # Per-(field, harmonic) plot_params: the shared ring geometry + the transverse winding fits
+        # (slope ≈ ℓ, intercept b/π) per radius — surfaced in the modal "Plot parameters" panel.
+        pp = copy(base_pp)
+        for (c, fit) in res.fits          # c ∈ 1:2 (Eˣ/Eʸ or Bˣ/Bʸ)
+            pp["slope $(lbls[c])"] = round.(fit.slope; sigdigits = 3)
+            pp["b/π $(lbls[c])"] = round.(fit.b ./ π; sigdigits = 3)
+        end
         write_derived(
             outdir; kind = "phase$fld_tag", label = "$title_prefix ∠F $fld_tag", run_id = run_tag,
             plot = basename(out), source = source_datafile,
-            setup = Dict("harmonic" => n), plot_params = pparams,
+            setup = Dict("harmonic" => n), plot_params = pp,
         )
         push!(plots, out)
+
+        # Polar companion — separate chip (azimuth → angular axis, ∠F → radial).
+        pout = joinpath(outdir, @sprintf("%s_phasePolar%s_h%d_%s.png", fileprefix, fld_tag, n, run_tag))
+        plot_phase_polar(
+            fields_h[k, comps, :, :], x_grid, y_grid;
+            w₀, labels = lbls, radii = ringradii, tol = ringtol,
+            title = @sprintf("%s — ∠F %s-field (polar) at %dω₁", title_prefix, fld_tag, n), outfile = pout,
+        )
+        println("saved → $pout")
+        write_derived(
+            outdir; kind = "phasePolar$fld_tag", label = "$title_prefix ∠F $fld_tag (polar)",
+            run_id = run_tag, plot = basename(pout), source = source_datafile,
+            setup = Dict("harmonic" => n), plot_params = base_pp,
+        )
+        push!(plots, pout)
     end
     return plots
 end

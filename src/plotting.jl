@@ -53,11 +53,26 @@ slice `fields_h[k, 1:3, :, :]` / `[k, 4:6, :, :]`). One row per component, two c
   * **right** — the **azimuthal phase winding**: `angle(F)` of the pixels on each test circle of
     radius `R ∈ radii` (a thin annulus, half-width `tol`, about the grid centre) scattered against
     azimuth `atan(y, x)`, coloured to match the circles on the left. A vortex of topological
-    charge ℓ shows ℓ phase windings as φ runs once around.
+    charge ℓ shows ℓ phase windings as φ runs once around. The **transverse** components (1,2 —
+    Eˣ/Eʸ or Bˣ/Bʸ) additionally get the [`phase_winding_fit`](@ref) line overlaid (re-wrapped to
+    ±π), with `slope ≈ ℓ` and intercept `b` the phase offset.
 
-**Requires CairoMakie** (package extension).
+Returns `(; fig, fits)` where `fits[c]` (for the transverse components `c ∈ 1:2`) is
+`(; slope, b)` — vectors over `radii` (NaN where a ring has no pixels), so callers can record the
+winding/offset in `[plot_params]`. **Requires CairoMakie** (package extension).
 """
 function plot_phase_with_rings end
+
+"""
+    plot_phase_polar(maps, x_grid, y_grid; w₀=1, labels, radii, tol, title="", panelsize=300, outfile=nothing)
+
+Polar companion to [`plot_phase_with_rings`]: for each component of `maps` (`(3, Nx, Ny)`), a
+`PolarAxis` with **angular = azimuth φ** and **radial = ∠F shifted to `[0, 2π)`** (`angle(F)+π`),
+one colour-matched series per test ring `R ∈ radii` (same pixels as the cartesian view, via
+[`ring_pixels`](@ref)). A winding of charge ℓ traces ℓ radial oscillations as φ runs once around.
+A separate diagnostic from the main phase figure. **Requires CairoMakie** (package extension).
+"""
+function plot_phase_polar end
 
 """
     harmonic_colorrange(data) -> (lo, hi)

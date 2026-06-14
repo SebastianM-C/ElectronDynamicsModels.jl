@@ -88,16 +88,23 @@ function ElectronDynamicsModels.plot_phase_with_rings(
     # One colour per test radius — shared by its dashed annulus (left) and scatter series (right).
     palette = (:dodgerblue, :seagreen, :crimson, :darkorange, :purple)
     ringcolor(i) = palette[(i - 1) % length(palette) + 1]
-    # Pixels on each test circle (thin annulus about the grid centre, sorted by azimuth) —
-    # shared across components since the grid is the same.
-    CI = CartesianIndices((length(x_grid), length(y_grid)))
+    # Ring pixels (shared across components — same grid), sorted by azimuth, via the package helper.
     rings = map(enumerate(radii)) do (i, R)
-        idxs = filter(ci -> abs(hypot(x_grid[ci[1]], y_grid[ci[2]]) - R) < tol, CI)
-        az = [atan(y_grid[ci[2]], x_grid[ci[1]]) for ci in idxs]
-        o = sortperm(az)
-        (R = R, color = ringcolor(i), idxs = idxs[o], az = az[o])
+        idxs, az = ElectronDynamicsModels.ring_pixels(x_grid, y_grid, R; tol)
+        (R = R, color = ringcolor(i), idxs = idxs, az = az)
     end
+    ntr = min(2, ncomp)                  # transverse (x,y) components get a winding fit ∠F ≈ slope·φ + b
+    fits = Dict{Int, NamedTuple}()       # component => (; slope, b) vectors over radii (NaN for empty rings)
     θ = range(-Float64(π), Float64(π), 200)
+    # Fit line on the wrapped ±π scatter axis: re-wrap slope·φ+b and break the polyline at 2π jumps.
+    function wrapped_fit(slope, b)
+        φ = collect(range(-Float64(π), Float64(π), 400))
+        y = @. mod(slope * φ + b + π, 2π) - π
+        for k in 2:length(y)
+            abs(y[k] - y[k - 1]) > π && (y[k] = NaN)
+        end
+        return φ, y
+    end
     fig = with_theme(theme_latexfonts()) do
         f = Figure()
         isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
@@ -118,18 +125,68 @@ function ElectronDynamicsModels.plot_phase_with_rings(
                 lines!(axh, cx, cy; color = :white, linewidth = 2.2)
                 lines!(axh, cx, cy; color = r.color, linestyle = :dash, linewidth = 1.0)
             end
-            # right: ∠F vs azimuth on each ring, colour-matched to its annulus on the left.
+            # right: ∠F vs azimuth on each ring, colour-matched to its annulus; transverse
+            # components also get the unwrapped linear-winding fit overlaid (slope ≈ ℓ).
             axr = Axis(
                 f[c, 3]; width = panelsize, height = panelsize,
                 xlabel = "azimuth φ", ylabel = "∠F", limits = (-π, π, -π, π),
             )
+            sl = Float64[]; bb = Float64[]
             for r in rings
-                isempty(r.idxs) && continue
+                if isempty(r.idxs)
+                    c ≤ ntr && (push!(sl, NaN); push!(bb, NaN))
+                    continue
+                end
                 scatter!(axr, r.az, ph[r.idxs]; color = r.color, markersize = 5,
                     label = "R/w₀=$(round(r.R / w₀; sigdigits = 2))")
+                if c ≤ ntr
+                    fit = ElectronDynamicsModels.phase_winding_fit(
+                        r.az, ph[r.idxs]; weights = abs.(cmap_c[r.idxs]),
+                    )
+                    push!(sl, fit.slope); push!(bb, fit.intercept)
+                    φf, yf = wrapped_fit(fit.slope, fit.intercept)
+                    lines!(axr, φf, yf; color = r.color, linewidth = 1.6)
+                end
             end
+            c ≤ ntr && (fits[c] = (slope = sl, b = bb))
             c == 1 && axislegend(axr; labelsize = 8, position = :lt)
         end
+        resize_to_layout!(f)
+        f
+    end
+    outfile === nothing || save(outfile, fig)
+    return (; fig, fits)
+end
+
+function ElectronDynamicsModels.plot_phase_polar(
+        maps::AbstractArray{<:Number, 3}, x_grid, y_grid;
+        w₀ = 1, labels, radii, tol, title = "", panelsize = 300, outfile = nothing,
+    )
+    ncomp = size(maps, 1)
+    length(labels) == ncomp ||
+        throw(ArgumentError("labels ($(length(labels))) must match component count ($ncomp)"))
+    palette = (:dodgerblue, :seagreen, :crimson, :darkorange, :purple)
+    ringcolor(i) = palette[(i - 1) % length(palette) + 1]
+    rings = map(enumerate(radii)) do (i, R)
+        idxs, az = ElectronDynamicsModels.ring_pixels(x_grid, y_grid, R; tol)
+        (R = R, color = ringcolor(i), idxs = idxs, az = az)
+    end
+    fig = with_theme(theme_latexfonts()) do
+        f = Figure()
+        isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
+        handles = Any[]; leglabels = String[]
+        for c in 1:ncomp
+            ph = angle.(@view maps[c, :, :])
+            # angular = azimuth φ; radial = ∠F shifted to [0, 2π) so it stays non-negative.
+            ax = PolarAxis(f[1, c]; width = panelsize, height = panelsize, title = string(labels[c]))
+            for r in rings
+                isempty(r.idxs) && continue
+                sc = scatter!(ax, r.az, ph[r.idxs] .+ Float64(π); color = r.color, markersize = 5)
+                c == 1 && (push!(handles, sc); push!(leglabels, "R/w₀=$(round(r.R / w₀; sigdigits = 2))"))
+            end
+        end
+        # PolarAxis has no `axislegend`; build one from the first panel's ring handles.
+        isempty(handles) || Legend(f[1, ncomp + 1], handles, leglabels; labelsize = 8)
         resize_to_layout!(f)
         f
     end

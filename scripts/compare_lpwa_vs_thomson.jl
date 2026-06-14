@@ -11,6 +11,7 @@
 
 using TOML, Serialization, LinearAlgebra, Printf
 using RunManifests: check_schema_version, write_derived
+using ElectronDynamicsModels: ring_pixels, phase_winding_fit
 using CairoMakie
 include(joinpath(@__DIR__, "plot_theme.jl"))   # LaTeX (Computer Modern) fonts
 
@@ -193,4 +194,61 @@ for (k, n) in enumerate(L.harmonics)
         description = "Re(Eᶻ) vs ρ along $(length(φovl)) rays ($(round(Int, rad2deg(first(φovl))))–$(round(Int, rad2deg(last(φovl))))°, within Eᶻ's 120° azimuthal period) at $(n)ω₁ (a0=$(La["laser"]["a0"])); LPWA solid, numeric dashed."
     )
     println("derived → ez_ratio + ez_overlay h$n  (parents $lpwa_id, $thom_id)")
+end
+
+# ── Transverse ∠F offset: is LPWA − numeric a constant phase b? ──
+# For Eˣ, Eʸ on R/w₀ ∈ {4, 12}, sample the SAME ring pixels on both fields (shared azimuth order ⇒
+# common unwrap reference), fit ∠F ≈ slope·φ + b, and report Δb = b_LPWA − b_numeric (nearest branch,
+# in (−π,π]) per (component, radius). A Δb constant across the two radii ⇒ a radius-independent
+# phase offset — the suspected origin of the constant √2 transverse gap (see lpwa-vs-numeric notes).
+let
+    offset_comps = (1, 2)                          # Eˣ, Eʸ
+    offset_radii = L.w₀ .* (4, 12)
+    tol = 0.5 * (xg[2] - xg[1])
+    palette = (:dodgerblue, :crimson)
+    ringcolor(i) = palette[(i - 1) % length(palette) + 1]
+    for (k, n) in enumerate(L.harmonics)
+        fig = Figure(size = (980, 460))
+        Label(fig[0, 1:2], @sprintf("∠F unwrapped vs φ — LPWA solid, numeric dashed (%dω₁, a0=%s)", n, La["laser"]["a0"]); fontsize = 16)
+        pp = Dict{String, Any}("R/w₀" => collect(offset_radii ./ L.w₀))
+        slopenote = String[]
+        for (ci, comp) in enumerate(offset_comps)
+            ax = Axis(fig[1, ci]; xlabel = "azimuth φ", ylabel = "∠F (unwrapped)", title = complabels[comp])
+            db = Float64[]; slL = Float64[]; slT = Float64[]
+            for (ri, R) in enumerate(offset_radii)
+                idxs, az = ring_pixels(L.x_grid, L.y_grid, R; tol)
+                if isempty(idxs)
+                    push!(db, NaN); push!(slL, NaN); push!(slT, NaN)
+                    continue
+                end
+                aL = L.fields_h[k, comp, :, :][idxs]
+                aT = T.fields_h[k, comp, :, :][idxs]
+                fL = phase_winding_fit(az, angle.(aL); weights = abs.(aL))
+                fT = phase_winding_fit(az, angle.(aT); weights = abs.(aT))
+                raw = fL.intercept - fT.intercept
+                shift = 2π * round(raw / 2π)        # align numeric to LPWA's 2π branch
+                push!(db, raw - shift); push!(slL, fL.slope); push!(slT, fT.slope)
+                col = ringcolor(ri)
+                lines!(ax, az, fL.unwrapped; color = col, alpha = 0.6, linewidth = 2.5,
+                    label = @sprintf("R/w₀=%d", round(Int, R / L.w₀)))
+                lines!(ax, az, fT.unwrapped .+ shift; color = col, linestyle = :dash, linewidth = 1.5)
+            end
+            ci == 1 && axislegend(ax; labelsize = 9, position = :lt)
+            pp["Δb/π $(complabels[comp])"] = round.(db ./ π; sigdigits = 3)
+            push!(slopenote, @sprintf("%s ℓ_L/ℓ_T=%s/%s", complabels[comp],
+                string(round.(slL; sigdigits = 3)), string(round.(slT; sigdigits = 3))))
+        end
+        out = joinpath(OUTDIR, @sprintf("compare_phase_offset_h%d_%s-%s.png", n, first(lpwa_id, 8), first(thom_id, 8)))
+        save(out, fig)
+        println("saved → ", out)
+        write_derived(
+            OUTDIR; kind = "phase_offset", label = "∠F offset LPWA vs numeric",
+            run_id = [lpwa_id, thom_id], plot = basename(out), setup = Dict("harmonic" => n),
+            plot_params = pp,
+            description = "Δb = b_LPWA − b_numeric (nearest 2π branch, in (−π,π]) of the ∠F ≈ slope·φ + b " *
+                "fit on Eˣ,Eʸ at R/w₀=4,12, $(n)ω₁ (a0=$(La["laser"]["a0"])). Constant Δb across R ⇒ a pure " *
+                "radius-independent phase offset. Slopes (≈ℓ): " * join(slopenote, "; ") * ".",
+        )
+        println("derived → phase_offset h$n  (parents $lpwa_id, $thom_id)")
+    end
 end
