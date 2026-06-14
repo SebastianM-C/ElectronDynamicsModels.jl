@@ -13,6 +13,8 @@ using Serialization
 using Printf
 using UUIDs
 
+include(joinpath(@__DIR__, "manifest.jl"))   # RunManifests: run_provenance, write_solver_manifest
+
 # GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
 # The `using` for the unused backend never executes, so each platform only needs its own.
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
@@ -38,8 +40,8 @@ const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "8000")) # observer-time sa
 const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))        # samples per optical period
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))   # RK4 substeps per sample
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))    # normalized vector potential a₀
-const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "true"))  # false = overlap uploads
-const RUN_TAG = string(uuid4())   # unique per run; params live in the TOML manifest
+const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))  # false = overlap uploads
+const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG; shared by .jls/log/manifest
 mkpath(OUTDIR)
 @info "Thomson run config" RUN_TAG GPU_BACKEND ϕ₀ A0 SYNC OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
 
@@ -183,69 +185,53 @@ screen = ObserverScreen(
 
 A_s = A_rk4
 
-# Serialize the raw 4-potential so the offline scripts (plot_harmonics.jl,
-# plot_power_spectrum.jl) can read this run directly.
+# Serialize the raw 4-potential — the run's archived cube.
 datafile = joinpath(OUTDIR, "A_rk4_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(RUN_TAG).jls")
 serialize(datafile, A_s)
 println("serialized → $datafile")
 
-# ── Harmonic maps ──
-# Extract the first two harmonics of ω₁ for all four 4-potential components.
-# rfft one component at a time (the full complex spectrum is 4× the raw array),
-# mirroring plot_harmonics.jl's memory-conscious slicing.
+# ── Harmonic maps: first two harmonics of ω₁ for the four 4-potential components ──
 const complabels = ("A⁰", "Aˣ", "Aʸ", "Aᶻ")
 const harmonics = (1, 2)
 
-freqs = rfftfreq(N_samples, 1 / δt)
-harmonic_bins = [findmin(x -> abs(x - n * ω / 2π), freqs)[2] for n in harmonics]
+freqs = rfftfreq(N_samples, 1 / δt)              # kept for the per-harmonic title
+hbins = harmonic_bins(N_samples, δt, ω, harmonics)
+fields = harmonic_maps(A_s, hbins)               # (length(harmonics), 4, Nx, Ny): A⁰ Aˣ Aʸ Aᶻ
 
-fields = Array{ComplexF64, 4}(undef, length(harmonics), 4, Nx, Ny)
-for μ in 1:4
-    A_ω_c = rfft(A_s[:, μ, :, :], 1)
-    for (k, idx) in enumerate(harmonic_bins)
-        fields[k, μ, :, :] = A_ω_c[idx, :, :]
-    end
-    A_ω_c = nothing
-    GC.gc()
-end
-
-# One figure per harmonic, 2×2 over the four components; each panel scaled to its
-# own peak since component amplitudes differ by orders.
+# One figure per harmonic — the unified 2×2 grid over the four potential components
+# (:seismic, symmetric range). Rendering lives in EDMPlotsExt (via `using CairoMakie`).
 function plot_harmonic(k, n)
-    idx = harmonic_bins[k]
-    fig = Figure()
-    Label(
-        fig[0, :], @sprintf(
-            "Thomson scattering — %dω₁ (%.3f× fundamental)",
-            n, freqs[idx] / (ω / 2π)
-        ), fontsize = 16, font = :bold
-    )
-    for μ in 1:4
-        field = real.(fields[k, μ, :, :])
-        cr = maximum(abs, field)
-        gl = fig[cld(μ, 2), (μ - 1) % 2 + 1] = GridLayout()
-        ax = Axis(
-            gl[1, 1], width = 340, height = 340, xlabel = "x", ylabel = "y",
-            title = @sprintf("%s  (peak %.2e)", complabels[μ], cr)
-        )
-        hm = heatmap!(
-            ax, collect(screen.x_grid), collect(screen.y_grid), field,
-            colorrange = (-cr, cr), colormap = :seismic
-        )
-        Colorbar(gl[1, 2], hm, width = 12, height = 340)
-    end
-    resize_to_layout!(fig)
+    title = @sprintf("Thomson scattering — %dω₁ (%.3f× fundamental)", n, freqs[hbins[k]] / (ω / 2π))
     out = joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, RUN_TAG))
-    save(out, fig)
+    plot_harmonic_grid(
+        fields[k, :, :, :], screen.x_grid, screen.y_grid;
+        w₀, labels = complabels, colormap = :seismic, colorrange = symmetric_colorrange,
+        ncols = 2, panelsize = 340, title, outfile = out,
+    )
     println("saved → $out")
-    return fig
+    return out
 end
 
-plotfiles = String[]
-for (k, n) in enumerate(harmonics)
-    plot_harmonic(k, n)
-    push!(plotfiles, joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, RUN_TAG)))
+plotfiles = [plot_harmonic(k, n) for (k, n) in enumerate(harmonics)]
+
+# 4-potential power spectra, every run (shows which components carry harmonic structure)
+psfile = joinpath(OUTDIR, "powspec_$(RUN_TAG).png")
+plot_power_spectrum(freqs, power_spectrum(A_s); ω, labels = complabels, title = "Thomson — 4-potential power spectra", outfile = psfile)
+println("saved → $psfile")
+push!(plotfiles, psfile)
+
+# phase maps ∠A per component at each harmonic (x/w₀, y/w₀), every run
+function plot_phase(k, n)
+    out = joinpath(OUTDIR, @sprintf("thomson_phase_h%d_%s.png", n, RUN_TAG))
+    plot_phase_grid(
+        fields[k, :, :, :], screen.x_grid, screen.y_grid;
+        w₀, labels = complabels, ncols = 2, panelsize = 340,
+        title = @sprintf("Thomson — ∠A at %dω₁", n), outfile = out,
+    )
+    println("saved → $out")
+    return out
 end
+append!(plotfiles, [plot_phase(k, n) for (k, n) in enumerate(harmonics)])
 
 # ── Reproducibility manifest ──
 # Drop a TOML next to the outputs capturing provenance (repo commit, script,
@@ -253,29 +239,10 @@ end
 using TOML
 using Dates
 
-const _edm_dir = pkgdir(ElectronDynamicsModels)
-_git(args...) = try
-    readchomp(Cmd(["git", "-C", string(_edm_dir), args...]))
-catch
-    "unknown"
-end
-repo_status = _git("status", "--porcelain")
-
-provenance = Dict{String, Any}(
-    "run_id" => RUN_TAG,
-    "repo_commit" => _git("rev-parse", "HEAD"),
-    "repo_dirty" => !(repo_status == "" || repo_status == "unknown"),
-    "edm_pkgdir" => string(_edm_dir),
-    "script" => abspath(PROGRAM_FILE),
-    "host" => gethostname(),
-    "slurm_job_id" => get(ENV, "SLURM_JOB_ID", ""),
-    "gpu_backend" => GPU_BACKEND,
-    "julia_version" => string(VERSION),
-    "timestamp" => string(now()),
+provenance = run_provenance(;
+    run_id = RUN_TAG, gpu_backend = GPU_BACKEND, repo_dir = pkgdir(ElectronDynamicsModels),
+    gpu_device = GPU_BACKEND == "cuda" ? CUDA.name(CUDA.device()) : nothing,
 )
-if GPU_BACKEND == "cuda"
-    provenance["gpu_device"] = string(CUDA.name(CUDA.device()))
-end
 
 config = Dict{String, Any}(
     "initial_phase" => ϕ₀,
@@ -286,10 +253,13 @@ config = Dict{String, Any}(
     "N_samples" => N_samples,
     "samples_per_period" => samples_per_period,
     "n_substeps" => NSUBSTEPS,
+    "sync_per_electron" => SYNC,       # replay input: run_spec_from_manifest reads this
+    "observable" => "potential",       # 4-potential Aᵘ run (cf. "field" in thomson_scattering.jl)
 )
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
+    "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
     "plots" => basename.(plotfiles),
 )
 
@@ -311,22 +281,10 @@ setup = Dict{String, Any}(
     "τi" => τi,
     "τf" => τf,
     "Rmax" => Rmax,
-    "N" => N,
     "Z" => Z,
-    "samples_per_period" => samples_per_period,
-    "N_samples" => N_samples,
-    "Nx" => Nx,
-    "Ny" => Ny,
-)
+)   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is just the integration window + screen depth
 
-manifest = Dict{String, Any}(
-    "provenance" => provenance,
-    "config" => config,
-    "laser" => laser_params,
-    "setup" => setup,
-    "outputs" => outputs
+manifestfile = write_solver_manifest(
+    OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs
 )
-
-manifestfile = joinpath(OUTDIR, "run_$(RUN_TAG).toml")
-open(io -> TOML.print(io, manifest; sorted = true), manifestfile, "w")
 println("manifest → $manifestfile")

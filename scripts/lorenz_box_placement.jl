@@ -7,6 +7,7 @@
 
 using Serialization
 using CairoMakie
+include(joinpath(@__DIR__, "plot_theme.jl"))   # LaTeX (Computer Modern) fonts
 using Printf
 
 const c = 137.03599908330932

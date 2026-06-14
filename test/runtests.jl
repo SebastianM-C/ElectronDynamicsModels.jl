@@ -20,6 +20,12 @@ using JET
     @testset "Radiation Emission" begin
         include("thomson_scattering.jl")
     end
+    @testset "Harmonic maps" begin
+        include("harmonics.jl")
+    end
+    @testset "OAM analysis (ring_pixels + phase_winding_fit)" begin
+        include("oam_analysis.jl")
+    end
     @testset "GPU Interpolation" begin
         include("gpu_interp.jl")
     end
