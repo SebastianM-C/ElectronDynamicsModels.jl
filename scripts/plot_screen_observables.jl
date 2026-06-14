@@ -1,6 +1,6 @@
 # Screen-observable maps for a field-accumulation run (the field .jls from
 # thomson_scattering.jl), via `screen_observables`. Total field (E,B) and the
-# radiation-only field (E_far,B_far) get *separate* figures, each with:
+# far-only field (E_far,B_far) get *separate* figures, each with:
 #   - energy fluence   ∫Sᶻ dt        (time-integrated — "what got radiated where")
 #   - L_z flux         ∫(dLz/dA) dt  (time-integrated angular-momentum pattern)
 #   - |S| at peak slot               (instantaneous Poynting magnitude)
@@ -8,7 +8,7 @@
 # The "peak slot" is argmax of screen energy over time — the instant the pulse is
 # on the screen (the *last* time sample is after the pulse has passed, ≈0). Scalar
 # totals (energy, Lz, Lz/U) are printed and annotated. Emits an `observables`
-# derived sidecar per field (total/radiation → dashboard secondary picker).
+# derived sidecar per field (total/far → dashboard secondary picker).
 #
 #   julia --project=scripts scripts/plot_screen_observables.jl [field.jls]
 
@@ -52,7 +52,7 @@ end
 # skip BOTH the 86 GB .jls reload and the (minutes-long) screen_observables recompute
 # when re-plotting. Bump OBS_CACHE_VERSION whenever the reduced schema/math changes,
 # so an older cache is detected as stale and recomputed.
-const OBS_CACHE_VERSION = 1
+const OBS_CACHE_VERSION = 2
 const cachefile = stem * "_obscache.jls"
 const recompute = ("--recompute" in ARGS) || get(ENV, "EDM_OBS_RECOMPUTE", "0") == "1"
 
@@ -78,19 +78,19 @@ function build_cache()
     scr = thomson_screen(nx, Ns)
     dt = step(scr.x⁰_samples) / c
     dA = step(scr.x_grid) * step(scr.y_grid)
-    # `:total` runs (accumulate_field mode=Val(:total)) save only (E, B); the radiation
+    # `:total` runs (accumulate_field mode=Val(:total)) save only (E, B); the far
     # field (E_far, B_far) exists only for `:split`. At the screen distance the near field
-    # is ~1e-9 of the far field, so the total observables ≈ the radiation ones anyway.
+    # is ~1e-9 of the far field, so the total observables ≈ the far ones anyway.
     has_far = hasproperty(fld, :E_far) && hasproperty(fld, :B_far)
-    println("computing screen_observables (total$(has_far ? " + radiation" : "; :total run — no separate radiation field")) …")
+    println("computing screen_observables (total$(has_far ? " + far" : "; :total run — no separate far field")) …")
     ot = screen_observables(fld, scr; ε₀)
-    orad = has_far ? screen_observables((; E = fld.E_far, B = fld.B_far), scr; ε₀) : nothing
+    ofar = has_far ? screen_observables((; E = fld.E_far, B = fld.B_far), scr; ε₀) : nothing
     se = dropdims(sum(ot.energy_density; dims = (2, 3)); dims = (2, 3))
     kp = argmax(se)
     return (;
         version = OBS_CACHE_VERSION,
         total = reduce_field(ot, kp, dt, dA),
-        radiation = has_far ? reduce_field(orad, kp, dt, dA) : nothing,
+        far = has_far ? reduce_field(ofar, kp, dt, dA) : nothing,
         k_peak = kp, slot_energy = se, Nx = nx, Ny = ny, N_samples = Ns,
     )
 end
@@ -118,14 +118,14 @@ end
 
 const cache = load_or_build()
 const Nx, Ny, N_samples, k_peak = cache.Nx, cache.Ny, cache.N_samples, cache.k_peak
-const red_tot, red_rad = cache.total, cache.radiation
-const has_rad = red_rad !== nothing   # :split saves the radiation field; :total does not
+const red_tot, red_far = cache.total, cache.far
+const has_far = red_far !== nothing   # :split saves the radiation field; :total does not
 const screen = thomson_screen(Nx, N_samples)
 const xg, yg = collect(screen.x_grid), collect(screen.y_grid)
 @printf("peak emission slot k = %d of %d  (x⁰ = %.4g)\n", k_peak, N_samples, screen.x⁰_samples[k_peak])
 
 @printf("\n%-12s %14s %14s %14s\n", "", "energy_total", "Lz_total", "Lz/U")
-for (name, r) in (has_rad ? (("total", red_tot), ("radiation", red_rad)) : (("total", red_tot),))
+for (name, r) in (has_far ? (("total", red_tot), ("far", red_far)) : (("total", red_tot),))
     @printf(
         "%-12s %14.4e %14.4e %14.4e\n", name, r.energy_total, r.Lz_total,
         r.energy_total == 0 ? NaN : r.Lz_total / r.energy_total
@@ -175,7 +175,7 @@ function field_figure(r, fieldname, outfile)
 end
 
 out_tot = field_figure(red_tot, "total", stem * "_observables_total.png")
-out_rad = has_rad ? field_figure(red_rad, "radiation", stem * "_observables_radiation.png") : nothing
+out_far = has_far ? field_figure(red_far, "far", stem * "_observables_far.png") : nothing
 
 # ── Vortex figure: azimuthal Poynting Sφ + (Sˣ,Sʸ) circulation at the peak slot ──
 # Sφ = (x Sʸ − y Sˣ)/r is the azimuthal energy flux (its r-moment integrates to L_z);
@@ -208,7 +208,7 @@ function vortex_figure(outfile)
     fig = Figure()
     Label(fig[0, :], "Transverse-Poynting circulation @ peak slot — $(basename(stem))", fontsize = 13, font = :bold)
     vortex_panel!(fig, (1, 1), red_tot, "total")
-    has_rad && vortex_panel!(fig, (1, 2), red_rad, "radiation")
+    has_far && vortex_panel!(fig, (1, 2), red_far, "far")
     resize_to_layout!(fig)
     save(outfile, fig)
     println("saved → $outfile")
@@ -225,7 +225,7 @@ function temporal_figure(outfile)
         ylabel = L"P = \int S^z\,\mathrm{d}A", title = "radiated power"
     )
     lines!(ax1, ks, red_tot.Pt; label = "total")
-    has_rad && lines!(ax1, ks, red_rad.Pt; label = "radiation", linestyle = :dash)
+    has_far && lines!(ax1, ks, red_far.Pt; label = "far", linestyle = :dash)
     vlines!(ax1, [k_peak]; color = (:gray, 0.7), linestyle = :dot)
     axislegend(ax1; labelsize = 9)
     ax2 = Axis(
@@ -234,7 +234,7 @@ function temporal_figure(outfile)
         title = "angular-momentum emission rate"
     )
     lines!(ax2, ks, red_tot.Lzt; label = "total")
-    has_rad && lines!(ax2, ks, red_rad.Lzt; label = "radiation", linestyle = :dash)
+    has_far && lines!(ax2, ks, red_far.Lzt; label = "far", linestyle = :dash)
     vlines!(ax2, [k_peak]; color = (:gray, 0.7), linestyle = :dot)
     axislegend(ax2; labelsize = 9)
     resize_to_layout!(fig)
@@ -251,7 +251,7 @@ let pid = parent[1]
     if pid === nothing
         @warn "parent run manifest for $(basename(datafile)) has no run_id; skipping sidecar"
     else
-        for (fieldname, r, out) in (has_rad ? (("total", red_tot, out_tot), ("radiation", red_rad, out_rad)) : (("total", red_tot, out_tot),))
+        for (fieldname, r, out) in (has_far ? (("total", red_tot, out_tot), ("far", red_far, out_far)) : (("total", red_tot, out_tot),))
             write_derived(
                 dir; kind = "observables",
                 label = @sprintf("screen observables (%s): U=%.2e, Lz=%.2e", fieldname, r.energy_total, r.Lz_total),
@@ -275,9 +275,9 @@ let pid = parent[1]
             dir; kind = "obs_temporal", label = "radiated power + L_z rate vs time",
             run_id = pid, plot = basename(out_temporal), source = basename(datafile),
             description = raw"Radiated power $P(t)=\int S^z\,dA$ and angular-momentum emission rate " *
-                raw"$\mathrm{d}L_z/\mathrm{d}t=\int\frac{dL_z}{dA}\,dA$ per observer-time slot (total vs radiation field). " *
+                raw"$\mathrm{d}L_z/\mathrm{d}t=\int\frac{dL_z}{dA}\,dA$ per observer-time slot (total vs far field). " *
                 raw"The dotted line marks the peak-emission slot used for the snapshots above."
         )
-        println("derived sidecars → observables (total/radiation) + obs_vortex + obs_temporal (parent run $pid)")
+        println("derived sidecars → observables (total/far) + obs_vortex + obs_temporal (parent run $pid)")
     end
 end

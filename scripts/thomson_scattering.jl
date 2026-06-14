@@ -179,8 +179,8 @@ screen = ObserverScreen(
 )
 
 # Exact field via the split Liénard–Wiechert GPU kernel.
-# Returns (; E, B, E_rad, B_rad), each (N_samples, 3, Nx, Ny): E, B are the total
-# field (for the harmonic maps below); E_rad, B_rad the radiation field alone.
+# Returns (; E, B, E_far, B_far), each (N_samples, 3, Nx, Ny): E, B are the total
+# field (for the harmonic maps below); E_far, B_far the far (radiation) field alone.
 t_field = @elapsed fld = accumulate_field(
     trajs, screen, GPUKernelRK4(), gpu_backend;
     n_substeps = NSUBSTEPS, sync_per_electron = SYNC

@@ -195,7 +195,7 @@ function recover_from_manifest(toml)
         y_grid = LinRange(-25las["w0"], 25las["w0"], cfg["Ny"])
         println("loading $(m["outputs"]["datafile"]) …")
         raw = deserialize(cube)
-        fld = (; E = raw.E, B = raw.B)   # total-field maps only; drop any split E_rad/B_rad to halve resident RAM
+        fld = (; E = raw.E, B = raw.B)   # total-field maps only; drop any split E_far/B_far to halve resident RAM
         raw = nothing
         GC.gc()
         return write_harmonic_products(
