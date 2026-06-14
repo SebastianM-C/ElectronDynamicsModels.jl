@@ -51,9 +51,21 @@ function check_compatible(a, b)
     # pre-dedup Thomson run keeps Nx/N/… in [setup] while the new LPWA [setup] has only the
     # window+depth. Compare the physical axes both manifests share.
     setup_params = ("τi", "τf", "Rmax", "Z")
+    # Circular handedness is precisely what the analytic LPWA (−i) and the numeric `:circular`
+    # (+i) convention differ on — comparing across it IS this tool's purpose. So for `pol` require
+    # the same polarization *type* (circular vs linear), not the exact handedness; warn (don't
+    # error) when only the handedness differs so it stays visible.
+    pol_family(v) = startswith(string(v), "circular") ? "circular" : string(v)
     for (sec, keys) in (("laser", laser_params), ("config", config_params), ("setup", setup_params))
         for k in keys
-            a[sec][k] == b[sec][k] || error("[$sec].$k differs: $(a[sec][k]) vs $(b[sec][k])")
+            if sec == "laser" && k == "pol"
+                pol_family(a[sec][k]) == pol_family(b[sec][k]) ||
+                    error("[laser].pol type differs: $(a[sec][k]) vs $(b[sec][k])")
+                a[sec][k] == b[sec][k] ||
+                    @warn "comparing across circular handedness" lpwa = a[sec][k] numeric = b[sec][k]
+            else
+                a[sec][k] == b[sec][k] || error("[$sec].$k differs: $(a[sec][k]) vs $(b[sec][k])")
+            end
         end
     end
     return nothing
