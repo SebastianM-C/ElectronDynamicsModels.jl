@@ -10,7 +10,7 @@
 # directly; for a recovered Thomson run, drop `hmaps_<run_id>.jls` beside its toml).
 
 using TOML, Serialization, LinearAlgebra, Printf
-using RunManifests: check_schema_version, write_derived
+using RunManifests: check_schema_version, write_derived, write_comparison
 using ElectronDynamicsModels: ring_pixels, phase_winding_fit
 using CairoMakie
 include(joinpath(@__DIR__, "plot_theme.jl"))   # LaTeX (Computer Modern) fonts
@@ -285,4 +285,26 @@ let
         )
         println("derived → phase_offset h$n  (parents $lpwa_id, $thom_id)")
     end
+end
+
+# ── Comparison declaration: the first-class A-vs-B relationship the dashboard reads. ──
+# The write_derived calls above bind each diff PLOT to BOTH runs; this declares the RELATIONSHIP
+# between the two SWEEPS — naming each side's campaign dir (the basename the dashboard pools sweeps
+# by) so the dashboard groups them in its `comparisons` registry and matches them cell-by-cell.
+# `script` is recorded per side so the two sides stay distinguishable even if they share a dir.
+# `along` is omitted: a single (lpwa, thomson) a0-pair can't see what the campaign sweeps, so the
+# dashboard infers the sides' common axis. Idempotent — every a0-pair re-emits the SAME declaration
+# (keyed on the two campaign dirs), so it's written once per sweep-pair, not once per pair.
+let
+    script_of(m) = basename(get(get(m, "provenance", Dict()), "script", ""))
+    lpwa_dir = basename(dirname(abspath(lpwa_toml)))
+    thom_dir = basename(dirname(abspath(thom_toml)))
+    out = write_comparison(
+        OUTDIR; label = "LPWA vs numeric", differs = "method",
+        sides = [
+            (label = "analytical (LPWA)", dir = lpwa_dir, script = script_of(La)),
+            (label = "numerical (Thomson)", dir = thom_dir, script = script_of(Ta)),
+        ],
+    )
+    println("comparison → ", basename(out), "  ($lpwa_dir  vs  $thom_dir)")
 end

@@ -7,8 +7,9 @@ everything reproducibility-related:
   * **git provenance** — `git_state`, the standard solver `run_provenance` block;
   * **a clean-tree guard** — `assert_committed`, so a run is never produced from
     uncommitted code its `repo_commit` cannot reproduce;
-  * **manifest I/O** — `write_run_manifest` / `write_derived` (the `run_*.toml` and
-    `derived_*.toml` the results dashboard consumes) and the `find_parent_*` readers;
+  * **manifest I/O** — `write_run_manifest` / `write_derived` / `write_comparison` (the
+    `run_*.toml`, `derived_*.toml`, and `comparison_*.toml` the results dashboard consumes)
+    and the `find_parent_*` readers;
   * **the replay seed** — `run_spec_from_manifest`, the inverse of how solver scripts
     read `ENV`, used by the reproduce/sweep launcher.
 
@@ -22,7 +23,7 @@ using Dates
 
 export git_state, assert_committed, run_provenance, run_spec_from_manifest, expand_sweep
 export find_parent_manifest, find_parent_run, spp_from_manifest
-export write_derived, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
+export write_derived, write_comparison, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
 export MANIFEST_SCHEMA_VERSION, manifest_schema_version, check_schema_version
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -304,6 +305,65 @@ function write_derived(
     suffix = isempty(setup) ? "" : "_" * join(string.(values(setup)), "-")   # filename: setup keys only
     idtag = join((first(x, 8) for x in deps), "-")   # <id8> for one parent, <id8a>-<id8b> for a comparison
     name = "derived_$(kind)$(suffix)_$(idtag).toml"
+    open(io -> TOML.print(io, m; sorted = true), joinpath(dir, name), "w")
+    return joinpath(dir, name)
+end
+
+# Normalise one comparison side spec to (label, dir, script). Accepts a NamedTuple
+# `(; label, dir[, script])`, a `Dict`, or a `(label, dir[, script])` tuple.
+function _side_fields(s)
+    s isa AbstractDict && return (s["label"], s["dir"], get(s, "script", nothing))
+    s isa NamedTuple && return (s.label, s.dir, hasproperty(s, :script) ? s.script : nothing)
+    s isa Tuple && return (s[1], s[2], length(s) >= 3 ? s[3] : nothing)
+    return error("write_comparison: unrecognised side spec of type $(typeof(s))")
+end
+
+"""
+    write_comparison(dir; label, sides, differs=nothing, along=nothing, filename=nothing)
+
+Write a `[comparison]` declaration sidecar TOML into `dir` — the first-class comparison the
+results dashboard surfaces (top-level `comparisons` in `index.json`). Where [`write_derived`](@ref)
+records ONE diff plot bound to its parent runs, this declares the RELATIONSHIP: which sweeps (or
+runs) are compared, matched cell-by-cell along a shared swept axis.
+
+`sides` is a vector of at least two side specs — each a NamedTuple `(; label, dir[, script])`,
+a `Dict`, or a `(label, dir[, script])` tuple. `dir` is a results-dir **basename** the dashboard
+resolves to the sweep auto-detected there; the optional `script` disambiguates a dir holding more
+than one sweep (e.g. an LPWA and a Thomson run in the same folder). `differs` is a free-form label
+for what distinguishes the sides (e.g. `"method"`); `along` names the shared swept axis to match on
+— **omit it** to let the dashboard infer the sides' common axis (the usual case, since a per-pair
+caller can't see what the whole campaign sweeps).
+
+Idempotent: `filename` defaults to a deterministic slug of the side dirs, so a per-pair comparison
+re-run across a sweep rewrites ONE declaration instead of accumulating copies. Stamps the current
+`schema_version` like the other writers.
+"""
+function write_comparison(
+        dir::AbstractString; label, sides,
+        differs = nothing, along = nothing, filename = nothing
+    )
+    length(sides) >= 2 || error("write_comparison: need ≥2 sides, got $(length(sides))")
+    sidedicts = Dict{String, Any}[]
+    dirtags = String[]
+    for s in sides
+        sl, sd, sc = _side_fields(s)
+        d = Dict{String, Any}("label" => string(sl), "dir" => string(sd))
+        sc === nothing || (d["script"] = string(sc))
+        push!(sidedicts, d)
+        push!(dirtags, string(sd))
+    end
+    comp = Dict{String, Any}("label" => label, "side" => sidedicts)
+    differs === nothing || (comp["differs"] = differs)
+    along === nothing || (comp["along"] = along)
+    m = Dict{String, Any}(
+        "schema_version" => MANIFEST_SCHEMA_VERSION,
+        "provenance" => Dict(
+            "script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
+            "host" => gethostname(), "timestamp" => string(now())
+        ),
+        "comparison" => comp,
+    )
+    name = filename === nothing ? "comparison_" * join(dirtags, "__") * ".toml" : filename
     open(io -> TOML.print(io, m; sorted = true), joinpath(dir, name), "w")
     return joinpath(dir, name)
 end
