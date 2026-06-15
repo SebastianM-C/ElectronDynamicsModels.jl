@@ -22,7 +22,7 @@ const C_LIGHT = 137.03599908330932
 
 """
     write_harmonic_products(fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
-        harmonics = (1, 2), title_prefix, fileprefix, colormap = :jet, colorrange = nothing)
+        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, colormap = :jet, colorrange = nothing)
         -> (; hmapsfile, plots, fields_h, fields_far_h)
 
 Reduce `fld = (; E, B)` to `fields_h` at the `harmonics` bins, serialize the reduced
@@ -42,7 +42,7 @@ far-field-only diagnostic:
 """
 function write_harmonic_products(
         fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
-        harmonics = (1, 2), title_prefix, fileprefix, colormap = :jet, colorrange = nothing
+        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, colormap = :jet, colorrange = nothing
     )
     N_samples = size(fld.E, 1)
     freqs = rfftfreq(N_samples, 1 / δt)
