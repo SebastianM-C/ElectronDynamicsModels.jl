@@ -23,10 +23,13 @@ const C_LIGHT = 137.03599908330932
 """
     write_harmonic_products(fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
         harmonics = (1, 2), title_prefix, fileprefix, colormap = :jet, colorrange = nothing)
-        -> (; hmapsfile, plots, fields_h)
+        -> (; hmapsfile, plots, fields_h, fields_far_h)
 
 Reduce `fld = (; E, B)` to `fields_h` at the `harmonics` bins, serialize the reduced
-`hmaps_<run_tag>.jls`, and write the per-run plots into `outdir`:
+`hmaps_<run_tag>.jls`, and write the per-run plots into `outdir`. For a split cube (`fld`
+also carries `E_far`/`B_far`) the far field is reduced to `fields_far_h` the same way and
+saved alongside the total maps (else `nothing`); the comparison script differences it for the
+far-field-only diagnostic:
 
   * **field E/B grids + power spectrum** → the run's *intrinsic* plots, returned in `plots`
     for the solver's `[outputs].plots` (kinds `h<n>` + `powspec`).
@@ -46,11 +49,24 @@ function write_harmonic_products(
     hbins = harmonic_bins(N_samples, δt, ω, harmonics)
     fields_h = harmonic_maps(fld, hbins)        # (length(harmonics), 6, Nx, Ny): E in 1:3, B in 4:6
 
+    # Far-field-only harmonic maps, saved next to the total `fields_h` so the comparison script
+    # can difference the radiation field on its own (LPWA is a far-field formula → comparing it
+    # against the numeric far field is the rigorous apples-to-apples). A split cube
+    # (accumulate_field mode=Val(:split)) carries `fld.E_far`/`fld.B_far`; a total cube does not.
+    # Reduce the far field the SAME way as the total when present, else leave it `nothing` so the
+    # serialized layout stays backward-compatible with the already-published total-only hmaps.
+    # TODO(human): assign `fields_far_h`.
+    if hasproperty(fld, :E_far)
+        fields_far_h = harmonic_maps((; E = fld.E_far, B = fld.B_far), hbins)
+    else
+        fields_far_h = nothing
+    end
+
     hmapsfile = joinpath(outdir, "hmaps_$(run_tag).jls")
     serialize(
         hmapsfile,
         (;
-            fields_h, harmonics, ffund = [freqs[b] / (ω / 2π) for b in hbins],
+            fields_h, fields_far_h, harmonics, ffund = [freqs[b] / (ω / 2π) for b in hbins],
             x_grid = collect(x_grid), y_grid = collect(y_grid), w₀,
         ),
     )
@@ -86,7 +102,7 @@ function write_harmonic_products(
         w₀, harmonics, run_tag, outdir, source_datafile, title_prefix, fileprefix,
     )
 
-    return (; hmapsfile, plots, fields_h)
+    return (; hmapsfile, plots, fields_h, fields_far_h)
 end
 
 """
@@ -167,12 +183,13 @@ function _retire_stale_phase(dir, run_tag)
     id8 = first(run_tag, 8)
     for f in readdir(dir)
         stale = ((occursin(r"^derived_phase_\d", f) || startswith(f, "derived_phaserings_")) && occursin(id8, f)) ||
-                occursin(Regex("_phase_h\\d+_" * run_tag * "\\.png\$"), f) ||
-                occursin(Regex("_phaserings_h\\d+_" * run_tag * "\\.png\$"), f)
+            occursin(Regex("_phase_h\\d+_" * run_tag * "\\.png\$"), f) ||
+            occursin(Regex("_phaserings_h\\d+_" * run_tag * "\\.png\$"), f)
         stale || continue
         rm(joinpath(dir, f))
         println("retired stale → $f")
     end
+    return
 end
 
 # ── Standalone recovery: rebuild reduced maps + plots from a serialized cube via its manifest ──

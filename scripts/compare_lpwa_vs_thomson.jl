@@ -95,42 +95,64 @@ abserr(a, b) = norm(a .- b)
 
 xw, yw = collect(L.x_grid) ./ L.w₀, collect(L.y_grid) ./ L.w₀
 
-for (k, n) in enumerate(L.harmonics)
-    fig = Figure(size = (1080, 680))
-    Label(fig[0, 1:3], @sprintf("|F̃_LPWA − F̃_numeric| at %dω₁", n); fontsize = 18)
-    errs = Float64[]
-    for comp in 1:6
-        a = L.fields_h[k, comp, :, :]
-        b = T.fields_h[k, comp, :, :]
-        d = abserr(a, b)
-        push!(errs, d)
-        nrm = norm(b)
-        relL2 = nrm == 0 ? 0.0 : d / nrm   # ‖Δ‖₂/‖F_num‖₂ — dimensionless gap (≈√2 for the transverse fundamental)
-        @printf("h=%dω₁  %-3s   |Δ|₂ = %.4e   (‖ref‖₂ = %.4e,  ‖Δ‖/‖F‖ = %.3f)\n", n, complabels[comp], d, nrm, relL2)
-        r, c = fldmod1(comp, 3)
-        # Plot |Δ| as a fraction of the numeric field's own peak so the colorbar is dimensionless
-        max_b = maximum(abs, b)
-        scale = iszero(max_b) ? 1.0 : max_b
-        ax = Axis(
-            fig[r, c][1, 1]; title = @sprintf("%s   ‖Δ‖/‖F‖=%.2f", complabels[comp], relL2),
-            xlabel = "x/w₀", ylabel = "y/w₀", aspect = DataAspect()
+# Per-harmonic |Δ| comparison of a 6-component map set, each panel normalized to that
+# component's own peak (dimensionless colorbar). One parametrized chip (harmonic selector)
+# bound to BOTH parents. Called for the total field and — when both runs saved the split —
+# for the far field alone (LPWA is a far-field formula, so far-vs-far is the rigorous test).
+function abs_comparison(Lmaps, Tmaps; kind, label, file_tag, title)
+    for (k, n) in enumerate(L.harmonics)
+        fig = Figure(size = (1080, 680))
+        Label(fig[0, 1:3], @sprintf("%s at %dω₁", title, n); fontsize = 18)
+        errs = Float64[]
+        for comp in 1:6
+            a = Lmaps[k, comp, :, :]
+            b = Tmaps[k, comp, :, :]
+            d = abserr(a, b)
+            push!(errs, d)
+            nrm = norm(b)
+            relL2 = nrm == 0 ? 0.0 : d / nrm   # ‖Δ‖₂/‖F_num‖₂ — dimensionless gap (≈√2 for the transverse fundamental)
+            @printf("h=%dω₁  %-3s   |Δ|₂ = %.4e   (‖ref‖₂ = %.4e,  ‖Δ‖/‖F‖ = %.3f)\n", n, complabels[comp], d, nrm, relL2)
+            r, c = fldmod1(comp, 3)
+            # Plot |Δ| as a fraction of the numeric field's own peak so the colorbar is dimensionless
+            max_b = maximum(abs, b)
+            scale = iszero(max_b) ? 1.0 : max_b
+            ax = Axis(
+                fig[r, c][1, 1]; title = @sprintf("%s   ‖Δ‖/‖F‖=%.2f", complabels[comp], relL2),
+                xlabel = "x/w₀", ylabel = "y/w₀", aspect = DataAspect()
+            )
+            hm = heatmap!(ax, xw, yw, abs.(a .- b) ./ scale; colormap = :inferno)
+            Colorbar(fig[r, c][1, 2], hm; label = "|Δ| / peak|F_num|")
+        end
+        out = joinpath(OUTDIR, @sprintf("compare_%s_h%d_%s-%s.png", file_tag, n, first(lpwa_id, 8), first(thom_id, 8)))
+        save(out, fig)
+        println("saved → ", out)
+        # Provenance: bind to BOTH source runs (depends_on = [LPWA, Thomson]); the builder attaches
+        # it under each. setup.harmonic makes it ONE parametrized chip with a harmonic selector.
+        write_derived(
+            OUTDIR; kind, label,
+            run_id = [lpwa_id, thom_id], plot = basename(out), setup = Dict("harmonic" => n),
+            description = "$(title)₂ at $(n)ω₁ (a0=$(La["laser"]["a0"])): " *
+                join((@sprintf("%s=%.2e", complabels[c], errs[c]) for c in 1:6), ", "),
         )
-        hm = heatmap!(ax, xw, yw, abs.(a .- b) ./ scale; colormap = :inferno)
-        Colorbar(fig[r, c][1, 2], hm; label = "|Δ| / peak|F_num|")
+        println("derived → $kind h$n  (parents $lpwa_id, $thom_id)")
     end
-    out = joinpath(OUTDIR, @sprintf("compare_abs_h%d_%s-%s.png", n, first(lpwa_id, 8), first(thom_id, 8)))
-    save(out, fig)
-    println("saved → ", out)
-    # Provenance: bind this comparison to BOTH source runs (depends_on = [LPWA, Thomson]); the
-    # builder attaches it under each, with the per-component |Δ|₂ in the description. setup.harmonic
-    # makes it ONE parametrized "comparison" chip with a harmonic selector.
-    write_derived(
-        OUTDIR; kind = "comparison", label = "LPWA vs numeric |ΔF|",
-        run_id = [lpwa_id, thom_id], plot = basename(out), setup = Dict("harmonic" => n),
-        description = "|F̃_LPWA − F̃_numeric|₂ at $(n)ω₁ (a0=$(La["laser"]["a0"])): " *
-            join((@sprintf("%s=%.2e", complabels[c], errs[c]) for c in 1:6), ", "),
-    )
-    println("derived → comparison h$n  (parents $lpwa_id, $thom_id)")
+end
+
+# Total field (always present).
+abs_comparison(L.fields_h, T.fields_h; kind = "comparison", label = "LPWA vs numeric |ΔF|",
+    file_tag = "abs", title = "|F̃_LPWA − F̃_numeric|")
+
+# Far field alone, only when BOTH runs saved the split — older total-only hmaps have no
+# `fields_far_h` field at all, so guard with `hasproperty` before `!== nothing`.
+Lfar = hasproperty(L, :fields_far_h) ? L.fields_far_h : nothing
+Tfar = hasproperty(T, :fields_far_h) ? T.fields_far_h : nothing
+if Lfar !== nothing && Tfar !== nothing
+    @assert size(Lfar) == size(Tfar) "far-field map shapes differ"
+    abs_comparison(Lfar, Tfar; kind = "comparison_far", label = "LPWA vs numeric |ΔF| (far field)",
+        file_tag = "abs_far", title = "|F̃ᶠᵃʳ_LPWA − F̃ᶠᵃʳ_numeric|")
+else
+    println("far-field maps absent on one/both runs — skipping far comparison " *
+        "(LPWA: $(Lfar === nothing ? "none" : "present"), numeric: $(Tfar === nothing ? "none" : "present"))")
 end
 
 # ── Eᶻ physical-field comparison (the Re part the heatmaps plot) ──
