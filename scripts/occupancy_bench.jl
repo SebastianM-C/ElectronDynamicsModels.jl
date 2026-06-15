@@ -103,12 +103,13 @@ nthr = NX * NX
 Threads.nthreads() >= 2 ||
     @warn "only $(Threads.nthreads()) Julia thread — the sampler will starve; rerun with -t2"
 const running = Threads.Atomic{Bool}(true)
-const samples = NTuple{4, Float64}[]   # (t, power_W, compute_util, mem_util); single writer (this task)
+const samples = NTuple{5, Float64}[]   # (t, power_W, compute_util, mem_util, vram_used_B); single writer
 t0 = time()
 sampler = Threads.@spawn begin
     while running[]
         u = gpu_utilization(backend)
-        push!(samples, (time() - t0, gpu_power(backend), Float64(u.compute), Float64(u.memory)))
+        m = gpu_memory_info(backend)
+        push!(samples, (time() - t0, gpu_power(backend), Float64(u.compute), Float64(u.memory), Float64(m.used)))
         sleep(SAMPLE_DT)
     end
 end
@@ -125,12 +126,20 @@ wait(sampler)
 pw = Float64[s[2] for s in samples]
 cu = Float64[s[3] for s in samples]
 mu = Float64[s[4] for s in samples]
+vr = Float64[s[5] for s in samples]
 @printf("\nrun: %d electrons in %.1f s  (%d telemetry samples @ %.2gs)\n", NELEC, t_field, length(samples), SAMPLE_DT)
 if !isempty(pw)
     @printf("power (W):     mean %.1f   peak %.1f   min %.1f\n", mean(pw), maximum(pw), minimum(pw))
     @printf("compute util:  mean %.2f   peak %.2f\n", mean(cu), maximum(cu))
     @printf("memory util:   mean %.2f   peak %.2f\n", mean(mu), maximum(mu))
 end
-let m = gpu_memory_info(backend)
-    @printf("VRAM: used %.1f / %.1f GB\n", m.used / 2^30, m.total / 2^30)
+# Kernel-active window (compute util above noise) — isolates the kernel from the host pullback,
+# which on AMD pegs the CPU and starves the sampler, concentrating samples in the active window.
+let act = Float64[s[1] for s in samples if s[3] > 0.05]
+    isempty(act) || @printf("GPU-active window: %.1f–%.1f s  (≈%.1f s kernel; @elapsed incl. host pullback = %.1f s)\n",
+        minimum(act), maximum(act), maximum(act) - minimum(act), t_field)
+end
+let total = gpu_memory_info(backend).total
+    peak = isempty(vr) ? gpu_memory_info(backend).used : maximum(vr)
+    @printf("VRAM during run: peak %.1f / %.1f GB  (%.0f%%)\n", peak / 2^30, total / 2^30, 100 * peak / total)
 end
