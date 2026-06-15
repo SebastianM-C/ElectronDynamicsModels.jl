@@ -55,7 +55,6 @@ function write_harmonic_products(
     # (accumulate_field mode=Val(:split)) carries `fld.E_far`/`fld.B_far`; a total cube does not.
     # Reduce the far field the SAME way as the total when present, else leave it `nothing` so the
     # serialized layout stays backward-compatible with the already-published total-only hmaps.
-    # TODO(human): assign `fields_far_h`.
     if hasproperty(fld, :E_far)
         fields_far_h = harmonic_maps((; E = fld.E_far, B = fld.B_far), hbins)
     else
@@ -94,6 +93,30 @@ function write_harmonic_products(
     )
     println("saved → $psfile")
     push!(plots, psfile)
+
+    # Far-field maps → a `fieldFar` derived chip (harmonic selector), parallel to the total-field
+    # h<n> grids but for the radiation (1/R) field alone — the quantity the LPWA analytic formula
+    # is compared against. Only for a split cube (fields_far_h present); the builder renders new
+    # derived kinds generically.
+    if fields_far_h !== nothing
+        for (k, n) in enumerate(harmonics)
+            out = joinpath(outdir, @sprintf("%s_fieldfar_h%d_%s.png", fileprefix, n, run_tag))
+            plot_harmonic_grid(
+                fields_far_h[k, :, :, :], x_grid, y_grid;
+                w₀, labels = COMPLABELS, gridkw...,
+                title = @sprintf("%s (far field) — %dω₁ (%.3f× fundamental)", title_prefix, n, freqs[hbins[k]] / (ω / 2π)),
+                outfile = out,
+            )
+            println("saved → $out")
+            write_derived(
+                outdir; kind = "fieldFar", label = "$title_prefix far-field maps", run_id = run_tag,
+                plot = basename(out), source = source_datafile, setup = Dict("harmonic" => n),
+                description = "Far (radiation) field harmonic maps — the 1/R term alone, without " *
+                    "the near-field 1/R². Each panel is a component (Eˣ…Bᶻ). This is the field the " *
+                    "LPWA analytic formula is compared against in the lpwa-vs-numeric view.",
+            )
+        end
+    end
 
     # Phase view (phaseE/phaseB chips). Factored out so the cached-hmaps recovery path can
     # rebuild it without the cube.
@@ -212,9 +235,9 @@ function recover_from_manifest(toml)
         y_grid = LinRange(-25las["w0"], 25las["w0"], cfg["Ny"])
         println("loading $(m["outputs"]["datafile"]) …")
         raw = deserialize(cube)
-        fld = (; E = raw.E, B = raw.B)   # total-field maps only; drop any split E_far/B_far to halve resident RAM
-        raw = nothing
-        GC.gc()
+        # A split cube carries E_far/B_far — keep them so write_harmonic_products also emits the
+        # far-field maps the φ0/LPWA comparison needs; a total cube has only E/B.
+        fld = hasproperty(raw, :E_far) ? raw : (; E = raw.E, B = raw.B)
         return write_harmonic_products(
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
