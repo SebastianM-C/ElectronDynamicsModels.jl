@@ -31,8 +31,9 @@ also carries `E_far`/`B_far`) the far field is reduced to `fields_far_h` the sam
 saved alongside the total maps (else `nothing`); the comparison script differences it for the
 far-field-only diagnostic:
 
-  * **field E/B grids + power spectrum** → the run's *intrinsic* plots, returned in `plots`
-    for the solver's `[outputs].plots` (kinds `h<n>` + `powspec`).
+  * **field E/B grids** → per-harmonic `h<n>` derived chips with a total/far `setup.field` toggle
+    (a split cube adds the far variant). **power spectrum** → the one intrinsic plot, returned in
+    `plots` for the solver's `[outputs].plots`.
   * **∠F phase grids** → a single parametrized `phase` derived chip — one
     `derived_phase_<n>_*.toml` per harmonic via `write_derived` (`setup.harmonic = n`,
     `source = source_datafile`), so the builder shows ONE phase chip with a harmonic
@@ -71,19 +72,34 @@ function write_harmonic_products(
     )
     println("serialized harmonic maps → $hmapsfile")
 
-    # Intrinsic plots ([outputs].plots): the E/B field maps (kinds h1/h2) + power spectrum.
+    # Field maps → per-harmonic `h<n>` derived chips with a total/far toggle (setup.field). The
+    # total field is always emitted; a split cube (fields_far_h present) adds the far (radiation,
+    # 1/R-only) variant the LPWA analytic formula is compared against, so the chip toggles
+    # total↔far in place — mirroring the screen-observables total/far picker. The harmonic is the
+    # chip level (h1,h2,…, frontend-ordered); the field type is the toggle. Only powspec stays an
+    # intrinsic [outputs].plots entry.
     plots = String[]
     gridkw = colorrange === nothing ? (; colormap) : (; colormap, colorrange)
-    for (k, n) in enumerate(harmonics)
-        out = joinpath(outdir, @sprintf("%s_field_h%d_%s.png", fileprefix, n, run_tag))
+    fieldsets = fields_far_h === nothing ? (("total", fields_h),) :
+        (("total", fields_h), ("far", fields_far_h))
+    for (k, n) in enumerate(harmonics), (ftype, fh) in fieldsets
+        tag = ftype == "far" ? "fieldfar" : "field"
+        out = joinpath(outdir, @sprintf("%s_%s_h%d_%s.png", fileprefix, tag, n, run_tag))
         plot_harmonic_grid(
-            fields_h[k, :, :, :], x_grid, y_grid;
+            fh[k, :, :, :], x_grid, y_grid;
             w₀, labels = COMPLABELS, gridkw...,
-            title = @sprintf("%s (field) — %dω₁ (%.3f× fundamental)", title_prefix, n, freqs[hbins[k]] / (ω / 2π)),
+            title = @sprintf("%s (%s field) — %dω₁ (%.3f× fundamental)",
+                title_prefix, ftype, n, freqs[hbins[k]] / (ω / 2π)),
             outfile = out,
         )
         println("saved → $out")
-        push!(plots, out)
+        write_derived(
+            outdir; kind = "h$n", label = @sprintf("%dω₁ field maps", n), run_id = run_tag,
+            plot = basename(out), source = source_datafile, setup = Dict("field" => ftype),
+            description = "Field harmonic maps at $(n)ω₁ — each panel a component (Eˣ…Bᶻ). " *
+                "Toggle total (far 1/R + near 1/R²) vs far (radiation 1/R only); the far field is " *
+                "what the LPWA analytic formula is compared against in the lpwa-vs-numeric view.",
+        )
     end
 
     psfile = joinpath(outdir, "powspec_$(run_tag).png")
@@ -93,30 +109,6 @@ function write_harmonic_products(
     )
     println("saved → $psfile")
     push!(plots, psfile)
-
-    # Far-field maps → a `fieldFar` derived chip (harmonic selector), parallel to the total-field
-    # h<n> grids but for the radiation (1/R) field alone — the quantity the LPWA analytic formula
-    # is compared against. Only for a split cube (fields_far_h present); the builder renders new
-    # derived kinds generically.
-    if fields_far_h !== nothing
-        for (k, n) in enumerate(harmonics)
-            out = joinpath(outdir, @sprintf("%s_fieldfar_h%d_%s.png", fileprefix, n, run_tag))
-            plot_harmonic_grid(
-                fields_far_h[k, :, :, :], x_grid, y_grid;
-                w₀, labels = COMPLABELS, gridkw...,
-                title = @sprintf("%s (far field) — %dω₁ (%.3f× fundamental)", title_prefix, n, freqs[hbins[k]] / (ω / 2π)),
-                outfile = out,
-            )
-            println("saved → $out")
-            write_derived(
-                outdir; kind = "fieldFar", label = "$title_prefix far-field maps", run_id = run_tag,
-                plot = basename(out), source = source_datafile, setup = Dict("harmonic" => n),
-                description = "Far (radiation) field harmonic maps — the 1/R term alone, without " *
-                    "the near-field 1/R². Each panel is a component (Eˣ…Bᶻ). This is the field the " *
-                    "LPWA analytic formula is compared against in the lpwa-vs-numeric view.",
-            )
-        end
-    end
 
     # Phase view (phaseE/phaseB chips). Factored out so the cached-hmaps recovery path can
     # rebuild it without the cube.
