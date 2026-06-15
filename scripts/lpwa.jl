@@ -10,6 +10,8 @@ using Serialization
 using RunManifests
 include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with thomson + recovery)
 
+const T_START = time()   # wall-clock anchor for the [timing] section (mirrors thomson_scattering.jl)
+
 const ϕ₀ = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
 const OUTDIR = get(ENV, "EDM_OUTDIR", ".")
 mkpath(OUTDIR)   # fail-fast at the top, never after the (expensive) accumulation
@@ -151,11 +153,13 @@ function build_traj(ℜ₀)
     return ElectronDynamicsModels.TrajectoryInterpolant(itp, a_itp, x_idxs, u_idxs, K)
 end
 
+_t0_traj = time()
 trajs = Vector{Any}(undef, N)
 Threads.@threads for i in 1:N
     trajs[i] = build_traj(xi[i])
 end
 trajs = identity.(trajs)
+t_trajectories = time() - _t0_traj   # analytic build (cheap vs the ODE solve in thomson)
 
 # Screen parameters
 const Z = 2.0e5λ
@@ -181,11 +185,22 @@ screen = ObserverScreen(
 # :split → (; E, B, E_far, B_far), each (N_samples, 3, Nx, Ny) — total field (far 1/R + near
 # 1/R² on the device) AND the far field alone, so the harmonic reduction saves far-field-only
 # maps for the far-field comparison against the numeric run; :total → (; E, B) only (halves VRAM).
-@time fld = accumulate_field(
-    trajs, screen, GPUKernelRK4(), gpu_backend;
-    mode = Val(FIELD_MODE),
-    n_substeps = NSUBSTEPS, sync_per_electron = SYNC
-)
+# Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
+# them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
+ndev = gpu_device_count(gpu_backend)
+t_field = @elapsed fld = if ndev > 1
+    @info "sharding electrons across $ndev devices"
+    accumulate_field_sharded(
+        trajs, screen, GPUKernelRK4(), gpu_backend;
+        mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC
+    )
+else
+    accumulate_field(
+        trajs, screen, GPUKernelRK4(), gpu_backend;
+        mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC
+    )
+end
+@info "field accumulated" t_field ndev
 
 datafile = joinpath(OUTDIR, "field_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(RUN_TAG).jls")
 serialize(datafile, fld)
@@ -263,8 +278,16 @@ outputs = Dict{String, Any}(
     "plots" => basename.(plotfiles),
 )
 
+# Wall-clock phase timings → [timing] (dashboard renders total/trajectories/field, in seconds;
+# n_devices records the GPU sharding used for this run).
+timing = Dict{String, Any}(
+    "total" => time() - T_START,
+    "trajectories" => t_trajectories,
+    "field" => t_field,
+    "n_devices" => ndev,
+)
 manifestfile = write_solver_manifest(
     OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs,
-    extra = Dict("model" => model_params),
+    extra = Dict("model" => model_params, "timing" => timing),
 )
 println("manifest → $manifestfile")
