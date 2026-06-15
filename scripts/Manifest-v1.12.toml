@@ -800,9 +800,11 @@ deps = ["AcceleratedKernels", "Adapt", "DataInterpolations", "FFTW", "Hypergeome
 path = ".."
 uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
 version = "0.1.0-DEV"
-weakdeps = ["CairoMakie"]
+weakdeps = ["AMDGPU", "CUDA", "CairoMakie"]
 
     [deps.ElectronDynamicsModels.extensions]
+    EDMAMDGPUExt = "AMDGPU"
+    EDMCUDAExt = "CUDA"
     EDMPlotsExt = "CairoMakie"
 
 [[deps.EnumX]]
