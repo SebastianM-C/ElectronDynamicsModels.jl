@@ -45,7 +45,10 @@ export ReferenceFrame, Worldline,
     plot_harmonic_grid, plot_phase_grid, plot_phase_with_rings, plot_phase_polar, plot_power_spectrum, harmonic_colorrange, symmetric_colorrange,
     lienard_wiechert_F, lienard_wiechert_F_split, extract_EB, faraday, stress_energy,
     GPUCubicSpline, GPUKernelRK4, GPUKernelTsit5, recommended_n_substeps,
-    retarded_time_problem
+    retarded_time_problem,
+    gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_power, gpu_utilization,
+    gpu_memory_info, gpu_sm_count, gpu_max_threads_per_sm, thread_fill_occupancy,
+    accumulate_field_sharded
 
 include("base.jl")
 include("dynamics.jl")
@@ -61,6 +64,8 @@ include("field_evaluator.jl")
 include("gpu/interp.jl")
 include("gpu/accumulate.jl")
 include("gpu/kernel_rk4.jl")
+include("gpu_api.jl")   # vendor GPU API (device mgmt + telemetry); impls in ext/EDM{CUDA,AMDGPU}Ext.jl
+include("gpu/multidevice.jl")   # accumulate_field_sharded: electron sharding across GPUs
 
 # Experimental: batched/Tsit5 GPU path, under active development.
 module Experimental
