@@ -179,6 +179,7 @@ function run_spec_from_manifest(manifest::AbstractDict)
     env["EDM_NSUBSTEPS"] = string(cfg["n_substeps"])
     env["EDM_GPU_BACKEND"] = string(prov["gpu_backend"])
     env["EDM_SYNC_PER_ELECTRON"] = string(cfg["sync_per_electron"])
+    env["EDM_FIELD_MODE"] = string(get(cfg, "mode", "split"))   # default keeps pre-mode manifests replaying as before
     return (; commit, env)
 end
 

@@ -52,9 +52,11 @@ const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
+const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
+FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"total\", got \"$FIELD_MODE\"")
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
-@info "Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 SYNC OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
+@info "Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
 const T_START = time()   # wall-clock start → [timing].total in the manifest
 
 # Laser parameters
@@ -183,7 +185,7 @@ screen = ObserverScreen(
 # field (for the harmonic maps below); E_far, B_far the far (radiation) field alone.
 t_field = @elapsed fld = accumulate_field(
     trajs, screen, GPUKernelRK4(), gpu_backend;
-    n_substeps = NSUBSTEPS, sync_per_electron = SYNC
+    n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
 )
 @info "field accumulated" t_field
 
@@ -223,6 +225,7 @@ config = Dict{String, Any}(
     "N_samples" => N_samples,
     "samples_per_period" => samples_per_period,
     "n_substeps" => NSUBSTEPS,
+    "mode" => string(FIELD_MODE),      # :split → (E,B,E_far,B_far) | :total → (E,B); mirrors lpwa.jl
     "sync_per_electron" => SYNC,       # replay input: run_spec_from_manifest reads this
     "observable" => "field",          # distinguishes this run from the 4-potential (_A) runs
 )
