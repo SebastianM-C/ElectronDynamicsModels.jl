@@ -280,8 +280,8 @@ end
 #     ∝ 𝔞), uploaded via `to_gpu(traj; with_acceleration = true)`
 #   - it needs the speed of light `c`, since `Eⁱ = c·Fⁱ⁰` in `extract_EB`
 #   - it writes four buckets, not two.
-# Writes pixel-fastest into {E,B}_{rad,vel}_buf[ix, iy, j, k] for coalesced
-# accumulation; the caller permutes back to the public (N_samples, 3, Nx, Ny).
+# Writes pixel-fastest into {E,B}{1,2}_buf[ix, iy, j, k] (buffer 1 = far, 2 = near) for
+# coalesced accumulation; the caller permutes back to the public (N_samples, 3, Nx, Ny).
 function _gpu_unified_field_one_electron!(
         mode::Val, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
         x_grid, y_grid, z_screen,
@@ -341,8 +341,8 @@ function _gpu_unified_field_one_electron!(
             disp = r_obs - xμ[SA[2, 3, 4]]
             X = SVector{4}(norm(disp), disp[1], disp[2], disp[3])
             F_near, F_far = lienard_wiechert_F_split(X, uμ, 𝔞μ, K, c)
-            Eᵥ, Bᵥ = extract_EB(F_near, c)
-            Eᵣ, Bᵣ = extract_EB(F_far, c)
+            E_near, B_near = extract_EB(F_near, c)
+            E_far, B_far = extract_EB(F_far, c)
 
             # `:split` keeps far (buffer 1) and near (buffer 2) separate; `:total`
             # sums them into buffer 1 alone (E2/B2 alias E1/B1 in :total — never written here).
@@ -351,13 +351,13 @@ function _gpu_unified_field_one_electron!(
             # in `lienard_wiechert_F_split`, so the collapsed sum is the bit-faithful total.
             for j in 1:3
                 if mode === Val(:split)
-                    @inbounds E1_buf[ix, iy, j, k] += Eᵣ[j]
-                    @inbounds B1_buf[ix, iy, j, k] += Bᵣ[j]
-                    @inbounds E2_buf[ix, iy, j, k] += Eᵥ[j]
-                    @inbounds B2_buf[ix, iy, j, k] += Bᵥ[j]
+                    @inbounds E1_buf[ix, iy, j, k] += E_far[j]
+                    @inbounds B1_buf[ix, iy, j, k] += B_far[j]
+                    @inbounds E2_buf[ix, iy, j, k] += E_near[j]
+                    @inbounds B2_buf[ix, iy, j, k] += B_near[j]
                 else
-                    @inbounds E1_buf[ix, iy, j, k] += Eᵣ[j] + Eᵥ[j]
-                    @inbounds B1_buf[ix, iy, j, k] += Bᵣ[j] + Bᵥ[j]
+                    @inbounds E1_buf[ix, iy, j, k] += E_far[j] + E_near[j]
+                    @inbounds B1_buf[ix, iy, j, k] += B_far[j] + B_near[j]
                 end
             end
 
@@ -406,7 +406,7 @@ function accumulate_field(
     c = screen.c
 
     # Pixel-fastest accumulators for coalesced writes. `:split` keeps the far and near fields
-    # in separate buckets (4 buffers); `:total` collapses rad+vel in the kernel into a single
+    # in separate buckets (4 buffers); `:total` collapses far+near in the kernel into a single
     # (E, B) pair (2 buffers), halving device memory — the win that lets a bigger screen fit.
     # In `:total`, E2/B2 alias E1/B1 and are never written.
     E1_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
@@ -457,7 +457,7 @@ function accumulate_field(
         B = B_far .+ B_near
         return (; E, B, E_far, B_far)
     else
-        # Level-2: rad+vel already summed in the kernel → E1/B1 hold the total directly.
+        # Level-2: far+near already summed in the kernel → E1/B1 hold the total directly.
         E = permutedims(Array(E1_buf), (4, 3, 1, 2))
         B = permutedims(Array(B1_buf), (4, 3, 1, 2))
         return (; E, B)

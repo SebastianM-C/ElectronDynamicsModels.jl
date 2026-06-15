@@ -1,3 +1,14 @@
+# Transverse polarization amplitudes (ξx, ξy), |ξ| = 1, for a polarization symbol — EDM's named
+# layer over the raw (ξx, ξy) that LaserTypes takes. `:circular` (≡ `:circular_plus`) is
+# ξy = +im/√2; `:circular_minus` is the opposite circular handedness (ξy = −im/√2) — same |ξ|,
+# flipped spin. Shared by GaussLaser + LaguerreGaussLaser so the two can't drift.
+function _polarization_amplitudes(polarization::Symbol)
+    polarization === :linear && return (1.0 + 0im, 0.0 + 0im)
+    (polarization === :circular || polarization === :circular_plus) && return complex.((1 / √2, im / √2))
+    polarization === :circular_minus && return complex.((1 / √2, -im / √2))
+    error("polarization $polarization not supported (use :linear, :circular[_plus], :circular_minus)")
+end
+
 """
 Gaussian laser pulse electromagnetic field.
 
@@ -52,14 +63,7 @@ Parameters:
     end
 
     # Fixed parameters
-    if polarization == :linear
-        ξx = 1.0 + 0im
-        ξy = 0 + 0im
-    elseif polarization == :circular
-        ξx, ξy = (1 / √2, im / √2) .|> complex
-    else
-        error("polarization $polarization not supported.")
-    end
+    ξx, ξy = _polarization_amplitudes(polarization)
 
     ϕ₀ = 0
 
@@ -453,14 +457,7 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         ϕ₀ = initial_phase, [description = "Initial carrier phase"]
     end
 
-    if polarization == :linear
-        ξx = 1.0 + 0im
-        ξy = 0 + 0im
-    elseif polarization == :circular
-        ξx, ξy = (1 / √2, im / √2) .|> complex
-    else
-        error("polarization $polarization not supported.")
-    end
+    ξx, ξy = _polarization_amplitudes(polarization)
 
     # Derived variables
     @variables begin

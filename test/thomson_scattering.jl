@@ -103,9 +103,9 @@ using FFTW
     end
 end
 
-@testset "Liénard–Wiechert radiation/velocity split" begin
-    # `lienard_wiechert_F_split` regroups eq:lw by power of R into F_vel (1/R²) and
-    # F_rad (1/R). Validate (a) it sums to the original grouped closed form, (b) the
+@testset "Liénard–Wiechert near/far split" begin
+    # `lienard_wiechert_F_split` regroups eq:lw by power of R into F_near (1/R²) and
+    # F_far (1/R). Validate (a) it sums to the original grouped closed form, (b) the
     # R-scaling of each piece, and (c) that the split is better conditioned than the
     # cancellation-prone (c² − X𝔞) extraction at small a₀.
 
@@ -126,20 +126,20 @@ end
     n̂ = SVector{3}(0.6, 0.0, 0.8)                       # unit line of sight
     X = SVector{4}(R, R * n̂[1], R * n̂[2], R * n̂[3])     # Xᵘ = (R, R n̂)
 
-    @testset "F_vel + F_rad reproduces the grouped form" begin
+    @testset "F_near + F_far reproduces the grouped form" begin
         𝔞 = SVector{4}(0.0, 0.3, -0.2, 0.1)             # moderate 4-acceleration
-        F_vel, F_rad = lienard_wiechert_F_split(X, u, 𝔞, K, cc)
-        @test F_vel + F_rad ≈ lw_grouped(X, u, 𝔞, K, cc) rtol = 1.0e-12
+        F_near, F_far = lienard_wiechert_F_split(X, u, 𝔞, K, cc)
+        @test F_near + F_far ≈ lw_grouped(X, u, 𝔞, K, cc) rtol = 1.0e-12
         @test lienard_wiechert_F(X, u, 𝔞, K, cc) ≈ lw_grouped(X, u, 𝔞, K, cc) rtol = 1.0e-12
     end
 
-    @testset "F_rad ∝ 1/R and F_vel ∝ 1/R²" begin
+    @testset "F_far ∝ 1/R and F_near ∝ 1/R²" begin
         𝔞 = SVector{4}(0.0, 0.3, -0.2, 0.1)
         λ = 8.0                                          # observer λ× farther along n̂
-        Fv1, Fr1 = lienard_wiechert_F_split(X, u, 𝔞, K, cc)
-        Fv2, Fr2 = lienard_wiechert_F_split(λ .* X, u, 𝔞, K, cc)
-        @test Fv2 ≈ Fv1 ./ λ^2 rtol = 1.0e-10
-        @test Fr2 ≈ Fr1 ./ λ rtol = 1.0e-10
+        Fn1, Ff1 = lienard_wiechert_F_split(X, u, 𝔞, K, cc)
+        Fn2, Ff2 = lienard_wiechert_F_split(λ .* X, u, 𝔞, K, cc)
+        @test Fn2 ≈ Fn1 ./ λ^2 rtol = 1.0e-10
+        @test Ff2 ≈ Ff1 ./ λ rtol = 1.0e-10
     end
 
     @testset "split avoids the (c² − X𝔞) cancellation at small a₀" begin
@@ -149,13 +149,13 @@ end
         ε = 1.0e-10
         𝔞 = SVector{4}(0.0, 0.3, -0.2, 0.1) .* ε
         # BigFloat ground truth for the radiation tensor (clean split formula).
-        _, Fr_big = lienard_wiechert_F_split(BigFloat.(X), BigFloat.(u), BigFloat.(𝔞), BigFloat(K), BigFloat(cc))
-        Fr_big64 = Float64.(Fr_big)
-        # Our Float64 split, vs the naive grouped-minus-velocity extraction.
-        Fv64, Fr_split = lienard_wiechert_F_split(X, u, 𝔞, K, cc)
-        Fr_naive = lw_grouped(X, u, 𝔞, K, cc) - Fv64
-        err_split = maximum(abs, Fr_split - Fr_big64)
-        err_naive = maximum(abs, Fr_naive - Fr_big64)
+        _, Ff_big = lienard_wiechert_F_split(BigFloat.(X), BigFloat.(u), BigFloat.(𝔞), BigFloat(K), BigFloat(cc))
+        Ff_big64 = Float64.(Ff_big)
+        # Our Float64 split, vs the naive grouped-minus-near extraction.
+        Fn64, Ff_split = lienard_wiechert_F_split(X, u, 𝔞, K, cc)
+        Ff_naive = lw_grouped(X, u, 𝔞, K, cc) - Fn64
+        err_split = maximum(abs, Ff_split - Ff_big64)
+        err_naive = maximum(abs, Ff_naive - Ff_big64)
         @test err_split < err_naive                      # better conditioned
         @test err_naive > 1.0e3 * err_split              # by orders of magnitude at this a₀
     end

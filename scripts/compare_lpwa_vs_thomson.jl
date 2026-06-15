@@ -10,7 +10,7 @@
 # directly; for a recovered Thomson run, drop `hmaps_<run_id>.jls` beside its toml).
 
 using TOML, Serialization, LinearAlgebra, Printf
-using RunManifests: check_schema_version, write_derived
+using RunManifests: check_schema_version, write_derived, write_comparison
 using ElectronDynamicsModels: ring_pixels, phase_winding_fit
 using CairoMakie
 include(joinpath(@__DIR__, "plot_theme.jl"))   # LaTeX (Computer Modern) fonts
@@ -51,9 +51,21 @@ function check_compatible(a, b)
     # pre-dedup Thomson run keeps Nx/N/… in [setup] while the new LPWA [setup] has only the
     # window+depth. Compare the physical axes both manifests share.
     setup_params = ("τi", "τf", "Rmax", "Z")
+    # Circular handedness is precisely what the analytic LPWA (−i) and the numeric `:circular`
+    # (+i) convention differ on — comparing across it IS this tool's purpose. So for `pol` require
+    # the same polarization *type* (circular vs linear), not the exact handedness; warn (don't
+    # error) when only the handedness differs so it stays visible.
+    pol_family(v) = startswith(string(v), "circular") ? "circular" : string(v)
     for (sec, keys) in (("laser", laser_params), ("config", config_params), ("setup", setup_params))
         for k in keys
-            a[sec][k] == b[sec][k] || error("[$sec].$k differs: $(a[sec][k]) vs $(b[sec][k])")
+            if sec == "laser" && k == "pol"
+                pol_family(a[sec][k]) == pol_family(b[sec][k]) ||
+                    error("[laser].pol type differs: $(a[sec][k]) vs $(b[sec][k])")
+                a[sec][k] == b[sec][k] ||
+                    @warn "comparing across circular handedness" lpwa = a[sec][k] numeric = b[sec][k]
+            else
+                a[sec][k] == b[sec][k] || error("[$sec].$k differs: $(a[sec][k]) vs $(b[sec][k])")
+            end
         end
     end
     return nothing
@@ -83,42 +95,64 @@ abserr(a, b) = norm(a .- b)
 
 xw, yw = collect(L.x_grid) ./ L.w₀, collect(L.y_grid) ./ L.w₀
 
-for (k, n) in enumerate(L.harmonics)
-    fig = Figure(size = (1080, 680))
-    Label(fig[0, 1:3], @sprintf("|F̃_LPWA − F̃_numeric| at %dω₁", n); fontsize = 18)
-    errs = Float64[]
-    for comp in 1:6
-        a = L.fields_h[k, comp, :, :]
-        b = T.fields_h[k, comp, :, :]
-        d = abserr(a, b)
-        push!(errs, d)
-        nrm = norm(b)
-        relL2 = nrm == 0 ? 0.0 : d / nrm   # ‖Δ‖₂/‖F_num‖₂ — dimensionless gap (≈√2 for the transverse fundamental)
-        @printf("h=%dω₁  %-3s   |Δ|₂ = %.4e   (‖ref‖₂ = %.4e,  ‖Δ‖/‖F‖ = %.3f)\n", n, complabels[comp], d, nrm, relL2)
-        r, c = fldmod1(comp, 3)
-        # Plot |Δ| as a fraction of the numeric field's own peak so the colorbar is dimensionless
-        max_b = maximum(abs, b)
-        scale = iszero(max_b) ? 1.0 : max_b
-        ax = Axis(
-            fig[r, c][1, 1]; title = @sprintf("%s   ‖Δ‖/‖F‖=%.2f", complabels[comp], relL2),
-            xlabel = "x/w₀", ylabel = "y/w₀", aspect = DataAspect()
+# Per-harmonic |Δ| comparison of a 6-component map set, each panel normalized to that
+# component's own peak (dimensionless colorbar). One parametrized chip (harmonic selector)
+# bound to BOTH parents. Called for the total field and — when both runs saved the split —
+# for the far field alone (LPWA is a far-field formula, so far-vs-far is the rigorous test).
+function abs_comparison(Lmaps, Tmaps; kind, label, file_tag, title)
+    for (k, n) in enumerate(L.harmonics)
+        fig = Figure(size = (1080, 680))
+        Label(fig[0, 1:3], @sprintf("%s at %dω₁", title, n); fontsize = 18)
+        errs = Float64[]
+        for comp in 1:6
+            a = Lmaps[k, comp, :, :]
+            b = Tmaps[k, comp, :, :]
+            d = abserr(a, b)
+            push!(errs, d)
+            nrm = norm(b)
+            relL2 = nrm == 0 ? 0.0 : d / nrm   # ‖Δ‖₂/‖F_num‖₂ — dimensionless gap (≈√2 for the transverse fundamental)
+            @printf("h=%dω₁  %-3s   |Δ|₂ = %.4e   (‖ref‖₂ = %.4e,  ‖Δ‖/‖F‖ = %.3f)\n", n, complabels[comp], d, nrm, relL2)
+            r, c = fldmod1(comp, 3)
+            # Plot |Δ| as a fraction of the numeric field's own peak so the colorbar is dimensionless
+            max_b = maximum(abs, b)
+            scale = iszero(max_b) ? 1.0 : max_b
+            ax = Axis(
+                fig[r, c][1, 1]; title = @sprintf("%s   ‖Δ‖/‖F‖=%.2f", complabels[comp], relL2),
+                xlabel = "x/w₀", ylabel = "y/w₀", aspect = DataAspect()
+            )
+            hm = heatmap!(ax, xw, yw, abs.(a .- b) ./ scale; colormap = :inferno)
+            Colorbar(fig[r, c][1, 2], hm; label = "|Δ| / peak|F_num|")
+        end
+        out = joinpath(OUTDIR, @sprintf("compare_%s_h%d_%s-%s.png", file_tag, n, first(lpwa_id, 8), first(thom_id, 8)))
+        save(out, fig)
+        println("saved → ", out)
+        # Provenance: bind to BOTH source runs (depends_on = [LPWA, Thomson]); the builder attaches
+        # it under each. setup.harmonic makes it ONE parametrized chip with a harmonic selector.
+        write_derived(
+            OUTDIR; kind, label,
+            run_id = [lpwa_id, thom_id], plot = basename(out), setup = Dict("harmonic" => n),
+            description = "$(title)₂ at $(n)ω₁ (a0=$(La["laser"]["a0"])): " *
+                join((@sprintf("%s=%.2e", complabels[c], errs[c]) for c in 1:6), ", "),
         )
-        hm = heatmap!(ax, xw, yw, abs.(a .- b) ./ scale; colormap = :inferno)
-        Colorbar(fig[r, c][1, 2], hm; label = "|Δ| / peak|F_num|")
+        println("derived → $kind h$n  (parents $lpwa_id, $thom_id)")
     end
-    out = joinpath(OUTDIR, @sprintf("compare_abs_h%d_%s-%s.png", n, first(lpwa_id, 8), first(thom_id, 8)))
-    save(out, fig)
-    println("saved → ", out)
-    # Provenance: bind this comparison to BOTH source runs (depends_on = [LPWA, Thomson]); the
-    # builder attaches it under each, with the per-component |Δ|₂ in the description. setup.harmonic
-    # makes it ONE parametrized "comparison" chip with a harmonic selector.
-    write_derived(
-        OUTDIR; kind = "comparison", label = "LPWA vs numeric |ΔF|",
-        run_id = [lpwa_id, thom_id], plot = basename(out), setup = Dict("harmonic" => n),
-        description = "|F̃_LPWA − F̃_numeric|₂ at $(n)ω₁ (a0=$(La["laser"]["a0"])): " *
-            join((@sprintf("%s=%.2e", complabels[c], errs[c]) for c in 1:6), ", "),
-    )
-    println("derived → comparison h$n  (parents $lpwa_id, $thom_id)")
+end
+
+# Total field (always present).
+abs_comparison(L.fields_h, T.fields_h; kind = "comparison", label = "LPWA vs numeric |ΔF|",
+    file_tag = "abs", title = "|F̃_LPWA − F̃_numeric|")
+
+# Far field alone, only when BOTH runs saved the split — older total-only hmaps have no
+# `fields_far_h` field at all, so guard with `hasproperty` before `!== nothing`.
+Lfar = hasproperty(L, :fields_far_h) ? L.fields_far_h : nothing
+Tfar = hasproperty(T, :fields_far_h) ? T.fields_far_h : nothing
+if Lfar !== nothing && Tfar !== nothing
+    @assert size(Lfar) == size(Tfar) "far-field map shapes differ"
+    abs_comparison(Lfar, Tfar; kind = "comparison_far", label = "LPWA vs numeric |ΔF| (far field)",
+        file_tag = "abs_far", title = "|F̃ᶠᵃʳ_LPWA − F̃ᶠᵃʳ_numeric|")
+else
+    println("far-field maps absent on one/both runs — skipping far comparison " *
+        "(LPWA: $(Lfar === nothing ? "none" : "present"), numeric: $(Tfar === nothing ? "none" : "present"))")
 end
 
 # ── Eᶻ physical-field comparison (the Re part the heatmaps plot) ──
@@ -251,4 +285,26 @@ let
         )
         println("derived → phase_offset h$n  (parents $lpwa_id, $thom_id)")
     end
+end
+
+# ── Comparison declaration: the first-class A-vs-B relationship the dashboard reads. ──
+# The write_derived calls above bind each diff PLOT to BOTH runs; this declares the RELATIONSHIP
+# between the two SWEEPS — naming each side's campaign dir (the basename the dashboard pools sweeps
+# by) so the dashboard groups them in its `comparisons` registry and matches them cell-by-cell.
+# `script` is recorded per side so the two sides stay distinguishable even if they share a dir.
+# `along` is omitted: a single (lpwa, thomson) a0-pair can't see what the campaign sweeps, so the
+# dashboard infers the sides' common axis. Idempotent — every a0-pair re-emits the SAME declaration
+# (keyed on the two campaign dirs), so it's written once per sweep-pair, not once per pair.
+let
+    script_of(m) = basename(get(get(m, "provenance", Dict()), "script", ""))
+    lpwa_dir = basename(dirname(abspath(lpwa_toml)))
+    thom_dir = basename(dirname(abspath(thom_toml)))
+    out = write_comparison(
+        OUTDIR; label = "LPWA vs numeric", differs = "method",
+        sides = [
+            (label = "analytical (LPWA)", dir = lpwa_dir, script = script_of(La)),
+            (label = "numerical (Thomson)", dir = thom_dir, script = script_of(Ta)),
+        ],
+    )
+    println("comparison → ", basename(out), "  ($lpwa_dir  vs  $thom_dir)")
 end

@@ -99,3 +99,46 @@ end
     @test m3["plot_params"]["radii"] == [0.2, 0.4, 0.6]
     @test occursin("_1_", basename(p3))   # suffix from setup (harmonic=1) only, not plot_params
 end
+
+@testset "write_comparison — declaration sidecar" begin
+    dir = mktempdir()
+    # the lpwa-vs-thomson case: two campaign dirs, each with its disambiguating script.
+    path = write_comparison(
+        dir; label = "LPWA vs numeric", differs = "method",
+        sides = [
+            (label = "analytical (LPWA)", dir = "lpwa_campaign_899970", script = "lpwa.jl"),
+            (label = "numerical (Thomson)", dir = "field_campaign_898572", script = "thomson_scattering.jl"),
+        ],
+    )
+    m = TOML.parsefile(path)
+    @test m["schema_version"] == MANIFEST_SCHEMA_VERSION
+    c = m["comparison"]
+    @test c["label"] == "LPWA vs numeric" && c["differs"] == "method"
+    @test !haskey(c, "along")                       # omitted ⇒ the dashboard infers the shared axis
+    @test length(c["side"]) == 2
+    @test c["side"][1]["dir"] == "lpwa_campaign_899970" && c["side"][1]["script"] == "lpwa.jl"
+    @test c["side"][2]["label"] == "numerical (Thomson)"
+    # deterministic filename on the side dirs ⇒ idempotent across an a0 sweep (one file, not N).
+    @test basename(path) == "comparison_lpwa_campaign_899970__field_campaign_898572.toml"
+    path2 = write_comparison(
+        dir; label = "LPWA vs numeric", differs = "method",
+        sides = [
+            (label = "analytical (LPWA)", dir = "lpwa_campaign_899970", script = "lpwa.jl"),
+            (label = "numerical (Thomson)", dir = "field_campaign_898572", script = "thomson_scattering.jl"),
+        ],
+    )
+    @test path2 == path
+    @test count(f -> startswith(f, "comparison_"), readdir(dir)) == 1
+
+    # tuple sides, explicit `along`, a third side (A vs B vs C), and an optional/absent script.
+    p3 = write_comparison(dir; label = "three-way", along = "a0",
+        sides = [("a", "dirA"), ("b", "dirB", "x.jl"), ("c", "dirC")])
+    m3 = TOML.parsefile(p3)
+    @test m3["comparison"]["along"] == "a0"
+    @test length(m3["comparison"]["side"]) == 3
+    @test !haskey(m3["comparison"]["side"][1], "script")   # tuple without a script ⇒ key omitted
+    @test m3["comparison"]["side"][2]["script"] == "x.jl"
+
+    # fewer than two sides is a hard error (a comparison needs something to compare).
+    @test_throws ErrorException write_comparison(dir; label = "x", sides = [("a", "dirA")])
+end

@@ -346,6 +346,38 @@ end
     @test all(I -> isapprox(I, intensities[1], rtol = 1.0e-10), intensities)
 end
 
+@testset "GaussLaser :circular_minus (opposite handedness)" begin
+    # Amplitude contract: same |ξ|, ξy sign flipped; :circular_plus aliases :circular; bad → error.
+    ξp = ElectronDynamicsModels._polarization_amplitudes(:circular)
+    @test ElectronDynamicsModels._polarization_amplitudes(:circular_plus) == ξp
+    ξm = ElectronDynamicsModels._polarization_amplitudes(:circular_minus)
+    @test ξm[1] == ξp[1] && ξm[2] == -ξp[2]
+    @test_throws ErrorException ElectronDynamicsModels._polarization_amplitudes(:bogus)
+
+    # End-to-end: vs :circular, :circular_minus flips Eʸ and leaves Eˣ unchanged at a generic point.
+    c = 137.03599908330932
+    ω = 0.057
+    λ_val = 2π * c / ω
+    w₀_val = 75 * λ_val
+    x, y = 0.07 * w₀_val, 0.03 * w₀_val
+
+    @named world_p = Worldline(:τ, :atomic)
+    @named world_m = Worldline(:τ, :atomic)
+    @named laser_p = GaussLaser(; wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val, polarization = :circular, world = world_p)
+    @named laser_m = GaussLaser(; wavelength = λ_val, a0 = 1.0, beam_waist = w₀_val, polarization = :circular_minus, world = world_m)
+    fe_p = FieldEvaluator(laser_p)
+    fe_m = FieldEvaluator(laser_m)
+    # Evaluate ⅛-period after the pulse centre so BOTH Eˣ and Eʸ are sizable — at t₀ the carrier
+    # phase parks Eʸ on a node, which would make the y-flip check vacuous.
+    tp = fe_p.prob.ps[fe_p.prob.f.sys.laser_p.t₀] + π / (4ω)
+    tm = fe_m.prob.ps[fe_m.prob.f.sys.laser_m.t₀] + π / (4ω)
+    Ep = fe_p([tp, x, y, 0.0]).E
+    Em = fe_m([tm, x, y, 0.0]).E
+    @test abs(Ep[1]) > 1 && abs(Ep[2]) > 1          # both components non-trivial here
+    @test isapprox(Em[1], Ep[1]; rtol = 1.0e-10)    # Eˣ unchanged
+    @test isapprox(Em[2], -Ep[2]; rtol = 1.0e-10)   # Eʸ flipped → opposite handedness
+end
+
 @testset "GaussLaser derived parameters" begin
     # Verify that all derived parameters are computed correctly from the inputs
     c = 137.03599908330932

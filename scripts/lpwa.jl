@@ -20,6 +20,8 @@ const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
+const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
+FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"total\", got \"$FIELD_MODE\"")
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "cuda"))
@@ -175,13 +177,13 @@ screen = ObserverScreen(
     c,
 )
 
-# Exact field via the split Liénard–Wiechert GPU kernel.
-# mode = Val(:total) returns just (; E, B), each (N_samples, 3, Nx, Ny) — the total
-# field, summed from the far (1/R) and near (1/R²) pieces on the device.
-# (Switch to Val(:split) to also recover E_far, B_far for far-field-only diagnostics.)
+# Exact field via the split Liénard–Wiechert GPU kernel. EDM_FIELD_MODE selects the output:
+# :split → (; E, B, E_far, B_far), each (N_samples, 3, Nx, Ny) — total field (far 1/R + near
+# 1/R² on the device) AND the far field alone, so the harmonic reduction saves far-field-only
+# maps for the far-field comparison against the numeric run; :total → (; E, B) only (halves VRAM).
 @time fld = accumulate_field(
     trajs, screen, GPUKernelRK4(), gpu_backend;
-    mode = Val(:total),
+    mode = Val(FIELD_MODE),
     n_substeps = NSUBSTEPS, sync_per_electron = SYNC
 )
 
@@ -217,7 +219,7 @@ config = Dict{String, Any}(
     "samples_per_period" => samples_per_period,
     "n_substeps" => NSUBSTEPS,
     "sync_per_electron" => SYNC,
-    "mode" => "total",
+    "mode" => string(FIELD_MODE),
     "observable" => "field",
     "trajectory_source" => "lpwa_analytic",   # distinguishes from the ODE-solved field runs
 )
