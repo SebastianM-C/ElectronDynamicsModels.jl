@@ -199,7 +199,8 @@ for n in common_harmonics
     ReL = real.(L.fields_h[kL, EZ, :, :])
     ReT = real.(T.fields_h[kT, EZ, :, :])
 
-    # (a) ratio map: white where |Re(Eᶻ_T)| is below the node floor (NaN) or the ratio ≈ 0
+    # (a) ratio map: white (NaN) at the numeric Eᶻ's nodal lines — |Re(Eᶻ_T)| below 0.1% of its
+    # screen peak — where the near-zero denominator would make the ratio blow up / be noise.
     floorT = 1.0e-3 * maximum(abs, ReT)
     ratio = map((l, t) -> abs(t) < floorT ? NaN : l / t, ReL, ReT)
     figr = Figure(size = (560, 520))
@@ -218,7 +219,9 @@ for n in common_harmonics
     write_derived(
         OUTDIR; kind = "ez_ratio", label = "Eᶻ ratio LPWA/numeric",
         run_id = [lpwa_id, thom_id], plot = basename(rout), setup = Dict("harmonic" => n),
-        description = "Re(Eᶻ_LPWA)/Re(Eᶻ_numeric) over the screen at $(n)ω₁ (a0=$(La["laser"]["a0"])); white = |Re(Eᶻ_numeric)| below the node floor."
+        description = "Re(Eᶻ_LPWA)/Re(Eᶻ_numeric) over the screen at $(n)ω₁ (a0=$(La["laser"]["a0"])). " *
+            "White masks pixels where |Re(Eᶻ_numeric)| falls below 0.1% of its screen peak — the Eᶻ nodal " *
+            "lines, where the near-zero denominator makes the ratio undefined / noise-dominated."
     )
 
     # (b) overlay along rays: LPWA (solid, semi-transparent so the numeric dashed line shows
