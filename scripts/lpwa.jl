@@ -287,16 +287,17 @@ if !SKIP_POST
     outputs["plots"] = basename.(plotfiles)
 end
 
-# Wall-clock phase timings → [timing] (dashboard renders total/trajectories/field, in seconds;
-# n_devices records the GPU sharding used for this run).
+# Wall-clock phase timings → [timing] (dashboard renders total/trajectories/field, in seconds).
 timing = Dict{String, Any}(
     "total" => time() - T_START,
     "trajectories" => t_trajectories,
     "field" => t_field,
-    "n_devices" => ndev,
 )
+# Sharding → [sharding] (axis → partition count). Flat + generic so future axes (e.g. a Z-split
+# 3D screen) slot in with no schema change. NOT in [timing] — a device count is not a duration.
+sharding = Dict{String, Any}("electrons" => ndev)
 manifestfile = write_solver_manifest(
     OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs,
-    extra = Dict("model" => model_params, "timing" => timing),
+    extra = Dict("model" => model_params, "timing" => timing, "sharding" => sharding),
 )
 println("manifest → $manifestfile")
