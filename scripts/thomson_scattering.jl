@@ -183,11 +183,22 @@ screen = ObserverScreen(
 # Exact field via the split Liénard–Wiechert GPU kernel.
 # Returns (; E, B, E_far, B_far), each (N_samples, 3, Nx, Ny): E, B are the total
 # field (for the harmonic maps below); E_far, B_far the far (radiation) field alone.
-t_field = @elapsed fld = accumulate_field(
-    trajs, screen, GPUKernelRK4(), gpu_backend;
-    n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
-)
-@info "field accumulated" t_field
+# Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
+# them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
+ndev = gpu_device_count(gpu_backend)
+t_field = @elapsed fld = if ndev > 1
+    @info "sharding electrons across $ndev devices"
+    accumulate_field_sharded(
+        trajs, screen, GPUKernelRK4(), gpu_backend;
+        n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+    )
+else
+    accumulate_field(
+        trajs, screen, GPUKernelRK4(), gpu_backend;
+        n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+    )
+end
+@info "field accumulated" t_field ndev
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default
@@ -261,6 +272,7 @@ timing = Dict{String, Any}(
     "total" => time() - T_START,
     "trajectories" => t_trajectories,
     "field" => t_field,
+    "n_devices" => ndev,
 )
 manifestfile = write_solver_manifest(
     OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs,
