@@ -230,11 +230,22 @@ function recover_from_manifest(toml)
         # A split cube carries E_far/B_far — keep them so write_harmonic_products also emits the
         # far-field maps the φ0/LPWA comparison needs; a total cube has only E/B.
         fld = hasproperty(raw, :E_far) ? raw : (; E = raw.E, B = raw.B)
-        return write_harmonic_products(
+        hprod = write_harmonic_products(
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
             source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
         )
+        # Close the loop the inline (non-SKIP_POST) path already does: a deferred/async reduction
+        # must ALSO declare what it produced, so [outputs] is complete for resolve_hmaps + the
+        # dashboard hmaps download. `sorted` keeps [timing] last (the ops timing-append relies on it).
+        outs = m["outputs"]
+        if get(outs, "harmonic_maps", nothing) === nothing
+            outs["harmonic_maps"] = basename(hprod.hmapsfile)
+            outs["plots"] = basename.(hprod.plots)
+            open(io -> TOML.print(io, m; sorted = true), toml, "w")
+            println("declared harmonic_maps + plots in $(basename(toml))")
+        end
+        return hprod
     end
 
     # Cube absent (e.g. a published run that shipped only the reduced hmaps): rebuild just the
