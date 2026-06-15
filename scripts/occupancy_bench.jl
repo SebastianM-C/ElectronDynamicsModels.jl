@@ -38,6 +38,8 @@ const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
 const SAMPLE_DT = parse(Float64, get(ENV, "EDM_SAMPLE_DT", "0.1"))
+const KERNEL = lowercase(get(ENV, "EDM_KERNEL", "batched"))   # "batched" (grouped) | "rk4" (streaming)
+const NGROUPS = parse(Int, get(ENV, "EDM_NGROUPS", "1"))       # private-buffer groups (batched only)
 
 # ── electron trajectories + observer screen (mirrors thomson_scattering.jl) ──
 ω = 0.057
@@ -93,31 +95,46 @@ screen = ObserverScreen(LinRange(-25w₀, 25w₀, NX), LinRange(-25w₀, 25w₀,
 
 # ── static thread-fill occupancy (no run needed; just launch size ÷ device capacity) ──
 cap = gpu_sm_count(backend) * gpu_max_threads_per_sm(backend)
-nthr = NX * NX
+nthr = KERNEL == "batched" ? NX * NX * NGROUPS : NX * NX
 @printf("device: %s  (%d SMs × %d thr = %d capacity)\n",
     gpu_name(backend), gpu_sm_count(backend), gpu_max_threads_per_sm(backend), cap)
-@printf("thread-fill occupancy @ NX=%d (%d threads/electron) = %.3f  (>1 ⇒ waves)\n",
-    NX, nthr, thread_fill_occupancy(backend, nthr))
+@printf("kernel=%s  n_groups=%d\n", KERNEL, NGROUPS)
+@printf("thread-fill occupancy @ NX=%d (%d threads = %d px × %d groups) = %.3f  (>1 ⇒ waves)\n",
+    NX, nthr, NX * NX, KERNEL == "batched" ? NGROUPS : 1, thread_fill_occupancy(backend, nthr))
+
+# Predicted split-mode device footprint vs the heuristic's own recommendation (the VRAM-fit question).
+let total = gpu_memory_info(backend).total
+    per_group = 4 * NX * NX * 3 * NSAMPLES * 8          # split = 4 buffers (E1,B1,E2,B2)
+    gdef = default_n_groups(screen, total; mode = Val(:split))
+    @printf("split buffers: %.1f GB/group → %.1f GB for %d group(s)  (device %.1f GB; 0.9-headroom default_n_groups=%d)\n",
+        per_group / 2^30, NGROUPS * per_group / 2^30, NGROUPS, total / 2^30, gdef)
+end
 
 # ── telemetry sampler on a spawned OS thread (power/util DURING the run) ──
 Threads.nthreads() >= 2 ||
     @warn "only $(Threads.nthreads()) Julia thread — the sampler will starve; rerun with -t2"
 const running = Threads.Atomic{Bool}(true)
-const samples = NTuple{4, Float64}[]   # (t, power_W, compute_util, mem_util); single writer (this task)
+const samples = NTuple{5, Float64}[]   # (t, power_W, compute_util, mem_util, vram_used_B); single writer
 t0 = time()
 sampler = Threads.@spawn begin
     while running[]
         u = gpu_utilization(backend)
-        push!(samples, (time() - t0, gpu_power(backend), Float64(u.compute), Float64(u.memory)))
+        m = gpu_memory_info(backend)
+        push!(samples, (time() - t0, gpu_power(backend), Float64(u.compute), Float64(u.memory), Float64(m.used)))
         sleep(SAMPLE_DT)
     end
 end
 
 # ── the measured run (split mode, like prod; no serialization — bench only) ──
 GC.gc()
-println("accumulating field ($NELEC electrons, NX=$NX, Ns=$NSAMPLES, split) …")
-t_field = @elapsed fld = accumulate_field(
-    trajs, screen, GPUKernelRK4(), backend; n_substeps = NSUBSTEPS, mode = Val(:split), sync_per_electron = false)
+println("accumulating field ($NELEC electrons, NX=$NX, Ns=$NSAMPLES, split, kernel=$KERNEL, n_groups=$NGROUPS) …")
+t_field = @elapsed fld = if KERNEL == "batched"
+    accumulate_field(trajs, screen, GPUKernelBatched(), backend;
+        n_groups = NGROUPS, n_substeps = NSUBSTEPS, mode = Val(:split))
+else
+    accumulate_field(trajs, screen, GPUKernelRK4(), backend;
+        n_substeps = NSUBSTEPS, mode = Val(:split), sync_per_electron = false)
+end
 running[] = false
 wait(sampler)
 
@@ -125,12 +142,21 @@ wait(sampler)
 pw = Float64[s[2] for s in samples]
 cu = Float64[s[3] for s in samples]
 mu = Float64[s[4] for s in samples]
+vr = Float64[s[5] for s in samples]
 @printf("\nrun: %d electrons in %.1f s  (%d telemetry samples @ %.2gs)\n", NELEC, t_field, length(samples), SAMPLE_DT)
 if !isempty(pw)
     @printf("power (W):     mean %.1f   peak %.1f   min %.1f\n", mean(pw), maximum(pw), minimum(pw))
     @printf("compute util:  mean %.2f   peak %.2f\n", mean(cu), maximum(cu))
     @printf("memory util:   mean %.2f   peak %.2f\n", mean(mu), maximum(mu))
 end
-let m = gpu_memory_info(backend)
-    @printf("VRAM: used %.1f / %.1f GB\n", m.used / 2^30, m.total / 2^30)
+# Kernel-active window (compute util above noise) — isolates the kernel from the host pullback,
+# which is identical for any n_groups (groups collapse on-device before the ~92 GB pull-back).
+let act = Float64[s[1] for s in samples if s[3] > 0.05]
+    isempty(act) || @printf("GPU-active window: %.1f–%.1f s  (≈%.1f s kernel; @elapsed incl. host pullback = %.1f s)\n",
+        minimum(act), maximum(act), maximum(act) - minimum(act), t_field)
+end
+let total = gpu_memory_info(backend).total
+    peak = isempty(vr) ? gpu_memory_info(backend).used : maximum(vr)
+    @printf("VRAM during run: peak %.1f / %.1f GB  (%.0f%%) — split %d-group fit check\n",
+        peak / 2^30, total / 2^30, 100 * peak / total, NGROUPS)
 end
