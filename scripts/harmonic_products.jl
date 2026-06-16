@@ -21,8 +21,65 @@ const COMPLABELS = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
 const C_LIGHT = 137.03599908330932
 
 """
+    harmonic_field_style() -> (; colormap, colorrange)
+
+Panel style for the field-harmonic heat-maps, splatted into [`plot_harmonic_grid`]. Those panels
+show the **real part** of each component (signed, oscillatory data), so the choice here sets how
+the sign structure reads. Returns a `NamedTuple` with:
+  * `colormap`  — a colorscheme name/object;
+  * `colorrange` — a `data -> (lo, hi)` function applied **per panel** (`symmetric_colorrange` and
+    `harmonic_colorrange` are both in scope from ElectronDynamicsModels).
+"""
+function harmonic_field_style()
+    return (; colormap = :jet, colorrange = symmetric_colorrange)
+end
+
+"""
+    write_field_products(fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid; w₀, run_tag,
+        outdir, source_datafile, title_prefix, fileprefix, style = harmonic_field_style())
+
+Per-harmonic field-map chips (`h<n>`, total + far `setup.field` toggle) drawn from already-reduced
+harmonic maps via [`plot_harmonic_grid`]. Factored out of [`write_harmonic_products`] (like
+[`write_phase_products`]) so the cached-hmaps recolor path can rebuild the field grids WITHOUT the
+raw cube — `fields_h`/`fields_far_h`/`harmonics`/`ffund`/grids/`w₀` are all in the serialized hmaps.
+A split cube (`fields_far_h !== nothing`) adds the far (radiation-only) variant the LPWA analytic
+formula is compared against. `style` (colormap + per-panel colorrange) comes from
+[`harmonic_field_style`]. Writes nothing to `[outputs].plots` — the field maps are derived chips.
+"""
+function write_field_products(
+        fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
+        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix,
+        style = harmonic_field_style(),
+    )
+    fieldsets = fields_far_h === nothing ? (("total", fields_h),) :
+        (("total", fields_h), ("far", fields_far_h))
+    for (k, n) in enumerate(harmonics), (ftype, fh) in fieldsets
+        tag = ftype == "far" ? "fieldfar" : "field"
+        out = joinpath(outdir, @sprintf("%s_%s_h%d_%s.png", fileprefix, tag, n, run_tag))
+        plot_harmonic_grid(
+            fh[k, :, :, :], x_grid, y_grid;
+            w₀, labels = COMPLABELS, style...,
+            title = @sprintf(
+                "%s (%s field) — %dω₁ (%.3f× fundamental)",
+                title_prefix, ftype, n, ffund[k]
+            ),
+            outfile = out,
+        )
+        println("saved → $out")
+        write_derived(
+            outdir; kind = "h$n", label = @sprintf("%dω₁ field maps", n), run_id = run_tag,
+            plot = basename(out), source = source_datafile, setup = Dict("field" => ftype),
+            description = "Field harmonic maps at $(n)ω₁ — each panel a component (Eˣ…Bᶻ). " *
+                "Toggle total (far 1/R + near 1/R²) vs far (radiation 1/R only); the far field is " *
+                "what the LPWA analytic formula is compared against in the lpwa-vs-numeric view.",
+        )
+    end
+    return
+end
+
+"""
     write_harmonic_products(fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
-        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, colormap = :jet, colorrange = nothing)
+        harmonics = (1, 2, 3, 4), title_prefix, fileprefix)
         -> (; hmapsfile, plots, fields_h, fields_far_h)
 
 Reduce `fld = (; E, B)` to `fields_h` at the `harmonics` bins, serialize the reduced
@@ -32,18 +89,19 @@ saved alongside the total maps (else `nothing`); the comparison script differenc
 far-field-only diagnostic:
 
   * **field E/B grids** → per-harmonic `h<n>` derived chips with a total/far `setup.field` toggle
-    (a split cube adds the far variant). **power spectrum** → the one intrinsic plot, returned in
-    `plots` for the solver's `[outputs].plots`.
+    (a split cube adds the far variant), drawn by [`write_field_products`]. **power spectrum** →
+    the one intrinsic plot, returned in `plots` for the solver's `[outputs].plots`.
   * **∠F phase grids** → a single parametrized `phase` derived chip — one
     `derived_phase_<n>_*.toml` per harmonic via `write_derived` (`setup.harmonic = n`,
     `source = source_datafile`), so the builder shows ONE phase chip with a harmonic
     selector and the phase maps never collide with the field maps on `h<n>`.
 
-`title_prefix`/`fileprefix` name the run family; `colormap`/`colorrange` carry its style.
+`title_prefix`/`fileprefix` name the run family; the field-grid panel style (diverging colormap +
+symmetric per-panel range) is owned by [`harmonic_field_style`], applied in [`write_field_products`].
 """
 function write_harmonic_products(
         fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
-        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, colormap = :jet, colorrange = nothing
+        harmonics = (1, 2, 3, 4), title_prefix, fileprefix
     )
     N_samples = size(fld.E, 1)
     freqs = rfftfreq(N_samples, 1 / δt)
@@ -62,46 +120,25 @@ function write_harmonic_products(
         fields_far_h = nothing
     end
 
+    ffund = [freqs[b] / (ω / 2π) for b in hbins]
     hmapsfile = joinpath(outdir, "hmaps_$(run_tag).jls")
     serialize(
         hmapsfile,
         (;
-            fields_h, fields_far_h, harmonics, ffund = [freqs[b] / (ω / 2π) for b in hbins],
+            fields_h, fields_far_h, harmonics, ffund,
             x_grid = collect(x_grid), y_grid = collect(y_grid), w₀,
         ),
     )
     println("serialized harmonic maps → $hmapsfile")
 
-    # Field maps → per-harmonic `h<n>` derived chips with a total/far toggle (setup.field). The
-    # total field is always emitted; a split cube (fields_far_h present) adds the far (radiation,
-    # 1/R-only) variant the LPWA analytic formula is compared against, so the chip toggles
-    # total↔far in place — mirroring the screen-observables total/far picker. The harmonic is the
-    # chip level (h1,h2,…, frontend-ordered); the field type is the toggle. Only powspec stays an
-    # intrinsic [outputs].plots entry.
-    plots = String[]
-    gridkw = colorrange === nothing ? (; colormap) : (; colormap, colorrange)
-    fieldsets = fields_far_h === nothing ? (("total", fields_h),) :
-        (("total", fields_h), ("far", fields_far_h))
-    for (k, n) in enumerate(harmonics), (ftype, fh) in fieldsets
-        tag = ftype == "far" ? "fieldfar" : "field"
-        out = joinpath(outdir, @sprintf("%s_%s_h%d_%s.png", fileprefix, tag, n, run_tag))
-        plot_harmonic_grid(
-            fh[k, :, :, :], x_grid, y_grid;
-            w₀, labels = COMPLABELS, gridkw...,
-            title = @sprintf("%s (%s field) — %dω₁ (%.3f× fundamental)",
-                title_prefix, ftype, n, freqs[hbins[k]] / (ω / 2π)),
-            outfile = out,
-        )
-        println("saved → $out")
-        write_derived(
-            outdir; kind = "h$n", label = @sprintf("%dω₁ field maps", n), run_id = run_tag,
-            plot = basename(out), source = source_datafile, setup = Dict("field" => ftype),
-            description = "Field harmonic maps at $(n)ω₁ — each panel a component (Eˣ…Bᶻ). " *
-                "Toggle total (far 1/R + near 1/R²) vs far (radiation 1/R only); the far field is " *
-                "what the LPWA analytic formula is compared against in the lpwa-vs-numeric view.",
-        )
-    end
+    # Field maps → per-harmonic `h<n>` chips (total + far `setup.field` toggle), drawn straight from
+    # the reduced maps by write_field_products so the cached-hmaps recolor path shares the code.
+    write_field_products(
+        fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
+        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix,
+    )
 
+    plots = String[]
     psfile = joinpath(outdir, "powspec_$(run_tag).png")
     plot_power_spectrum(
         freqs, power_spectrum(fld);
@@ -213,7 +250,7 @@ function recover_from_manifest(toml)
     check_schema_version(m; source = basename(toml))
     dir = dirname(abspath(toml))
     cfg, las = m["config"], m["laser"]
-    # Only title/filename differ by family — both use the shared :jet/per-panel default colormap.
+    # Only title/filename differ by family — both use the shared harmonic_field_style() colormap.
     lpwa = get(cfg, "trajectory_source", "") == "lpwa_analytic"
     title_prefix, fileprefix = lpwa ? ("LPWA", "lpwa") : ("Thomson scattering", "thomson")
     run_tag = m["provenance"]["run_id"]
@@ -248,14 +285,24 @@ function recover_from_manifest(toml)
         return hprod
     end
 
-    # Cube absent (e.g. a published run that shipped only the reduced hmaps): rebuild just the
-    # phase view from the cached harmonic maps. Field grids + powspec need the cube — left as-is.
+    # Cube absent (e.g. a published run that shipped only the reduced hmaps, or an ephemeral-VM
+    # cell whose cube is gone): rebuild the field maps AND the phase view from the cached harmonic
+    # maps — both only need `fields_h`/`fields_far_h`, not the raw cube. Only `powspec` (full
+    # time-series) can't be regenerated here, so it's left as-is. This is the recolor path.
     hmapsfile = joinpath(dir, "hmaps_$(run_tag).jls")
     isfile(hmapsfile) ||
         error("neither cube ($(basename(cube))) nor hmaps ($(basename(hmapsfile))) found in $dir")
-    println("cube absent — replotting phase from $(basename(hmapsfile)) …")
+    println("cube absent — replotting field maps + phase from $(basename(hmapsfile)) …")
     h = deserialize(hmapsfile)
     _retire_stale_phase(dir, run_tag)
+    # Guard older hmaps that predate fields_far_h/ffund: no far variant, integer-harmonic title.
+    far = hasproperty(h, :fields_far_h) ? h.fields_far_h : nothing
+    ffund = hasproperty(h, :ffund) ? h.ffund : Float64.(collect(h.harmonics))
+    write_field_products(
+        h.fields_h, far, h.harmonics, ffund, h.x_grid, h.y_grid;
+        w₀ = h.w₀, run_tag, outdir = dir,
+        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
+    )
     return write_phase_products(
         h.fields_h, h.x_grid, h.y_grid;
         w₀ = h.w₀, harmonics = h.harmonics, run_tag, outdir = dir,

@@ -5,15 +5,19 @@
 
 """
     plot_harmonic_grid(maps, x_grid, y_grid; w₀=1, labels, title="", colormap=:jet,
-                       colorrange=harmonic_colorrange, ncols=3, panelsize=300, outfile=nothing)
+                       colorrange=harmonic_colorrange, transform=real, colorbar_offset=true,
+                       ncols=3, panelsize=300, outfile=nothing)
 
 Draw a grid of per-component heat-maps for one harmonic — the real part of each component of
 `maps`, which is `(n_components, Nx, Ny)` (e.g. a slice `fields_h[k, :, :, :]`). Axes are shown
 in units of `w₀` (set it to the beam waist; left as `1` ⇒ raw coordinates, label "x"/"y").
 `colormap` and `colorrange` are configurable: `colorrange` is any `data -> (lo, hi)` applied
 per panel (default [`harmonic_colorrange`] = guarded extrema; pass [`symmetric_colorrange`] for a
-diverging map). `ncols` sets panels-per-row (3 ⇒ 2×3 for E/B, 2 ⇒ 2×2 for the 4-potential).
-Saves to `outfile` if given; returns the `Figure`.
+diverging map). With `colorbar_offset=true` (default) each colorbar factors a per-panel `×10ⁿ`
+out into a header with explicit `lo/mid/hi` ticks — so the radiated field's tiny magnitudes read
+as O(1) and the `PlotUtils` "No strict ticks found" warning on ~1e-17 ranges is avoided; pass
+`false` for O(1) data such as the phase grid. `ncols` sets panels-per-row (3 ⇒ 2×3 for E/B,
+2 ⇒ 2×2 for the 4-potential). Saves to `outfile` if given; returns the `Figure`.
 
 **Requires CairoMakie** — `using CairoMakie` activates the implementation (package extension);
 calling this without it raises a `MethodError`.

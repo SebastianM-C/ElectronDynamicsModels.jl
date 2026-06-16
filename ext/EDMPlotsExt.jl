@@ -6,11 +6,34 @@ module EDMPlotsExt
 using ElectronDynamicsModels
 using CairoMakie
 
+# Unicode-superscript an integer exponent, matching the Eˣ/Bᶻ component labels' superscripts.
+const _SUPERSCRIPT = Dict(
+    '-' => '⁻', '0' => '⁰', '1' => '¹', '2' => '²', '3' => '³', '4' => '⁴',
+    '5' => '⁵', '6' => '⁶', '7' => '⁷', '8' => '⁸', '9' => '⁹',
+)
+_superscript(n::Integer) = String([_SUPERSCRIPT[c] for c in string(n)])
+
+# Scientific-offset colorbar ticks for a (lo, hi) range: factor a common 10ⁿ out of the bar so the
+# tick LABELS read O(1), with explicit positions at lo / midpoint / hi. Returns
+# `((positions, labels), header)` where `header` is the "×10ⁿ" string (or `nothing` for n == 0, so
+# O(1) data — e.g. phase — stays plain). The explicit positions also sidestep
+# `PlotUtils.optimize_ticks`, which emits "No strict ticks found" on the ~1e-17 ranges of the weak /
+# high-harmonic field components (the labels are display-only; the heatmap colorrange is unchanged).
+function _offset_colorbar_ticks(cr)
+    lo, hi = cr
+    m = max(abs(lo), abs(hi))
+    n = (isfinite(m) && m > 0) ? floor(Int, log10(m)) : 0
+    scale = 10.0^n
+    positions = [lo, (lo + hi) / 2, hi]
+    labels = [string(round(p / scale; digits = 2)) for p in positions]
+    return (positions, labels), (n == 0 ? nothing : "×10$(_superscript(n))")
+end
+
 function ElectronDynamicsModels.plot_harmonic_grid(
         maps::AbstractArray{<:Number, 3}, x_grid, y_grid;
         w₀ = 1, labels, title = "",
         colormap = :jet, colorrange = harmonic_colorrange, transform = real,
-        ncols = 3, panelsize = 300, outfile = nothing,
+        colorbar_offset = true, ncols = 3, panelsize = 300, outfile = nothing,
     )
     ncomp = size(maps, 1)
     length(labels) == ncomp ||
@@ -25,14 +48,24 @@ function ElectronDynamicsModels.plot_harmonic_grid(
         for c in 1:ncomp
             cmap_c = @view maps[c, :, :]
             data = transform.(cmap_c)
+            cr = colorrange(data)
             row, col = (c - 1) ÷ ncols + 1, (c - 1) % ncols + 1
             gl = f[row, col] = GridLayout()
             ax = Axis(
                 gl[1, 1]; width = panelsize, height = panelsize, xlabel = xlab, ylabel = ylab,
                 title = "$(labels[c])  (peak $(round(maximum(abs, cmap_c); sigdigits = 3)))",
             )
-            hm = heatmap!(ax, xs, ys, data; colormap, colorrange = colorrange(data))
-            Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
+            hm = heatmap!(ax, xs, ys, data; colormap, colorrange = cr)
+            if colorbar_offset
+                # Factor a per-panel ×10ⁿ out of the colorbar so the tiny magnitudes read O(1); the
+                # explicit ticks also silence PlotUtils' "No strict ticks found" on ~1e-17 ranges.
+                ticks, header = _offset_colorbar_ticks(cr)
+                Colorbar(gl[1, 2], hm; width = 10, height = panelsize, ticks)
+                header === nothing ||
+                    Label(gl[0, 2], header; fontsize = 11, halign = :left, tellwidth = false)
+            else
+                Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
+            end
         end
         resize_to_layout!(f)
         f
@@ -72,6 +105,7 @@ function ElectronDynamicsModels.plot_phase_grid(
     return ElectronDynamicsModels.plot_harmonic_grid(
         maps, x_grid, y_grid; w₀, labels, title, ncols, panelsize, outfile,
         transform = angle, colormap = :phase, colorrange = _ -> (-Float64(π), Float64(π)),
+        colorbar_offset = false,   # phase is O(1) over (-π, π) — no ×10ⁿ offset, keep auto ticks
     )
 end
 
