@@ -37,9 +37,12 @@ function ElectronDynamicsModels.plot_harmonic_grid(
                 # Explicit lo/mid/hi positions silence PlotUtils' "No strict ticks found" on the
                 # tiny ~1e-17 ranges; Makie's default formatter then renders them natively as
                 # m×10ⁿ (RichText superscripts), since the range spans >4 orders of magnitude.
+                # Round the positions to 3 sig figs so the native labels stay short — full precision
+                # (2.96…×10⁻¹³) protrudes far enough right to collide with the neighbouring panel,
+                # tripping Makie's overlap-hiding (drops the ±peak labels on the middle column).
                 Colorbar(
                     gl[1, 2], hm; width = 10, height = panelsize,
-                    ticks = [cr[1], (cr[1] + cr[2]) / 2, cr[2]],
+                    ticks = round.([cr[1], (cr[1] + cr[2]) / 2, cr[2]]; sigdigits = 3),
                 )
             else
                 Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
