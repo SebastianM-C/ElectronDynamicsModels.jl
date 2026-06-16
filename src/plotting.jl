@@ -13,11 +13,12 @@ Draw a grid of per-component heat-maps for one harmonic — the real part of eac
 in units of `w₀` (set it to the beam waist; left as `1` ⇒ raw coordinates, label "x"/"y").
 `colormap` and `colorrange` are configurable: `colorrange` is any `data -> (lo, hi)` applied
 per panel (default [`harmonic_colorrange`] = guarded extrema; pass [`symmetric_colorrange`] for a
-diverging map). With `colorbar_offset=true` (default) each colorbar factors a per-panel `×10ⁿ`
-out into a header with explicit `lo/mid/hi` ticks — so the radiated field's tiny magnitudes read
-as O(1) and the `PlotUtils` "No strict ticks found" warning on ~1e-17 ranges is avoided; pass
-`false` for O(1) data such as the phase grid. `ncols` sets panels-per-row (3 ⇒ 2×3 for E/B,
-2 ⇒ 2×2 for the 4-potential). Saves to `outfile` if given; returns the `Figure`.
+diverging map). With `colorbar_offset=true` (default) each colorbar gets explicit `lo/mid/hi`
+ticks — this silences the `PlotUtils` "No strict ticks found" warning on the radiated field's tiny
+~1e-17 ranges, and lets Makie's native formatter render the labels as `m×10ⁿ` (RichText
+superscripts, since the range spans >4 orders); pass `false` for O(1) data such as the phase grid
+(keeps Makie's automatic ticks). `ncols` sets panels-per-row (3 ⇒ 2×3 for E/B, 2 ⇒ 2×2 for the
+4-potential). Saves to `outfile` if given; returns the `Figure`.
 
 **Requires CairoMakie** — `using CairoMakie` activates the implementation (package extension);
 calling this without it raises a `MethodError`.

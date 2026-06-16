@@ -6,29 +6,6 @@ module EDMPlotsExt
 using ElectronDynamicsModels
 using CairoMakie
 
-# Unicode-superscript an integer exponent, matching the Eˣ/Bᶻ component labels' superscripts.
-const _SUPERSCRIPT = Dict(
-    '-' => '⁻', '0' => '⁰', '1' => '¹', '2' => '²', '3' => '³', '4' => '⁴',
-    '5' => '⁵', '6' => '⁶', '7' => '⁷', '8' => '⁸', '9' => '⁹',
-)
-_superscript(n::Integer) = String([_SUPERSCRIPT[c] for c in string(n)])
-
-# Scientific-offset colorbar ticks for a (lo, hi) range: factor a common 10ⁿ out of the bar so the
-# tick LABELS read O(1), with explicit positions at lo / midpoint / hi. Returns
-# `((positions, labels), header)` where `header` is the "×10ⁿ" string (or `nothing` for n == 0, so
-# O(1) data — e.g. phase — stays plain). The explicit positions also sidestep
-# `PlotUtils.optimize_ticks`, which emits "No strict ticks found" on the ~1e-17 ranges of the weak /
-# high-harmonic field components (the labels are display-only; the heatmap colorrange is unchanged).
-function _offset_colorbar_ticks(cr)
-    lo, hi = cr
-    m = max(abs(lo), abs(hi))
-    n = (isfinite(m) && m > 0) ? floor(Int, log10(m)) : 0
-    scale = 10.0^n
-    positions = [lo, (lo + hi) / 2, hi]
-    labels = [string(round(p / scale; digits = 2)) for p in positions]
-    return (positions, labels), (n == 0 ? nothing : "×10$(_superscript(n))")
-end
-
 function ElectronDynamicsModels.plot_harmonic_grid(
         maps::AbstractArray{<:Number, 3}, x_grid, y_grid;
         w₀ = 1, labels, title = "",
@@ -57,12 +34,13 @@ function ElectronDynamicsModels.plot_harmonic_grid(
             )
             hm = heatmap!(ax, xs, ys, data; colormap, colorrange = cr)
             if colorbar_offset
-                # Factor a per-panel ×10ⁿ out of the colorbar so the tiny magnitudes read O(1); the
-                # explicit ticks also silence PlotUtils' "No strict ticks found" on ~1e-17 ranges.
-                ticks, header = _offset_colorbar_ticks(cr)
-                Colorbar(gl[1, 2], hm; width = 10, height = panelsize, ticks)
-                header === nothing ||
-                    Label(gl[0, 2], header; fontsize = 11, halign = :left, tellwidth = false)
+                # Explicit lo/mid/hi positions silence PlotUtils' "No strict ticks found" on the
+                # tiny ~1e-17 ranges; Makie's default formatter then renders them natively as
+                # m×10ⁿ (RichText superscripts), since the range spans >4 orders of magnitude.
+                Colorbar(
+                    gl[1, 2], hm; width = 10, height = panelsize,
+                    ticks = [cr[1], (cr[1] + cr[2]) / 2, cr[2]],
+                )
             else
                 Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
             end
