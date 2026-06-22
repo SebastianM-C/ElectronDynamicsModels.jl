@@ -22,7 +22,7 @@ const C_LIGHT = 137.03599908330932
 
 """
     write_harmonic_products(fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
-        harmonics = (1, 2), title_prefix, fileprefix, colormap = :jet, colorrange = nothing)
+        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, colormap = :jet, colorrange = nothing)
         -> (; hmapsfile, plots, fields_h, fields_far_h)
 
 Reduce `fld = (; E, B)` to `fields_h` at the `harmonics` bins, serialize the reduced
@@ -31,8 +31,9 @@ also carries `E_far`/`B_far`) the far field is reduced to `fields_far_h` the sam
 saved alongside the total maps (else `nothing`); the comparison script differences it for the
 far-field-only diagnostic:
 
-  * **field E/B grids + power spectrum** → the run's *intrinsic* plots, returned in `plots`
-    for the solver's `[outputs].plots` (kinds `h<n>` + `powspec`).
+  * **field E/B grids** → per-harmonic `h<n>` derived chips with a total/far `setup.field` toggle
+    (a split cube adds the far variant). **power spectrum** → the one intrinsic plot, returned in
+    `plots` for the solver's `[outputs].plots`.
   * **∠F phase grids** → a single parametrized `phase` derived chip — one
     `derived_phase_<n>_*.toml` per harmonic via `write_derived` (`setup.harmonic = n`,
     `source = source_datafile`), so the builder shows ONE phase chip with a harmonic
@@ -42,7 +43,7 @@ far-field-only diagnostic:
 """
 function write_harmonic_products(
         fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
-        harmonics = (1, 2), title_prefix, fileprefix, colormap = :jet, colorrange = nothing
+        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, colormap = :jet, colorrange = nothing
     )
     N_samples = size(fld.E, 1)
     freqs = rfftfreq(N_samples, 1 / δt)
@@ -55,7 +56,6 @@ function write_harmonic_products(
     # (accumulate_field mode=Val(:split)) carries `fld.E_far`/`fld.B_far`; a total cube does not.
     # Reduce the far field the SAME way as the total when present, else leave it `nothing` so the
     # serialized layout stays backward-compatible with the already-published total-only hmaps.
-    # TODO(human): assign `fields_far_h`.
     if hasproperty(fld, :E_far)
         fields_far_h = harmonic_maps((; E = fld.E_far, B = fld.B_far), hbins)
     else
@@ -72,19 +72,34 @@ function write_harmonic_products(
     )
     println("serialized harmonic maps → $hmapsfile")
 
-    # Intrinsic plots ([outputs].plots): the E/B field maps (kinds h1/h2) + power spectrum.
+    # Field maps → per-harmonic `h<n>` derived chips with a total/far toggle (setup.field). The
+    # total field is always emitted; a split cube (fields_far_h present) adds the far (radiation,
+    # 1/R-only) variant the LPWA analytic formula is compared against, so the chip toggles
+    # total↔far in place — mirroring the screen-observables total/far picker. The harmonic is the
+    # chip level (h1,h2,…, frontend-ordered); the field type is the toggle. Only powspec stays an
+    # intrinsic [outputs].plots entry.
     plots = String[]
     gridkw = colorrange === nothing ? (; colormap) : (; colormap, colorrange)
-    for (k, n) in enumerate(harmonics)
-        out = joinpath(outdir, @sprintf("%s_field_h%d_%s.png", fileprefix, n, run_tag))
+    fieldsets = fields_far_h === nothing ? (("total", fields_h),) :
+        (("total", fields_h), ("far", fields_far_h))
+    for (k, n) in enumerate(harmonics), (ftype, fh) in fieldsets
+        tag = ftype == "far" ? "fieldfar" : "field"
+        out = joinpath(outdir, @sprintf("%s_%s_h%d_%s.png", fileprefix, tag, n, run_tag))
         plot_harmonic_grid(
-            fields_h[k, :, :, :], x_grid, y_grid;
+            fh[k, :, :, :], x_grid, y_grid;
             w₀, labels = COMPLABELS, gridkw...,
-            title = @sprintf("%s (field) — %dω₁ (%.3f× fundamental)", title_prefix, n, freqs[hbins[k]] / (ω / 2π)),
+            title = @sprintf("%s (%s field) — %dω₁ (%.3f× fundamental)",
+                title_prefix, ftype, n, freqs[hbins[k]] / (ω / 2π)),
             outfile = out,
         )
         println("saved → $out")
-        push!(plots, out)
+        write_derived(
+            outdir; kind = "h$n", label = @sprintf("%dω₁ field maps", n), run_id = run_tag,
+            plot = basename(out), source = source_datafile, setup = Dict("field" => ftype),
+            description = "Field harmonic maps at $(n)ω₁ — each panel a component (Eˣ…Bᶻ). " *
+                "Toggle total (far 1/R + near 1/R²) vs far (radiation 1/R only); the far field is " *
+                "what the LPWA analytic formula is compared against in the lpwa-vs-numeric view.",
+        )
     end
 
     psfile = joinpath(outdir, "powspec_$(run_tag).png")
@@ -212,14 +227,25 @@ function recover_from_manifest(toml)
         y_grid = LinRange(-25las["w0"], 25las["w0"], cfg["Ny"])
         println("loading $(m["outputs"]["datafile"]) …")
         raw = deserialize(cube)
-        fld = (; E = raw.E, B = raw.B)   # total-field maps only; drop any split E_far/B_far to halve resident RAM
-        raw = nothing
-        GC.gc()
-        return write_harmonic_products(
+        # A split cube carries E_far/B_far — keep them so write_harmonic_products also emits the
+        # far-field maps the φ0/LPWA comparison needs; a total cube has only E/B.
+        fld = hasproperty(raw, :E_far) ? raw : (; E = raw.E, B = raw.B)
+        hprod = write_harmonic_products(
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
             source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
         )
+        # Close the loop the inline (non-SKIP_POST) path already does: a deferred/async reduction
+        # must ALSO declare what it produced, so [outputs] is complete for resolve_hmaps + the
+        # dashboard hmaps download. `sorted` keeps [timing] last (the ops timing-append relies on it).
+        outs = m["outputs"]
+        if get(outs, "harmonic_maps", nothing) === nothing
+            outs["harmonic_maps"] = basename(hprod.hmapsfile)
+            outs["plots"] = basename.(hprod.plots)
+            open(io -> TOML.print(io, m; sorted = true), toml, "w")
+            println("declared harmonic_maps + plots in $(basename(toml))")
+        end
+        return hprod
     end
 
     # Cube absent (e.g. a published run that shipped only the reduced hmaps): rebuild just the

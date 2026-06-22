@@ -63,6 +63,13 @@ function check_compatible(a, b)
                     error("[laser].pol type differs: $(a[sec][k]) vs $(b[sec][k])")
                 a[sec][k] == b[sec][k] ||
                     @warn "comparing across circular handedness" lpwa = a[sec][k] numeric = b[sec][k]
+            elseif sec == "laser" && k == "phi0"
+                # phi0 is the carrier-phase half of the same convention we deliberately compare
+                # across (handedness + a −π/2 carrier offset): the φ0 experiment exists to check
+                # whether baking that offset into the numeric run reproduces the analytic LPWA. So
+                # warn (don't error) — the phase_offset section below quantifies the gap as Δb.
+                a[sec][k] == b[sec][k] ||
+                    @warn "comparing across carrier phase φ0" lpwa = a[sec][k] numeric = b[sec][k]
             else
                 a[sec][k] == b[sec][k] || error("[$sec].$k differs: $(a[sec][k]) vs $(b[sec][k])")
             end
@@ -77,10 +84,20 @@ L = deserialize(resolve_hmaps(La, lpwa_toml))   # (; fields_h, harmonics, ffund,
 T = deserialize(resolve_hmaps(Ta, thom_toml))
 
 # Belt-and-suspenders: the maps themselves must be on a common grid with the same bins.
-@assert L.harmonics == T.harmonics "harmonic sets differ: $(L.harmonics) vs $(T.harmonics)"
 @assert collect(L.x_grid) ≈ collect(T.x_grid) "x grids differ — screens not co-located"
 @assert collect(L.y_grid) ≈ collect(T.y_grid) "y grids differ — screens not co-located"
-@assert size(L.fields_h) == size(T.fields_h) "fields_h shapes differ"
+@assert size(L.fields_h)[2:end] == size(T.fields_h)[2:end] "fields_h non-harmonic dims differ"
+
+# LPWA (analytic, linearized) carries only the low harmonics it can represent; the numeric run may
+# retain more (e.g. h3,h4 at higher a0). Compare the harmonics BOTH provide, looking each up by
+# VALUE in each side's own axis — positions need not align, so never assume the kth slice is the
+# same harmonic on both sides.
+common_harmonics = intersect(L.harmonics, T.harmonics)
+isempty(common_harmonics) && error("no shared harmonics: LPWA $(L.harmonics) vs numeric $(T.harmonics)")
+(length(common_harmonics) < length(L.harmonics) || length(common_harmonics) < length(T.harmonics)) &&
+    @info "comparing shared harmonics only" common=Tuple(common_harmonics) lpwa=L.harmonics numeric=T.harmonics
+kL_of(n) = findfirst(==(n), L.harmonics)
+kT_of(n) = findfirst(==(n), T.harmonics)
 
 lpwa_id, thom_id = run_id(La, lpwa_toml), run_id(Ta, thom_toml)
 @printf("comparing LPWA %s  vs  numeric %s\n", lpwa_id, thom_id)
@@ -100,13 +117,14 @@ xw, yw = collect(L.x_grid) ./ L.w₀, collect(L.y_grid) ./ L.w₀
 # bound to BOTH parents. Called for the total field and — when both runs saved the split —
 # for the far field alone (LPWA is a far-field formula, so far-vs-far is the rigorous test).
 function abs_comparison(Lmaps, Tmaps; kind, label, file_tag, title)
-    for (k, n) in enumerate(L.harmonics)
+    for n in common_harmonics
+        kL, kT = kL_of(n), kT_of(n)
         fig = Figure(size = (1080, 680))
         Label(fig[0, 1:3], @sprintf("%s at %dω₁", title, n); fontsize = 18)
         errs = Float64[]
         for comp in 1:6
-            a = Lmaps[k, comp, :, :]
-            b = Tmaps[k, comp, :, :]
+            a = Lmaps[kL, comp, :, :]
+            b = Tmaps[kT, comp, :, :]
             d = abserr(a, b)
             push!(errs, d)
             nrm = norm(b)
@@ -147,7 +165,7 @@ abs_comparison(L.fields_h, T.fields_h; kind = "comparison", label = "LPWA vs num
 Lfar = hasproperty(L, :fields_far_h) ? L.fields_far_h : nothing
 Tfar = hasproperty(T, :fields_far_h) ? T.fields_far_h : nothing
 if Lfar !== nothing && Tfar !== nothing
-    @assert size(Lfar) == size(Tfar) "far-field map shapes differ"
+    @assert size(Lfar)[2:end] == size(Tfar)[2:end] "far-field non-harmonic dims differ"
     abs_comparison(Lfar, Tfar; kind = "comparison_far", label = "LPWA vs numeric |ΔF| (far field)",
         file_tag = "abs_far", title = "|F̃ᶠᵃʳ_LPWA − F̃ᶠᵃʳ_numeric|")
 else
@@ -176,11 +194,13 @@ function bilin(M, px, py)
         (1 - tx) * ty * M[i, j + 1] + tx * ty * M[i + 1, j + 1]
 end
 
-for (k, n) in enumerate(L.harmonics)
-    ReL = real.(L.fields_h[k, EZ, :, :])
-    ReT = real.(T.fields_h[k, EZ, :, :])
+for n in common_harmonics
+    kL, kT = kL_of(n), kT_of(n)
+    ReL = real.(L.fields_h[kL, EZ, :, :])
+    ReT = real.(T.fields_h[kT, EZ, :, :])
 
-    # (a) ratio map: white where |Re(Eᶻ_T)| is below the node floor (NaN) or the ratio ≈ 0
+    # (a) ratio map: white (NaN) at the numeric Eᶻ's nodal lines — |Re(Eᶻ_T)| below 0.1% of its
+    # screen peak — where the near-zero denominator would make the ratio blow up / be noise.
     floorT = 1.0e-3 * maximum(abs, ReT)
     ratio = map((l, t) -> abs(t) < floorT ? NaN : l / t, ReL, ReT)
     figr = Figure(size = (560, 520))
@@ -199,7 +219,9 @@ for (k, n) in enumerate(L.harmonics)
     write_derived(
         OUTDIR; kind = "ez_ratio", label = "Eᶻ ratio LPWA/numeric",
         run_id = [lpwa_id, thom_id], plot = basename(rout), setup = Dict("harmonic" => n),
-        description = "Re(Eᶻ_LPWA)/Re(Eᶻ_numeric) over the screen at $(n)ω₁ (a0=$(La["laser"]["a0"])); white = |Re(Eᶻ_numeric)| below the node floor."
+        description = "Re(Eᶻ_LPWA)/Re(Eᶻ_numeric) over the screen at $(n)ω₁ (a0=$(La["laser"]["a0"])). " *
+            "White masks pixels where |Re(Eᶻ_numeric)| falls below 0.1% of its screen peak — the Eᶻ nodal " *
+            "lines, where the near-zero denominator makes the ratio undefined / noise-dominated."
     )
 
     # (b) overlay along rays: LPWA (solid, semi-transparent so the numeric dashed line shows
@@ -241,7 +263,8 @@ let
     tol = 0.5 * (xg[2] - xg[1])
     palette = (:dodgerblue, :crimson)
     ringcolor(i) = palette[(i - 1) % length(palette) + 1]
-    for (k, n) in enumerate(L.harmonics)
+    for n in common_harmonics
+        kL, kT = kL_of(n), kT_of(n)
         fig = Figure(size = (1440, 460))
         Label(fig[0, 1:3], @sprintf("∠F unwrapped vs φ — LPWA solid, numeric dashed (%dω₁, a0=%s)", n, La["laser"]["a0"]); fontsize = 16)
         pp = Dict{String, Any}("R/w₀" => collect(offset_radii ./ L.w₀))
@@ -254,8 +277,8 @@ let
                     push!(db, NaN); push!(slL, NaN); push!(slT, NaN)
                     continue
                 end
-                aL = L.fields_h[k, comp, :, :][idxs]
-                aT = T.fields_h[k, comp, :, :][idxs]
+                aL = L.fields_h[kL, comp, :, :][idxs]
+                aT = T.fields_h[kT, comp, :, :][idxs]
                 fL = phase_winding_fit(az, angle.(aL); weights = abs.(aL))
                 fT = phase_winding_fit(az, angle.(aT); weights = abs.(aT))
                 raw = fL.intercept - fT.intercept

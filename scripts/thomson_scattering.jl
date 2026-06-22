@@ -54,6 +54,7 @@ const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
 FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"total\", got \"$FIELD_MODE\"")
+const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
 @info "Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
@@ -183,11 +184,22 @@ screen = ObserverScreen(
 # Exact field via the split Liénard–Wiechert GPU kernel.
 # Returns (; E, B, E_far, B_far), each (N_samples, 3, Nx, Ny): E, B are the total
 # field (for the harmonic maps below); E_far, B_far the far (radiation) field alone.
-t_field = @elapsed fld = accumulate_field(
-    trajs, screen, GPUKernelRK4(), gpu_backend;
-    n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
-)
-@info "field accumulated" t_field
+# Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
+# them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
+ndev = gpu_device_count(gpu_backend)
+t_field = @elapsed fld = if ndev > 1
+    @info "sharding electrons across $ndev devices"
+    accumulate_field_sharded(
+        trajs, screen, GPUKernelRK4(), gpu_backend;
+        n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+    )
+else
+    accumulate_field(
+        trajs, screen, GPUKernelRK4(), gpu_backend;
+        n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+    )
+end
+@info "field accumulated" t_field ndev
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default
@@ -200,12 +212,18 @@ println("serialized → $datafile")
 # Shared with the standalone recovery path in harmonic_products.jl, so the reduction and
 # rendering live in one place. Emits hmaps_<tag>.jls + the per-harmonic 2×3 E/B grids
 # (:jet, per-panel extrema — same style as the LPWA maps), the ∠F phase grids, and the power spectrum.
-hprod = write_harmonic_products(
-    fld, screen.x_grid, screen.y_grid, ω, δt;
-    w₀, run_tag = RUN_TAG, outdir = OUTDIR, source_datafile = basename(datafile),
-    title_prefix = "Thomson scattering", fileprefix = "thomson",
-)
-plotfiles = hprod.plots
+if SKIP_POST
+    @info "EDM_SKIP_POSTPROCESS=1 — cube serialized; harmonic maps + screen observables deferred to the async post-process"
+    hprod = nothing
+    plotfiles = String[]
+else
+    hprod = write_harmonic_products(
+        fld, screen.x_grid, screen.y_grid, ω, δt;
+        w₀, run_tag = RUN_TAG, outdir = OUTDIR, source_datafile = basename(datafile),
+        title_prefix = "Thomson scattering", fileprefix = "thomson",
+    )
+    plotfiles = hprod.plots
+end
 
 # ── Reproducibility manifest (same schema as thomson_scattering_A.jl) ──
 using TOML
@@ -233,9 +251,11 @@ config = Dict{String, Any}(
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
     "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
-    "harmonic_maps" => basename(hprod.hmapsfile),   # reduced maps → resolve_hmaps finds them directly
-    "plots" => basename.(plotfiles),
 )
+if !SKIP_POST
+    outputs["harmonic_maps"] = basename(hprod.hmapsfile)   # reduced maps → resolve_hmaps finds them directly
+    outputs["plots"] = basename.(plotfiles)
+end
 
 laser_params = Dict{String, Any}(
     "wavelength" => prob.ps[sys.laser.λ],
@@ -262,8 +282,11 @@ timing = Dict{String, Any}(
     "trajectories" => t_trajectories,
     "field" => t_field,
 )
+# Sharding → [sharding] (axis → partition count). Flat + generic so future axes (e.g. a Z-split
+# 3D screen) slot in with no schema change. NOT in [timing] — a device count is not a duration.
+sharding = Dict{String, Any}("electrons" => ndev)
 manifestfile = write_solver_manifest(
     OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs,
-    extra = Dict("timing" => timing),
+    extra = Dict("timing" => timing, "sharding" => sharding),
 )
 println("manifest → $manifestfile")

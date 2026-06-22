@@ -10,6 +10,8 @@ using Serialization
 using RunManifests
 include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with thomson + recovery)
 
+const T_START = time()   # wall-clock anchor for the [timing] section (mirrors thomson_scattering.jl)
+
 const ϕ₀ = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
 const OUTDIR = get(ENV, "EDM_OUTDIR", ".")
 mkpath(OUTDIR)   # fail-fast at the top, never after the (expensive) accumulation
@@ -22,6 +24,7 @@ const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
 FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"total\", got \"$FIELD_MODE\"")
+const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "cuda"))
@@ -151,11 +154,13 @@ function build_traj(ℜ₀)
     return ElectronDynamicsModels.TrajectoryInterpolant(itp, a_itp, x_idxs, u_idxs, K)
 end
 
+_t0_traj = time()
 trajs = Vector{Any}(undef, N)
 Threads.@threads for i in 1:N
     trajs[i] = build_traj(xi[i])
 end
 trajs = identity.(trajs)
+t_trajectories = time() - _t0_traj   # analytic build (cheap vs the ODE solve in thomson)
 
 # Screen parameters
 const Z = 2.0e5λ
@@ -181,11 +186,22 @@ screen = ObserverScreen(
 # :split → (; E, B, E_far, B_far), each (N_samples, 3, Nx, Ny) — total field (far 1/R + near
 # 1/R² on the device) AND the far field alone, so the harmonic reduction saves far-field-only
 # maps for the far-field comparison against the numeric run; :total → (; E, B) only (halves VRAM).
-@time fld = accumulate_field(
-    trajs, screen, GPUKernelRK4(), gpu_backend;
-    mode = Val(FIELD_MODE),
-    n_substeps = NSUBSTEPS, sync_per_electron = SYNC
-)
+# Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
+# them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
+ndev = gpu_device_count(gpu_backend)
+t_field = @elapsed fld = if ndev > 1
+    @info "sharding electrons across $ndev devices"
+    accumulate_field_sharded(
+        trajs, screen, GPUKernelRK4(), gpu_backend;
+        mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC
+    )
+else
+    accumulate_field(
+        trajs, screen, GPUKernelRK4(), gpu_backend;
+        mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC
+    )
+end
+@info "field accumulated" t_field ndev
 
 datafile = joinpath(OUTDIR, "field_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(RUN_TAG).jls")
 serialize(datafile, fld)
@@ -194,12 +210,18 @@ println("serialized → $datafile")
 # ── Harmonic maps + ∠F phase + power spectrum (reduce + serialize + plot) ──
 # Shared with thomson_scattering.jl + the recovery path via harmonic_products.jl, so the
 # LPWA maps come from exactly the same code as the ODE-solved run they're compared against.
-hprod = write_harmonic_products(
-    fld, screen.x_grid, screen.y_grid, ω, δt;
-    w₀, run_tag = RUN_TAG, outdir = OUTDIR, source_datafile = basename(datafile),
-    title_prefix = "LPWA", fileprefix = "lpwa",
-)
-plotfiles = hprod.plots
+if SKIP_POST
+    @info "EDM_SKIP_POSTPROCESS=1 — cube serialized; harmonic maps + screen observables deferred to the async post-process"
+    hprod = nothing
+    plotfiles = String[]
+else
+    hprod = write_harmonic_products(
+        fld, screen.x_grid, screen.y_grid, ω, δt;
+        w₀, run_tag = RUN_TAG, outdir = OUTDIR, source_datafile = basename(datafile),
+        title_prefix = "LPWA", fileprefix = "lpwa",
+    )
+    plotfiles = hprod.plots
+end
 
 # ── Reproducibility manifest (mirrors thomson_scattering.jl; analytic-LPWA variant,
 # so model params come from the script globals rather than an MTK `prob`). The git
@@ -259,12 +281,23 @@ setup = Dict{String, Any}(
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
     "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
-    "harmonic_maps" => basename(hprod.hmapsfile),
-    "plots" => basename.(plotfiles),
 )
+if !SKIP_POST
+    outputs["harmonic_maps"] = basename(hprod.hmapsfile)
+    outputs["plots"] = basename.(plotfiles)
+end
 
+# Wall-clock phase timings → [timing] (dashboard renders total/trajectories/field, in seconds).
+timing = Dict{String, Any}(
+    "total" => time() - T_START,
+    "trajectories" => t_trajectories,
+    "field" => t_field,
+)
+# Sharding → [sharding] (axis → partition count). Flat + generic so future axes (e.g. a Z-split
+# 3D screen) slot in with no schema change. NOT in [timing] — a device count is not a duration.
+sharding = Dict{String, Any}("electrons" => ndev)
 manifestfile = write_solver_manifest(
     OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs,
-    extra = Dict("model" => model_params),
+    extra = Dict("model" => model_params, "timing" => timing, "sharding" => sharding),
 )
 println("manifest → $manifestfile")
