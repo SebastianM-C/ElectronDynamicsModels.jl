@@ -7,3 +7,7 @@
 /docs/build/
 # Local run outputs (GPU dry runs, campaign data) — never committed.
 /runs/
+# Local ops orchestration
+/scripts/hotaisle_campaign.sh
+/scripts/balance_monitor.sh
+/scripts/*.sbatch

@@ -10,7 +10,7 @@ function ElectronDynamicsModels.plot_harmonic_grid(
         maps::AbstractArray{<:Number, 3}, x_grid, y_grid;
         w₀ = 1, labels, title = "",
         colormap = :jet, colorrange = harmonic_colorrange, transform = real,
-        ncols = 3, panelsize = 300, outfile = nothing,
+        colorbar_offset = true, ncols = 3, panelsize = 300, outfile = nothing,
     )
     ncomp = size(maps, 1)
     length(labels) == ncomp ||
@@ -25,14 +25,28 @@ function ElectronDynamicsModels.plot_harmonic_grid(
         for c in 1:ncomp
             cmap_c = @view maps[c, :, :]
             data = transform.(cmap_c)
+            cr = colorrange(data)
             row, col = (c - 1) ÷ ncols + 1, (c - 1) % ncols + 1
             gl = f[row, col] = GridLayout()
             ax = Axis(
                 gl[1, 1]; width = panelsize, height = panelsize, xlabel = xlab, ylabel = ylab,
                 title = "$(labels[c])  (peak $(round(maximum(abs, cmap_c); sigdigits = 3)))",
             )
-            hm = heatmap!(ax, xs, ys, data; colormap, colorrange = colorrange(data))
-            Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
+            hm = heatmap!(ax, xs, ys, data; colormap, colorrange = cr)
+            if colorbar_offset
+                # Explicit lo/mid/hi positions silence PlotUtils' "No strict ticks found" on the
+                # tiny ~1e-17 ranges; Makie's default formatter then renders them natively as
+                # m×10ⁿ (RichText superscripts), since the range spans >4 orders of magnitude.
+                # Round the positions to 3 sig figs so the native labels stay short — full precision
+                # (2.96…×10⁻¹³) protrudes far enough right to collide with the neighbouring panel,
+                # tripping Makie's overlap-hiding (drops the ±peak labels on the middle column).
+                Colorbar(
+                    gl[1, 2], hm; width = 10, height = panelsize,
+                    ticks = round.([cr[1], (cr[1] + cr[2]) / 2, cr[2]]; sigdigits = 3),
+                )
+            else
+                Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
+            end
         end
         resize_to_layout!(f)
         f
@@ -72,6 +86,7 @@ function ElectronDynamicsModels.plot_phase_grid(
     return ElectronDynamicsModels.plot_harmonic_grid(
         maps, x_grid, y_grid; w₀, labels, title, ncols, panelsize, outfile,
         transform = angle, colormap = :phase, colorrange = _ -> (-Float64(π), Float64(π)),
+        colorbar_offset = false,   # phase is O(1) over (-π, π) — no ×10ⁿ offset, keep auto ticks
     )
 end
 
