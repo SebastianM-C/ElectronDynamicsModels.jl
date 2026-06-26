@@ -3,9 +3,9 @@
 # Same laser + sunflower electron distribution as scripts/thomson_scattering.jl, but instead
 # of accumulating the radiated field this re-solves the (cheap) trajectory ensemble on CPU and
 # visualizes the worldlines. Parameters are read from a source campaign's run_*.toml manifests
-# (e.g. field_campaign_cm_899976, the a₀ scan) with the initial phase OVERRIDDEN to −π/2 — the
-# φ₀=−π/2 runs were produced elsewhere and aren't stored, but trajectories are cheap to recompute,
-# so only the run parameters are needed, not any saved field/trajectory data.
+# (field_campaign_cm_phi0, the φ₀=−π/2 a₀ scan) using each manifest's own initial phase. The big
+# field/trajectory data for those runs lives on the cluster and isn't needed here — trajectories
+# are cheap to recompute, so only the run parameters (the small run_*.toml) are required.
 #
 # Per source run (= per a₀) it writes TWO PNGs — the worldlines projected onto the zx and zy
 # planes (axes in units of w₀), each with marginal histograms of the FINAL electron positions
@@ -23,9 +23,9 @@
 #
 # ENV knobs (all optional):
 #   EDM_SOURCE_CAMPAIGN  dir of run_*.toml to take parameters from
-#                        (default /storage/pool/smc/thomson_runs/field_campaign_cm_899976)
-#   EDM_INITIAL_PHASE    φ₀ override applied to every run (default -π/2); "manifest" ⇒ use each
-#                        manifest's own [config].initial_phase
+#                        (default /storage/pool/smc/thomson_runs/field_campaign_cm_phi0)
+#   EDM_INITIAL_PHASE    "manifest" (default) ⇒ each run's own [config].initial_phase (−π/2 for
+#                        the cm_phi0 source); or a numeric value to override every run
 #   EDM_COORDS           "absolute" (default) or "displacement" (plot x−x₀, y−y₀ vs z)
 #   EDM_OUTDIR           output dir (default <pkg>/runs/field_campaign_cm_phi0)
 #   EDM_N                cap electrons per run (default = manifest N; the cap takes the inner
@@ -54,8 +54,8 @@ include(joinpath(@__DIR__, "manifest.jl"))      # RunManifests: write_run_manife
 const c = 137.03599908330932
 
 # ── Configuration (ENV-overridable) ──
-const SOURCE_CAMPAIGN = get(ENV, "EDM_SOURCE_CAMPAIGN", "/storage/pool/smc/thomson_runs/field_campaign_cm_899976")
-const PHASE_SPEC = get(ENV, "EDM_INITIAL_PHASE", string(-π / 2))   # numeric override, or "manifest"
+const SOURCE_CAMPAIGN = get(ENV, "EDM_SOURCE_CAMPAIGN", "/storage/pool/smc/thomson_runs/field_campaign_cm_phi0")
+const PHASE_SPEC = get(ENV, "EDM_INITIAL_PHASE", "manifest")   # "manifest" ⇒ each run's own φ₀; or a numeric override
 const COORDS = get(ENV, "EDM_COORDS", "absolute")                  # "absolute" | "displacement"
 const OUTDIR = get(ENV, "EDM_OUTDIR", joinpath(pkgdir(ElectronDynamicsModels), "runs", "field_campaign_cm_phi0"))
 const N_CAP = haskey(ENV, "EDM_N") ? parse(Int, ENV["EDM_N"]) : typemax(Int)
