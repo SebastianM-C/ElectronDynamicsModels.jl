@@ -11,7 +11,7 @@ end
     N, nc, nx, ny = 8, 2, 3, 3
     cube = randn(Float64, N, nc, nx, ny)
     bins = [2, 4]
-    got = harmonic_maps(cube, bins)
+    got = harmonic_maps(cube, bins, window = nothing)
     @test size(got) == (length(bins), nc, nx, ny)
     @test eltype(got) <: Complex
     # must equal a per-component rfft sliced at `bins` (reference uses EDM's own FFTW import)
