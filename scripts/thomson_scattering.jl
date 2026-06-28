@@ -50,6 +50,8 @@ const NELEC = parse(Int, get(ENV, "EDM_N", "10000"))
 const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "8000"))
 const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
+const RELTOL = parse(Float64, get(ENV, "EDM_RELTOL", "1e-12"))   # ODE-solve rel tolerance (Vern9)
+const ABSTOL_ENV = get(ENV, "EDM_ABSTOL", "")                    # "" ⇒ abserr(a0); else this Float64
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
@@ -151,12 +153,13 @@ function abserr(a₀)
     return 10^expo
 end
 
+const ABSTOL = isempty(ABSTOL_ENV) ? abserr(a₀) : parse(Float64, ABSTOL_ENV)
 ensemble = EnsembleProblem(prob; prob_func, safetycopy = false)
 t_trajectories = @elapsed solution = solve(
     ensemble, Vern9(), EnsembleThreads();
-    reltol = 1.0e-12, abstol = abserr(a₀), trajectories = N
+    reltol = RELTOL, abstol = ABSTOL, trajectories = N
 )
-@info "trajectories solved" t_trajectories
+@info "trajectories solved" t_trajectories RELTOL ABSTOL
 
 # Radiation computation
 trajs = trajectory_interpolants(solution)
@@ -243,6 +246,8 @@ config = Dict{String, Any}(
     "N_samples" => N_samples,
     "samples_per_period" => samples_per_period,
     "n_substeps" => NSUBSTEPS,
+    "reltol" => RELTOL,                # ODE-solve tolerances (replay + small-a0 floor study)
+    "abstol" => ABSTOL,
     "mode" => string(FIELD_MODE),      # :split → (E,B,E_far,B_far) | :total → (E,B); mirrors lpwa.jl
     "sync_per_electron" => SYNC,       # replay input: run_spec_from_manifest reads this
     "observable" => "field",          # distinguishes this run from the 4-potential (_A) runs
