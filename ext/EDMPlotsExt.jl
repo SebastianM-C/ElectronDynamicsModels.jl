@@ -41,16 +41,19 @@ function ElectronDynamicsModels.plot_harmonic_grid(
             )
             hm = heatmap!(ax, xs, ys, data; colormap, colorrange = cr)
             if colorbar_offset
-                # Factor the shared power-of-ten into the Colorbar's native `label` and show short
-                # mantissa ticks. The wide m×10ⁿ labels otherwise trip Makie's overlap-hiding, which
-                # drops the ±peak labels (leaving a bare bar) on the tiny ~1e-20 small-a0 panels. Short
-                # mantissas never collide; the exponent rides the Colorbar's own label (stays attached).
+                # Factor the shared power-of-ten into the Colorbar's native `label` so the ticks carry
+                # only short mantissas (the exponent rides the Colorbar's own label and stays attached).
+                # The ±peak ticks would otherwise sit exactly on the colorrange boundary, and Makie
+                # drops boundary-coincident ticks at layout time on some panels — leaving a bare bar
+                # showing only "0". Nudging the two end ticks a hair *inside* the range (the labels still
+                # read the true extremes) makes them render reliably on every panel.
                 m = max(abs(cr[1]), abs(cr[2]))
                 e = m > 0 ? floor(Int, log10(m)) : 0
                 sc = 10.0^e
+                pad = 0.0015 * (cr[2] - cr[1])
                 Colorbar(
                     gl[1, 2], hm; width = 10, height = panelsize, ticklabelsize = 10, labelsize = 11,
-                    ticks = ([cr[1], 0.0, cr[2]],
+                    ticks = ([cr[1] + pad, 0.0, cr[2] - pad],
                         [string(round(cr[1] / sc; digits = 2)), "0", string(round(cr[2] / sc; digits = 2))]),
                     label = L"\times 10^{%$e}", labelrotation = 0,
                 )
@@ -58,8 +61,7 @@ function ElectronDynamicsModels.plot_harmonic_grid(
                 Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
             end
         end
-        # Guarantee horizontal room so the colorbar's min/max (±peak) tick labels never collide with
-        # the neighbouring panel and get overlap-hidden — they must ALWAYS show.
+        # Breathing room between columns so each colorbar's tick labels clear the neighbouring panel.
         min(ncols, ncomp) > 1 && colgap!(f.layout, 26)
         resize_to_layout!(f)
         f
