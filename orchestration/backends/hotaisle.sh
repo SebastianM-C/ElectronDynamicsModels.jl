@@ -8,6 +8,12 @@
 #   bash orchestration/backends/hotaisle.sh run orchestration/campaigns/<campaign>.sh
 #   bash orchestration/backends/hotaisle.sh teardown
 #
+# `run` REUSES a kept-warm, reachable VM if one is recorded (else provisions + warms a new one), so
+# the proven smoke→real flow shares ONE paid VM:
+#   hotaisle.sh run campaigns/smoke.sh   # provision+warm+smoke, KEEP warm — eyeball products
+#   hotaisle.sh run campaigns/lowa0_maps.sh   # reuses the SAME warm VM (no re-provision/warm)
+#   hotaisle.sh teardown                 # cost-safe delete (waits the reservation minimum)
+#
 # config.env: HOTAISLE_TEAM, HOTAISLE_GPUS, HOTAISLE_REPO_URL, HOTAISLE_BRANCH (, HOTAISLE_API).
 # Secrets stay external: API token at ~/.config/hotaisle/token; ntfy creds (driving-side) via NTFY_ENV.
 # BILLING: 1 GPU = per-minute (1-min minimum); 2/4 carry 60/120-min minimums. Teardown waits out the
@@ -51,8 +57,9 @@ set -e
 [ -x "$HOME/.juliaup/bin/julia" ] || curl -fsSL https://install.julialang.org | sh -s -- --yes
 export PATH="$HOME/.juliaup/bin:$PATH" JULIA_PKG_SERVER=""
 rm -rf EDM && git clone --quiet --branch "$BRANCH" "$REPO_URL" EDM
-# VM-local config.env (gitignored ⇒ not cloned): rocm local backend, no ntfy on the VM.
-printf 'LOCAL_BACKEND=rocm\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=\n' > EDM/orchestration/config.env
+# VM-local config.env (gitignored ⇒ not cloned): rocm local backend, no ntfy on the VM, and
+# REDUCE_OVERLAP=1 so each cell's reduction overlaps the next cell's GPU compute (paid-time win).
+printf 'LOCAL_BACKEND=rocm\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=\nREDUCE_OVERLAP=1\n' > EDM/orchestration/config.env
 ok=0; for i in 1 2 3; do
   if julia --startup=no --project=EDM/scripts -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'; then ok=1; break; fi
   echo "instantiate retry $i"; sleep 20
@@ -60,26 +67,64 @@ done; [ "$ok" = 1 ] || { echo "instantiate failed"; exit 1; }
 WARM
 }
 
+# Is there a kept-warm VM we can reuse? (lets smoke→real, or several campaigns, share ONE paid VM
+# instead of re-provisioning + re-warming — ~8 min of paid clone/instantiate — every time.)
+vm_reachable() { [ -f "$STATE" ] && read -r NAME IP PROV_TS MIN_MIN < "$STATE" && [ -n "${IP:-}" ] && ssh_vm true 2>/dev/null; }
+
+# Overlay the driver's current orchestration/ onto the VM clone (keeping the VM's own config.env),
+# so the VM runs THIS machine's framework + campaign files — even ones not yet pushed to BRANCH.
+push_orchestration() {
+    /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS" --exclude='config.env' "$ORCH/" hotaisle@"$IP":EDM/orchestration/
+}
+
+# Integrity-check the downloaded reduced products: md5 each non-cube file VM-vs-local; alert on any
+# mismatch/missing. Cheap insurance against a truncated rsync silently corrupting the physics.
+download_verify() {
+    local dst=$1 bad=0 vsum fn lsum
+    while read -r vsum fn; do
+        [ -n "$vsum" ] || continue
+        fn=$(basename "$fn")
+        if [ ! -f "$dst/$fn" ]; then log "[verify] MISSING locally: $fn"; bad=1; continue; fi
+        lsum=$(md5sum "$dst/$fn" | awk '{print $1}')
+        [ "$lsum" = "$vsum" ] || { log "[verify] MD5 MISMATCH: $fn (vm=$vsum local=$lsum)"; bad=1; }
+    done < <(ssh_vm "cd EDM/runs/$CAMPAIGN && md5sum * 2>/dev/null | grep -vE 'field_.*\\.jls'")
+    [ "$bad" -eq 0 ] && { log "[verify] $CAMPAIGN OK (md5 match; cubes excluded)"; return 0; }
+    notify rotating_light high "EDM download CHECK FAILED" "$CAMPAIGN: md5 mismatch/missing on download to $dst"
+    return 1
+}
+
 run_campaign() {
     local cf="${1:?usage: hotaisle.sh run <campaign.sh>}" cname; cname=$(basename "$cf")
-    . "$cf"   # CAMPAIGN (for product paths); the same file is read again on the VM
-    trap 'rc=$?; log "FAILED (rc=$rc) before VM was handed off"; notify rotating_light urgent "EDM hotaisle FAILED" "$CAMPAIGN setup errored (rc=$rc); tearing down"; teardown; exit $rc' ERR
-    provision; wait_ssh; warm
-    echo "$NAME $IP $PROV_TS $(min_resv)" > "$STATE"
-    trap - ERR    # VM is up + warm; a campaign/download hiccup below must NOT auto-destroy it
+    . "$cf"   # CAMPAIGN (for product paths); the same file is re-read on the VM
+    if vm_reachable; then
+        log "reusing kept-warm VM $NAME ($IP) from $STATE (no provision/warm)"
+    else
+        trap 'rc=$?; log "FAILED (rc=$rc) before VM was handed off"; notify rotating_light urgent "EDM hotaisle FAILED" "$CAMPAIGN setup errored (rc=$rc); tearing down"; teardown; exit $rc' ERR
+        provision; wait_ssh; warm
+        echo "$NAME $IP $PROV_TS $(min_resv)" > "$STATE"
+        trap - ERR    # VM is up + warm; a campaign/download hiccup below must NOT auto-destroy it
+    fi
+    push_orchestration   # VM runs the driver's framework + this campaign file (works pre-merge too)
     notify hourglass_flowing_sand default "EDM hotaisle started" "$CAMPAIGN on $NAME (${GPUS}×MI300X)"
     log "launching $CAMPAIGN on the VM via the local backend (rocm), detached…"
-    ssh_vm "cd EDM && setsid nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo launched"
-    log "polling for completion…"
+    # nohup + a pidfile (not setsid): keeps the driver's PID so we can tell "still running" from "crashed".
+    ssh_vm "cd EDM && mkdir -p runs && nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid"
+    log "polling for completion (DONE marker, or driver-death = crash so we don't poll forever while billing)…"
     until ssh_vm "grep -q '\\] ${CAMPAIGN} DONE' runs/${CAMPAIGN}.out 2>/dev/null"; do
+        if ! ssh_vm "kill -0 \$(cat runs/${CAMPAIGN}.pid 2>/dev/null) 2>/dev/null"; then
+            notify rotating_light urgent "EDM hotaisle CRASH" "$CAMPAIGN driver died with no DONE on $NAME — VM KEPT for inspection; teardown when done (verify in TUI)."
+            log "[ERROR] driver process gone, no DONE marker — likely crashed. VM $NAME KEPT. tail:"; ssh_vm "tail -n 20 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[vm] /'
+            return 1
+        fi
         sleep 60; ssh_vm "tail -n1 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[vm] /'
     done
     log "campaign done; downloading reduced products (cubes excluded)…"
     mkdir -p "$OUT/$CAMPAIGN"
     /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS" --exclude='field_*.jls' \
         hotaisle@"$IP":"EDM/runs/$CAMPAIGN/" "$OUT/$CAMPAIGN/"
+    download_verify "$OUT/$CAMPAIGN" || log "[verify] integrity problems — products also remain on VM:EDM/runs/$CAMPAIGN"
     notify white_check_mark default "EDM hotaisle done" "$CAMPAIGN → $OUT/$CAMPAIGN ; VM $NAME KEPT WARM — run teardown."
-    log "products → $OUT/$CAMPAIGN ; VM $NAME KEPT WARM (state $STATE). Finish: $0 teardown"
+    log "products → $OUT/$CAMPAIGN ; VM $NAME KEPT WARM (state $STATE). Add more: $0 run <campaign>. Finish: $0 teardown"
 }
 
 teardown() {
