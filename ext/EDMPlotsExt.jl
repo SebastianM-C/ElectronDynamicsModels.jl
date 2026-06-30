@@ -6,6 +6,13 @@ module EDMPlotsExt
 using ElectronDynamicsModels
 using CairoMakie
 
+# Printf-free scientific-notation formatter (Printf isn't a dep of this extension). "2.65e-20".
+function _sci(x; digits = 2)
+    x == 0 && return "0"
+    e = floor(Int, log10(abs(x)))
+    return string(round(x / 10.0^e; digits = digits)) * "e" * string(e)
+end
+
 function ElectronDynamicsModels.plot_harmonic_grid(
         maps::AbstractArray{<:Number, 3}, x_grid, y_grid;
         w₀ = 1, labels, title = "",
@@ -30,24 +37,32 @@ function ElectronDynamicsModels.plot_harmonic_grid(
             gl = f[row, col] = GridLayout()
             ax = Axis(
                 gl[1, 1]; width = panelsize, height = panelsize, xlabel = xlab, ylabel = ylab,
-                title = "$(labels[c])  (peak $(round(maximum(abs, cmap_c); sigdigits = 3)))",
+                title = "$(labels[c])  (peak $(_sci(maximum(abs, cmap_c))))",
             )
             hm = heatmap!(ax, xs, ys, data; colormap, colorrange = cr)
             if colorbar_offset
-                # Explicit lo/mid/hi positions silence PlotUtils' "No strict ticks found" on the
-                # tiny ~1e-17 ranges; Makie's default formatter then renders them natively as
-                # m×10ⁿ (RichText superscripts), since the range spans >4 orders of magnitude.
-                # Round the positions to 3 sig figs so the native labels stay short — full precision
-                # (2.96…×10⁻¹³) protrudes far enough right to collide with the neighbouring panel,
-                # tripping Makie's overlap-hiding (drops the ±peak labels on the middle column).
+                # Factor the shared power-of-ten into the Colorbar's native `label` so the ticks carry
+                # only short mantissas (the exponent rides the Colorbar's own label and stays attached).
+                # The ±peak ticks would otherwise sit exactly on the colorrange boundary, and Makie
+                # drops boundary-coincident ticks at layout time on some panels — leaving a bare bar
+                # showing only "0". Nudging the two end ticks a hair *inside* the range (the labels still
+                # read the true extremes) makes them render reliably on every panel.
+                m = max(abs(cr[1]), abs(cr[2]))
+                e = m > 0 ? floor(Int, log10(m)) : 0
+                sc = 10.0^e
+                pad = 0.0015 * (cr[2] - cr[1])
                 Colorbar(
-                    gl[1, 2], hm; width = 10, height = panelsize,
-                    ticks = round.([cr[1], (cr[1] + cr[2]) / 2, cr[2]]; sigdigits = 3),
+                    gl[1, 2], hm; width = 10, height = panelsize, ticklabelsize = 10, labelsize = 11,
+                    ticks = ([cr[1] + pad, 0.0, cr[2] - pad],
+                        [string(round(cr[1] / sc; digits = 2)), "0", string(round(cr[2] / sc; digits = 2))]),
+                    label = L"\times 10^{%$e}", labelrotation = 0,
                 )
             else
                 Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
             end
         end
+        # Breathing room between columns so each colorbar's tick labels clear the neighbouring panel.
+        min(ncols, ncomp) > 1 && colgap!(f.layout, 26)
         resize_to_layout!(f)
         f
     end

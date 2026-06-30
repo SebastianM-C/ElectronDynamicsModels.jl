@@ -49,7 +49,7 @@ formula is compared against. `style` (colormap + per-panel colorrange) comes fro
 function write_field_products(
         fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
         w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix,
-        style = harmonic_field_style(),
+        style = harmonic_field_style(), window = "hann",
     )
     fieldsets = fields_far_h === nothing ? (("total", fields_h),) :
         (("total", fields_h), ("far", fields_far_h))
@@ -68,10 +68,12 @@ function write_field_products(
         println("saved → $out")
         write_derived(
             outdir; kind = "h$n", label = @sprintf("%dω₁ field maps", n), run_id = run_tag,
-            plot = basename(out), source = source_datafile, setup = Dict("field" => ftype),
+            plot = basename(out), source = source_datafile,
+            setup = Dict("field" => ftype), plot_params = Dict("apodization" => window),
             description = "Field harmonic maps at $(n)ω₁ — each panel a component (Eˣ…Bᶻ). " *
                 "Toggle total (far 1/R + near 1/R²) vs far (radiation 1/R only); the far field is " *
-                "what the LPWA analytic formula is compared against in the lpwa-vs-numeric view.",
+                "what the LPWA analytic formula is compared against in the lpwa-vs-numeric view. " *
+                "Time→frequency reduction apodized with the '$window' window (leakage suppression).",
         )
     end
     return
@@ -101,21 +103,24 @@ symmetric per-panel range) is owned by [`harmonic_field_style`], applied in [`wr
 """
 function write_harmonic_products(
         fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
-        harmonics = (1, 2, 3, 4), title_prefix, fileprefix
+        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, window = hann
     )
     N_samples = size(fld.E, 1)
     freqs = rfftfreq(N_samples, 1 / δt)
     hbins = harmonic_bins(N_samples, δt, ω, harmonics)
-    fields_h = harmonic_maps(fld, hbins)        # (length(harmonics), 6, Nx, Ny): E in 1:3, B in 4:6
+    # `window` apodizes the time→frequency reduction (default Hann): the bare rfft leaks the strong
+    # fundamental's skirt into the weak-harmonic bins, sinking small-a0 harmonics into a leakage floor.
+    # See precision_floor_diagnostic. The window NAME is recorded below for provenance/reproducibility.
+    win_name = window === nothing ? "none" : string(nameof(window))
+    fields_h = harmonic_maps(fld, hbins; window)        # (length(harmonics), 6, Nx, Ny): E in 1:3, B in 4:6
 
     # Far-field-only harmonic maps, saved next to the total `fields_h` so the comparison script
     # can difference the radiation field on its own (LPWA is a far-field formula → comparing it
     # against the numeric far field is the rigorous apples-to-apples). A split cube
     # (accumulate_field mode=Val(:split)) carries `fld.E_far`/`fld.B_far`; a total cube does not.
-    # Reduce the far field the SAME way as the total when present, else leave it `nothing` so the
-    # serialized layout stays backward-compatible with the already-published total-only hmaps.
+    # Reduce the far field the SAME way (same window) as the total when present, else leave it `nothing`.
     if hasproperty(fld, :E_far)
-        fields_far_h = harmonic_maps((; E = fld.E_far, B = fld.B_far), hbins)
+        fields_far_h = harmonic_maps((; E = fld.E_far, B = fld.B_far), hbins; window)
     else
         fields_far_h = nothing
     end
@@ -126,23 +131,25 @@ function write_harmonic_products(
         hmapsfile,
         (;
             fields_h, fields_far_h, harmonics, ffund,
-            x_grid = collect(x_grid), y_grid = collect(y_grid), w₀,
+            x_grid = collect(x_grid), y_grid = collect(y_grid), w₀, window = win_name,
         ),
     )
-    println("serialized harmonic maps → $hmapsfile")
+    println("serialized harmonic maps → $hmapsfile  (window = $win_name)")
 
     # Field maps → per-harmonic `h<n>` chips (total + far `setup.field` toggle), drawn straight from
     # the reduced maps by write_field_products so the cached-hmaps recolor path shares the code.
     write_field_products(
         fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
-        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix,
+        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix, window = win_name,
     )
 
     plots = String[]
     psfile = joinpath(outdir, "powspec_$(run_tag).png")
+    # Power spectrum stays UN-windowed (window = nothing): it is the diagnostic that must still SHOW the
+    # raw leakage floor (apodizing it would hide the very thing it diagnoses).
     plot_power_spectrum(
-        freqs, power_spectrum(fld);
-        ω, labels = COMPLABELS, title = "$title_prefix — field power spectra", outfile = psfile,
+        freqs, power_spectrum(fld; window = nothing);
+        ω, labels = COMPLABELS, title = "$title_prefix — field power spectra (un-windowed)", outfile = psfile,
     )
     println("saved → $psfile")
     push!(plots, psfile)
@@ -154,7 +161,7 @@ function write_harmonic_products(
         w₀, harmonics, run_tag, outdir, source_datafile, title_prefix, fileprefix,
     )
 
-    return (; hmapsfile, plots, fields_h, fields_far_h)
+    return (; hmapsfile, plots, fields_h, fields_far_h, window = win_name)
 end
 
 """
@@ -295,13 +302,15 @@ function recover_from_manifest(toml)
     println("cube absent — replotting field maps + phase from $(basename(hmapsfile)) …")
     h = deserialize(hmapsfile)
     _retire_stale_phase(dir, run_tag)
-    # Guard older hmaps that predate fields_far_h/ffund: no far variant, integer-harmonic title.
+    # Guard older hmaps that predate fields_far_h/ffund/window: no far variant, integer-harmonic title,
+    # unknown apodization.
     far = hasproperty(h, :fields_far_h) ? h.fields_far_h : nothing
     ffund = hasproperty(h, :ffund) ? h.ffund : Float64.(collect(h.harmonics))
+    win = hasproperty(h, :window) ? h.window : "unknown"
     write_field_products(
         h.fields_h, far, h.harmonics, ffund, h.x_grid, h.y_grid;
         w₀ = h.w₀, run_tag, outdir = dir,
-        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
+        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, window = win,
     )
     return write_phase_products(
         h.fields_h, h.x_grid, h.y_grid;

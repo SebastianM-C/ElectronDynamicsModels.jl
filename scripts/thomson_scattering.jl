@@ -50,6 +50,11 @@ const NELEC = parse(Int, get(ENV, "EDM_N", "10000"))
 const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "8000"))
 const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
+const RELTOL = parse(Float64, get(ENV, "EDM_RELTOL", "1e-12"))   # ODE-solve rel tolerance (Vern9)
+const ABSTOL_ENV = get(ENV, "EDM_ABSTOL", "")                    # "" ⇒ abserr(a0); else this Float64
+const INTERP_SAVEAT = get(ENV, "EDM_INTERP_SAVEAT", "")          # trajectory-spline knots/laser-period;
+#   "" ⇒ adaptive (Vern9 native steps; sparse at small a0 ⇒ coarse cubic spline). A number forces uniform
+#   saveat = T/knots-per-period so the CubicSpline has dense knots (small-a0 2ω-floor source study).
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
@@ -151,12 +156,18 @@ function abserr(a₀)
     return 10^expo
 end
 
+const ABSTOL = isempty(ABSTOL_ENV) ? abserr(a₀) : parse(Float64, ABSTOL_ENV)
+# Optional uniform saveat (= T_laser / knots-per-period) so the trajectory CubicSpline gets dense knots.
+# Passed ONLY when the knob is set, so the default path is byte-identical to the production solve
+# (no saveat ⇒ Vern9's adaptive output). The solve always steps adaptively to RELTOL/ABSTOL regardless.
+const SAVEAT_KW = isempty(INTERP_SAVEAT) ? (;) :
+    (; saveat = collect(τi:((2π / ω) / parse(Float64, INTERP_SAVEAT)):τf))
 ensemble = EnsembleProblem(prob; prob_func, safetycopy = false)
 t_trajectories = @elapsed solution = solve(
     ensemble, Vern9(), EnsembleThreads();
-    reltol = 1.0e-12, abstol = abserr(a₀), trajectories = N
+    reltol = RELTOL, abstol = ABSTOL, trajectories = N, SAVEAT_KW...
 )
-@info "trajectories solved" t_trajectories
+@info "trajectories solved" t_trajectories RELTOL ABSTOL knots_per_period = isempty(INTERP_SAVEAT) ? "adaptive" : INTERP_SAVEAT
 
 # Radiation computation
 trajs = trajectory_interpolants(solution)
@@ -243,6 +254,10 @@ config = Dict{String, Any}(
     "N_samples" => N_samples,
     "samples_per_period" => samples_per_period,
     "n_substeps" => NSUBSTEPS,
+    "reltol" => RELTOL,                # ODE-solve tolerances (replay + small-a0 floor study)
+    "abstol" => ABSTOL,
+    "interp_saveat" => isempty(INTERP_SAVEAT) ? "adaptive" : INTERP_SAVEAT,  # trajectory-spline knots/period
+
     "mode" => string(FIELD_MODE),      # :split → (E,B,E_far,B_far) | :total → (E,B); mirrors lpwa.jl
     "sync_per_electron" => SYNC,       # replay input: run_spec_from_manifest reads this
     "observable" => "field",          # distinguishes this run from the 4-potential (_A) runs

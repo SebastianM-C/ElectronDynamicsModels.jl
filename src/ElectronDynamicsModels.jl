@@ -48,7 +48,8 @@ export ReferenceFrame, Worldline,
     retarded_time_problem,
     gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_power, gpu_utilization,
     gpu_memory_info, gpu_sm_count, gpu_max_threads_per_sm, thread_fill_occupancy,
-    accumulate_field_sharded
+    accumulate_field_sharded,
+    hann, blackman_harris
 
 include("base.jl")
 include("dynamics.jl")
