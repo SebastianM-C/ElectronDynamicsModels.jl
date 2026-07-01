@@ -26,6 +26,7 @@ using UUIDs
 
 include(joinpath(@__DIR__, "manifest.jl"))   # RunManifests: run_provenance, write_solver_manifest
 include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with the recovery path)
+include(joinpath(@__DIR__, "gpu_telemetry.jl"))   # with_gpu_sampler + gpu_manifest_section → the manifest [gpu] section
 
 # GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
@@ -198,17 +199,24 @@ screen = ObserverScreen(
 # Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
 # them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
 ndev = gpu_device_count(gpu_backend)
-t_field = @elapsed fld = if ndev > 1
-    @info "sharding electrons across $ndev devices"
-    accumulate_field_sharded(
-        trajs, screen, GPUKernelRK4(), gpu_backend;
-        n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
-    )
-else
-    accumulate_field(
-        trajs, screen, GPUKernelRK4(), gpu_backend;
-        n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
-    )
+Threads.nthreads() >= 2 ||
+    @warn "only $(Threads.nthreads()) Julia thread — the GPU telemetry sampler starves behind the kernel; [gpu] sample stats may be empty (run with -t≥2)"
+# Sample GPU power/util/VRAM on a spawned thread across the accumulate_field window (→ manifest [gpu]).
+t_field = @elapsed begin
+    fld, gpu_samples = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT) do
+        if ndev > 1
+            @info "sharding electrons across $ndev devices"
+            accumulate_field_sharded(
+                trajs, screen, GPUKernelRK4(), gpu_backend;
+                n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+            )
+        else
+            accumulate_field(
+                trajs, screen, GPUKernelRK4(), gpu_backend;
+                n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+            )
+        end
+    end
 end
 @info "field accumulated" t_field ndev
 
@@ -300,8 +308,12 @@ timing = Dict{String, Any}(
 # Sharding → [sharding] (axis → partition count). Flat + generic so future axes (e.g. a Z-split
 # 3D screen) slot in with no schema change. NOT in [timing] — a device count is not a duration.
 sharding = Dict{String, Any}("electrons" => ndev)
+# GPU telemetry → [gpu] (static device snapshot + power/util/VRAM stats over the field window).
+# `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
+gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_samples)
+extra = Dict{String, Any}("timing" => timing, "sharding" => sharding)
+gpu === nothing || (extra["gpu"] = gpu)
 manifestfile = write_solver_manifest(
-    OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs,
-    extra = Dict("timing" => timing, "sharding" => sharding),
+    OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs, extra,
 )
 println("manifest → $manifestfile")
