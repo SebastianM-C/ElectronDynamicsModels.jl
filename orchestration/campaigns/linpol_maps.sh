@@ -1,12 +1,5 @@
-# campaigns/linpol_maps.sh — linear-polarization radiated-field harmonic maps (Nx=200, N=400).
-# PURE DATA: no infra, no backend, no run-tags (the core mints UUIDs). Runs on any backend:
-#   bash orchestration/backends/local.sh   orchestration/campaigns/linpol_maps.sh
-#   bash orchestration/backends/hotaisle.sh orchestration/campaigns/linpol_maps.sh
-#   sbatch orchestration/backends/slurm.sbatch orchestration/campaigns/linpol_maps.sh
-#
-# Same harmonic-map recipe as lowa0_maps (uniform EDM_INTERP_SAVEAT=16 floor fix, φ0=-π/2 published
-# convention) but with EDM_POL=linear instead of the default circular_minus, so it is directly
-# comparable to the circular runs at matched a0. a0 spans 1e-5 (deep-linear ∝a0) to 0.1.
+# campaigns/linpol_maps.sh — linear-pol radiated-field harmonic maps (Nx=200, N=400, a0 1e-5…0.1).
+# EDM_POL=linear (vs default circular_minus): directly comparable to the circular runs at matched a0.
 CAMPAIGN=linpol_maps
 SCRIPT=scripts/thomson_scattering.jl
 BASE=(

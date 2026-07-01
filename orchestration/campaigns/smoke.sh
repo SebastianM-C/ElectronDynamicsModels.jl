@@ -1,11 +1,5 @@
-# campaigns/smoke.sh — tiny end-to-end validation cell, runnable on ANY backend.
-# PURE DATA. Proves the whole toolchain (ODE solve → field accumulation → reduction →
-# products) on a trivially small grid before committing to a costly campaign. Use it as the
-# first thing on a fresh machine / a freshly-provisioned cloud VM:
-#   bash   orchestration/backends/local.sh    orchestration/campaigns/smoke.sh
-#   sbatch orchestration/backends/slurm.sbatch orchestration/campaigns/smoke.sh
-#   bash   orchestration/backends/hotaisle.sh run orchestration/campaigns/smoke.sh
-# A clean exit + a run_<uuid>.toml with its PNG/derived sidecars beside it == the box is good.
+# campaigns/smoke.sh — tiny end-to-end validation cell (ANY backend): ODE solve → field accumulation →
+# reduction → products on a trivial grid. Run first on a fresh machine/VM; clean exit + sidecars == good.
 CAMPAIGN=smoke
 SCRIPT=scripts/thomson_scattering.jl
 BASE=(

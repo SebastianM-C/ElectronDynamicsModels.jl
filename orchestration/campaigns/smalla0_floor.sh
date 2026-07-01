@@ -1,8 +1,5 @@
-# campaigns/smalla0_floor.sh — small-a0 2ω floor investigation (OAT / star design).
-# PURE DATA. One baseline + independent 1-D arms (a0, interp_saveat, N, reltol, n_substeps). The
-# dashboard renders this as a hub-and-arms star (see the OAT family/hub support in the builder).
-# Run on any backend, e.g.:  bash orchestration/backends/local.sh orchestration/campaigns/smalla0_floor.sh
-# (cuda vs rocm is a BACKEND choice — the old "baseWS" rocm cross-check is just this baseline on rocm.)
+# campaigns/smalla0_floor.sh — small-a0 2ω floor investigation (OAT/star: one baseline + 1-D arms).
+# Arms over a0, interp_saveat, N, reltol, n_substeps; renders as a hub-and-arms star in the dashboard.
 CAMPAIGN=smalla0_floor
 SCRIPT=scripts/thomson_scattering.jl
 BASE=(
