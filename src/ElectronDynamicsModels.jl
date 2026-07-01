@@ -47,7 +47,8 @@ export ReferenceFrame, Worldline,
     GPUCubicSpline, GPUKernelRK4, GPUKernelTsit5, recommended_n_substeps,
     retarded_time_problem,
     gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_power, gpu_utilization,
-    gpu_memory_info, gpu_sm_count, gpu_max_threads_per_sm, thread_fill_occupancy,
+    gpu_memory_info, gpu_telemetry_child_cmd, gpu_sm_count, gpu_max_threads_per_sm,
+    thread_fill_occupancy,
     accumulate_field_sharded,
     hann, blackman_harris
 

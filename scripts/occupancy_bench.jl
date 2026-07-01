@@ -1,14 +1,14 @@
 # Occupancy + telemetry bench for accumulate_field at PRODUCTION screen size. Occupancy is set by
 # the per-launch thread count (Nx·Ny), not the electron count — so a handful of electrons (EDM_N,
 # default 20) measures the prod-size kernel cheaply. Reports the STATIC thread-fill occupancy, plus
-# power / utilization sampled — on a SEPARATE OS THREAD — DURING the accumulate_field run.
+# power / utilization sampled — by an OUT-OF-PROCESS child — DURING the accumulate_field run.
 #
 #   EDM_GPU_BACKEND=cuda EDM_NX=400 EDM_NSAMPLES=6000 EDM_N=20 \
-#     julia +release -t2 --startup=no --project=scripts scripts/occupancy_bench.jl
+#     julia +release --startup=no --project=scripts scripts/occupancy_bench.jl
 #
-# Needs ≥2 Julia threads (-t2): the sampler runs on a spawned thread while the main thread drives the
-# launch-bound accumulate_field loop (which never yields, so a cooperative @async sampler would
-# starve). NVML/sysfs reads are host-side + thread-safe and GPU work is async, so they overlap.
+# Sampling uses with_gpu_sampler (gpu_telemetry.jl): an out-of-process child reading driver
+# sysfs / nvidia-smi, so it can't starve behind the launch-bound accumulate_field loop, wedge
+# on the HIP runtime, or be suspended by Julia's GC the way in-process samplers were.
 # Setup mirrors thomson_scattering.jl (LaguerreGauss circular beam, sunflower electrons); the bench
 # does NOT serialize the (prod-size, ~46–92 GB) field cube — it only times the kernel + telemetry.
 
@@ -29,6 +29,8 @@ elseif GPU_BACKEND == "rocm"
 else
     error("EDM_GPU_BACKEND must be \"cuda\" or \"rocm\", got $(repr(GPU_BACKEND))")
 end
+
+include(joinpath(@__DIR__, "gpu_telemetry.jl"))   # with_gpu_sampler (out-of-process sampler child)
 
 const c = 137.03599908330932
 const NX = parse(Int, get(ENV, "EDM_NX", "400"))
@@ -99,43 +101,31 @@ nthr = NX * NX
 @printf("thread-fill occupancy @ NX=%d (%d threads/electron) = %.3f  (>1 ⇒ waves)\n",
     NX, nthr, thread_fill_occupancy(backend, nthr))
 
-# ── telemetry sampler on a spawned OS thread (power/util DURING the run) ──
-Threads.nthreads() >= 2 ||
-    @warn "only $(Threads.nthreads()) Julia thread — the sampler will starve; rerun with -t2"
-const running = Threads.Atomic{Bool}(true)
-const samples = NTuple{5, Float64}[]   # (t, power_W, compute_util, mem_util, vram_used_B); single writer
-t0 = time()
-sampler = Threads.@spawn begin
-    while running[]
-        u = gpu_utilization(backend)
-        m = gpu_memory_info(backend)
-        push!(samples, (time() - t0, gpu_power(backend), Float64(u.compute), Float64(u.memory), Float64(m.used)))
-        sleep(SAMPLE_DT)
+# ── the measured run (split mode, like prod; no serialization — bench only), telemetry sampled DURING ──
+GC.gc()
+println("accumulating field ($NELEC electrons, NX=$NX, Ns=$NSAMPLES, split) …")
+t_field = @elapsed begin
+    fld, telem = with_gpu_sampler(backend, SAMPLE_DT; devices = [gpu_device(backend)]) do
+        accumulate_field(
+            trajs, screen, GPUKernelRK4(), backend;
+            n_substeps = NSUBSTEPS, mode = Val(:split), sync_per_electron = false)
     end
 end
 
-# ── the measured run (split mode, like prod; no serialization — bench only) ──
-GC.gc()
-println("accumulating field ($NELEC electrons, NX=$NX, Ns=$NSAMPLES, split) …")
-t_field = @elapsed fld = accumulate_field(
-    trajs, screen, GPUKernelRK4(), backend; n_substeps = NSUBSTEPS, mode = Val(:split), sync_per_electron = false)
-running[] = false
-wait(sampler)
-
 # ── report ──
-pw = Float64[s[2] for s in samples]
-cu = Float64[s[3] for s in samples]
-mu = Float64[s[4] for s in samples]
-vr = Float64[s[5] for s in samples]
+samples = telem.samples   # rows (t, device, power_W, compute_util, mem_util, vram_used_B)
+pw = Float64[s[3] for s in samples]
+cu = Float64[s[4] for s in samples]
+mu = Float64[s[5] for s in samples]
+vr = Float64[s[6] for s in samples]
 @printf("\nrun: %d electrons in %.1f s  (%d telemetry samples @ %.2gs)\n", NELEC, t_field, length(samples), SAMPLE_DT)
 if !isempty(pw)
     @printf("power (W):     mean %.1f   peak %.1f   min %.1f\n", mean(pw), maximum(pw), minimum(pw))
     @printf("compute util:  mean %.2f   peak %.2f\n", mean(cu), maximum(cu))
     @printf("memory util:   mean %.2f   peak %.2f\n", mean(mu), maximum(mu))
 end
-# Kernel-active window (compute util above noise) — isolates the kernel from the host pullback,
-# which on AMD pegs the CPU and starves the sampler, concentrating samples in the active window.
-let act = Float64[s[1] for s in samples if s[3] > 0.05]
+# Kernel-active window (compute util above noise) — isolates the kernel from the host pullback.
+let act = Float64[s[1] for s in samples if s[4] > 0.05]
     isempty(act) || @printf("GPU-active window: %.1f–%.1f s  (≈%.1f s kernel; @elapsed incl. host pullback = %.1f s)\n",
         minimum(act), maximum(act), maximum(act) - minimum(act), t_field)
 end

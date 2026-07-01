@@ -49,18 +49,38 @@ function _amd_device_sysfs(dev = AMDGPU.device())
     error("gpu telemetry: no /sys/class/drm card matches PCI $pci")
 end
 
-function EDM.gpu_power(::ROCBackend)
-    dev = _amd_device_sysfs()
+# The hwmon power file under a card's sysfs dir: `power1_average` where the driver provides
+# it (most dGPUs), else the instantaneous `power1_input`. Reports µW.
+function _amd_power_file(card::AbstractString)
     hw = first(filter(d -> startswith(basename(d), "hwmon"),
-        readdir(joinpath(dev, "hwmon"); join = true)))
+        readdir(joinpath(card, "hwmon"); join = true)))
     f = isfile(joinpath(hw, "power1_average")) ? "power1_average" : "power1_input"
-    return parse(Int, strip(read(joinpath(hw, f), String))) / 1.0e6   # µW → W
+    return joinpath(hw, f)
 end
+
+EDM.gpu_power(::ROCBackend) =
+    parse(Int, strip(read(_amd_power_file(_amd_device_sysfs()), String))) / 1.0e6   # µW → W
 
 function EDM.gpu_utilization(::ROCBackend)
     dev = _amd_device_sysfs()
     rd(f) = isfile(joinpath(dev, f)) ? parse(Int, strip(read(joinpath(dev, f), String))) / 100 : NaN
     return (compute = rd("gpu_busy_percent"), memory = rd("mem_busy_percent"))
+end
+
+# Telemetry child: HIP is touched only HERE to resolve each device's sysfs paths once; the
+# spawned scripts/gputrace.sh then reads the amdgpu driver's counters (VRAM included, via
+# `mem_info_vram_used` — no hipMemGetInfo) from its own process, immune to the solver's HIP
+# locks and Julia's GC/timer coupling. Sysfs paths contain no ':' so the devspec join is safe.
+function EDM.gpu_telemetry_child_cmd(::ROCBackend, device_ids::AbstractVector{<:Integer},
+        dt::Real, stopfile::AbstractString)
+    script = joinpath(pkgdir(EDM), "scripts", "gputrace.sh")
+    specs = map(device_ids) do i
+        card = _amd_device_sysfs(AMDGPU.devices()[i])
+        mb = joinpath(card, "mem_busy_percent")   # absent on some devices (e.g. iGPUs) → nan
+        join([string(i), _amd_power_file(card), joinpath(card, "gpu_busy_percent"),
+            isfile(mb) ? mb : "-", joinpath(card, "mem_info_vram_used")], ":")
+    end
+    return `sh $script $dt $(getpid()) $stopfile $specs`
 end
 
 end

@@ -44,6 +44,23 @@ function gpu_utilization end
 Current-device global memory, in bytes."""
 function gpu_memory_info end
 
+"""    gpu_telemetry_child_cmd(backend, device_ids, dt, stopfile) -> Cmd
+
+Build the OUT-OF-PROCESS telemetry sampler command for the (1-based) `device_ids`: a child
+that emits one canonical TSV row per device every `dt` seconds on stdout
+(`epoch_s  device  power_W  compute_util  mem_util  vram_used_B`; `nan` for counters a
+device doesn't expose) and exits when `stopfile` appears or the parent dies. The vendor
+runtime is touched only while BUILDING the command (resolving sysfs paths / NVML uuids);
+the child itself reads driver sysfs (AMD, scripts/gputrace.sh) or runs `nvidia-smi -lms`
+(NVIDIA, scripts/gputrace_cuda.sh) and shares nothing with this process.
+
+Sampling must live out of process: an in-process tick either wedges on the vendor runtime
+behind a backed-up kernel stream, or — even with a runtime-free tick — is suspended wholesale
+with the sleeping task by Julia's GC/libuv-timer coupling while the solver's host thread
+allocates (measured on the production W7900 host: 0 ticks/15 s under pure-CPU alloc churn,
+1 tick/98.5 s over a real `accumulate_field` window)."""
+function gpu_telemetry_child_cmd end
+
 """    gpu_sm_count(backend) -> Int
 
 Streaming-multiprocessor (CU on AMD) count of the current device."""
@@ -70,6 +87,10 @@ for f in (
 end
 gpu_device!(b::KA.Backend, ::Integer) = error(
     "gpu_device!: no GPU vendor extension loaded for ", typeof(b), " — load CUDA.jl or AMDGPU.jl"
+)
+gpu_telemetry_child_cmd(b::KA.Backend, ::AbstractVector{<:Integer}, ::Real, ::AbstractString) = error(
+    "gpu_telemetry_child_cmd: no GPU vendor extension loaded for ", typeof(b),
+    " — load CUDA.jl or AMDGPU.jl"
 )
 
 """
