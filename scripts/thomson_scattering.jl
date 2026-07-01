@@ -6,6 +6,7 @@
 #
 # ENV knobs (defaults = full production): EDM_GPU_BACKEND (rocm|cuda), EDM_A0,
 # EDM_INITIAL_PHASE, EDM_NX, EDM_N, EDM_NSAMPLES, EDM_SPP, EDM_NSUBSTEPS,
+# EDM_POL (linear|circular[_plus]|circular_minus),
 # EDM_SYNC_PER_ELECTRON, EDM_OUTDIR. Writes the field .jls + per-harmonic PNGs +
 # run_<uuid>.toml manifest.
 
@@ -77,7 +78,7 @@ a₀ = A0
 
 p_radial = 2
 m_azimuthal = -2
-pol = :circular_minus   # opposite circular handedness — matches the LPWA analytic trajectory's spin; recorded in [laser].pol
+pol = Symbol(get(ENV, "EDM_POL", "circular_minus"))   # EDM_POL: :linear | :circular[_plus] | :circular_minus (default matches the LPWA analytic trajectory's spin); recorded in [laser].pol
 profile = :gaussian
 z_focus = 0.0
 
