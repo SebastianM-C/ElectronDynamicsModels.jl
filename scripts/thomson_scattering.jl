@@ -200,11 +200,12 @@ screen = ObserverScreen(
 # Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
 # them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
 ndev = gpu_device_count(gpu_backend)
-Threads.nthreads() >= 2 ||
-    @warn "only $(Threads.nthreads()) Julia thread — the GPU telemetry sampler starves behind the kernel; [gpu] sample stats may be empty (run with -t≥2)"
-# Sample GPU power/util/VRAM on a spawned thread across the accumulate_field window (→ manifest [gpu]).
+# Sample GPU power/util/VRAM across the accumulate_field window on all sharded devices
+# (→ manifest [gpu] stats + the gputrace TSV time series; see gpu_telemetry.jl).
+gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
 t_field = @elapsed begin
-    fld, gpu_samples = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT) do
+    fld, gpu_telem = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT;
+            devices = 1:ndev, tracefile = gputracefile) do
         if ndev > 1
             @info "sharding electrons across $ndev devices"
             accumulate_field_sharded(
@@ -276,6 +277,7 @@ outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
     "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
 )
+gpu_telem.trace === nothing || (outputs["gpu_trace"] = basename(gpu_telem.trace))
 if !SKIP_POST
     outputs["harmonic_maps"] = basename(hprod.hmapsfile)   # reduced maps → resolve_hmaps finds them directly
     outputs["plots"] = basename.(plotfiles)
@@ -311,7 +313,7 @@ timing = Dict{String, Any}(
 sharding = Dict{String, Any}("electrons" => ndev)
 # GPU telemetry → [gpu] (static device snapshot + power/util/VRAM stats over the field window).
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
-gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_samples)
+gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
 extra = Dict{String, Any}("timing" => timing, "sharding" => sharding)
 gpu === nothing || (extra["gpu"] = gpu)
 manifestfile = write_solver_manifest(

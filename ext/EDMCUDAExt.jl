@@ -29,4 +29,16 @@ EDM.gpu_sm_count(::CUDABackend) =
 EDM.gpu_max_threads_per_sm(::CUDABackend) =
     CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR)
 
+# Telemetry child: the CUDA runtime is touched only HERE to map our ordinals to NVML uuids
+# (stable under CUDA_VISIBLE_DEVICES); the spawned scripts/gputrace_cuda.sh then runs one
+# `nvidia-smi -lms` daemon per device from its own process, immune to the solver's CUDA
+# locks and Julia's GC/timer coupling.
+function EDM.gpu_telemetry_child_cmd(::CUDABackend, device_ids::AbstractVector{<:Integer},
+        dt::Real, stopfile::AbstractString)
+    script = joinpath(pkgdir(EDM), "scripts", "gputrace_cuda.sh")
+    cudevs = collect(CUDA.devices())
+    specs = ["GPU-$(CUDA.uuid(cudevs[i]))=$i" for i in device_ids]
+    return `sh $script $(round(Int, 1000 * dt)) $(getpid()) $stopfile $specs`
+end
+
 end
