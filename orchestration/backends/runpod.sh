@@ -180,10 +180,14 @@ run_campaign() {
         fi
         sleep 60; ssh_vm "tail -n1 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[pod] /'
     done
-    log "campaign done; downloading reduced products (cubes excluded)…"
-    mkdir -p "$OUT/$CAMPAIGN"
-    /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS -p $PORT" --exclude='field_*.jls' root@"$IP":"EDM/runs/$CAMPAIGN/" "$OUT/$CAMPAIGN/"
-    download_verify "$OUT/$CAMPAIGN" || log "[verify] issues — products also on the volume at /workspace/runs/$CAMPAIGN"
+    if [ "${RUNPOD_RSYNC_DOWNLOAD:-1}" = 1 ]; then
+        log "campaign done; downloading reduced products via rsync (cubes excluded)…"
+        mkdir -p "$OUT/$CAMPAIGN"
+        /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS -p $PORT" --exclude='field_*.jls' root@"$IP":"EDM/runs/$CAMPAIGN/" "$OUT/$CAMPAIGN/"
+        download_verify "$OUT/$CAMPAIGN" || log "[verify] issues — products also on the volume at /workspace/runs/$CAMPAIGN"
+    else
+        log "campaign done; rsync skipped (RUNPOD_RSYNC_DOWNLOAD=0) — drain from the volume later: orchestration/drain.sh $CAMPAIGN"
+    fi
     notify white_check_mark default "EDM runpod done" "$CAMPAIGN → $OUT/$CAMPAIGN ; pod $POD KEPT — run teardown."
     log "products → $OUT/$CAMPAIGN ; pod $POD KEPT (state $STATE). More: $0 run <campaign>. Finish: $0 teardown"
 }
