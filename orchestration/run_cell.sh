@@ -62,12 +62,12 @@ notify() {   # notify <tags> <priority> <title> <message>  — no-op unless NTFY
 # <uuid>.reduce_failed marker that reap_reduces waits on. Override with REDUCE_HOOK for a custom reducer.
 _reduce_cell() {
     local uuid=$1 manifest="$CAMP/run_${uuid}.toml" cube rc=0
-    ( cd "$REPO" && "${JL[@]}" --project=scripts scripts/harmonic_products.jl "$manifest" ) \
+    ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} "${JL[@]}" --project=scripts scripts/harmonic_products.jl "$manifest" ) \
         >> "$CAMP/run_${uuid}.log" 2>&1 || rc=1
     if [ "$rc" -eq 0 ]; then
         for cube in "$CAMP"/field_*_"$uuid".jls; do
             [ -e "$cube" ] || continue
-            ( cd "$REPO" && "${JL[@]}" --project=scripts scripts/plot_screen_observables.jl "$cube" ) \
+            ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} "${JL[@]}" --project=scripts scripts/plot_screen_observables.jl "$cube" ) \
                 >> "$CAMP/run_${uuid}.log" 2>&1 || rc=1
         done
     fi
@@ -76,7 +76,7 @@ _reduce_cell() {
 
 run_cell() {
     local label=$1; shift
-    local uuid; uuid=$(uuidgen)
+    local uuid; uuid=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
     mkdir -p "$CAMP"
     [ -f "$CAMP/cells.tsv" ] || printf 'label\tuuid\tscript\tbackend\toverrides\n' > "$CAMP/cells.tsv"
     printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$uuid" "$(basename "$SCRIPT")" "${BACKEND:-?}" "$*" >> "$CAMP/cells.tsv"

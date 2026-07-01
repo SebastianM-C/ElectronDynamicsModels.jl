@@ -126,7 +126,7 @@ warm() {
 set -e
 export JULIA_DEPOT_PATH="/workspace/julia-depot-$BK"          # persists on the network volume
 [ -x "$HOME/.juliaup/bin/julia" ] || curl -fsSL https://install.julialang.org | sh -s -- --yes
-export PATH="$HOME/.juliaup/bin:$PATH" JULIA_PKG_SERVER=""
+export PATH="$HOME/.juliaup/bin:$PATH"   # no JULIA_PKG_SERVER: fresh pod uses Julia's public default (don't leak the driver's internal one)
 rm -rf ~/EDM && git clone --quiet --branch "$BRANCH" "$REPO_URL" ~/EDM   # fresh clone = always current
 mkdir -p /workspace/runs && ln -sfn /workspace/runs ~/EDM/runs           # cubes+products on the volume
 printf 'LOCAL_BACKEND=%s\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=JULIA_DEPOT_PATH=/workspace/julia-depot-%s\nREDUCE_OVERLAP=1\n' \
@@ -171,14 +171,15 @@ run_campaign() {
     push_orchestration
     notify hourglass_flowing_sand default "EDM runpod started" "$CAMPAIGN on $POD ($BACKEND @$DC)"
     log "launching $CAMPAIGN on the pod via the local backend ($BACKEND), detached…"
-    ssh_vm "cd EDM && mkdir -p runs && nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid"
+    ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && rm -f runs/${CAMPAIGN}.out runs/${CAMPAIGN}.pid && { nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
     log "polling for completion (DONE marker, or driver-death = crash)…"
-    until ssh_vm "grep -q '\\] ${CAMPAIGN} DONE' runs/${CAMPAIGN}.out 2>/dev/null"; do
-        if ! ssh_vm "kill -0 \$(cat runs/${CAMPAIGN}.pid 2>/dev/null) 2>/dev/null"; then
+    until ssh_vm "cd EDM && grep -q '\\] ${CAMPAIGN} DONE' runs/${CAMPAIGN}.out 2>/dev/null"; do
+        if ! ssh_vm "cd EDM && kill -0 \$(cat runs/${CAMPAIGN}.pid 2>/dev/null) 2>/dev/null"; then
+            ssh_vm "cd EDM && grep -q '\\] ${CAMPAIGN} DONE' runs/${CAMPAIGN}.out 2>/dev/null" && break   # finished fast — DONE is present, not a crash
             notify rotating_light urgent "EDM runpod CRASH" "$CAMPAIGN driver died with no DONE on $POD — pod KEPT; teardown when done."
-            log "[ERROR] driver gone, no DONE — pod $POD KEPT. tail:"; ssh_vm "tail -n 20 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[pod] /'; return 1
+            log "[ERROR] driver gone, no DONE — pod $POD KEPT. tail:"; ssh_vm "cd EDM && tail -n 20 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[pod] /'; return 1
         fi
-        sleep 60; ssh_vm "tail -n1 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[pod] /'
+        sleep 60; ssh_vm "cd EDM && tail -n1 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[pod] /'
     done
     if [ "${RUNPOD_RSYNC_DOWNLOAD:-1}" = 1 ]; then
         log "campaign done; downloading reduced products via rsync (cubes excluded)…"
