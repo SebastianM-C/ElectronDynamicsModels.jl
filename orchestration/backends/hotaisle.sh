@@ -32,6 +32,7 @@ REPO_URL="${HOTAISLE_REPO_URL:?set HOTAISLE_REPO_URL in config.env}"
 BRANCH="${HOTAISLE_BRANCH:-main}"
 STATE="${HOTAISLE_STATE:-$HOME/.config/hotaisle/campaign_vm}"
 OUT="${HOTAISLE_OUT:-$HOME/campaign_out}"
+DEPOT_CACHE="${DEPOT_CACHE:-}"; DEPOT_CACHE_KEY="${DEPOT_CACHE_KEY:-$HOME/.config/runpod/depot_key}"   # shared cache (see depot_cache.sh)
 CM="$HOME/.ssh/cm-hotaisle.sock"
 SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600"
 
@@ -51,19 +52,30 @@ provision() {
 }
 wait_ssh() { log "waiting for ssh…"; local i; for i in $(seq 1 40); do ssh_vm true 2>/dev/null && return 0; sleep 15; done; return 1; }
 warm() {
-    log "warm: julia + clone $BRANCH + instantiate (registry from GitHub)"
-    ssh_vm "REPO_URL='$REPO_URL' BRANCH='$BRANCH' bash -s" <<'WARM'
+    log "warm: julia + clone $BRANCH + instantiate (depot cache: ${DEPOT_CACHE:-none})"
+    if [ -n "$DEPOT_CACHE" ]; then
+        if [ -f "$DEPOT_CACHE_KEY" ]; then   # jailed key — the VM can ONLY rsync inside the archive store
+            ssh_vm 'mkdir -p ~/.ssh && cat > ~/.ssh/depot_key && chmod 600 ~/.ssh/depot_key' < "$DEPOT_CACHE_KEY"
+        else
+            log "[warn] DEPOT_CACHE set but $DEPOT_CACHE_KEY missing — building the depot fresh"
+            DEPOT_CACHE=""
+        fi
+    fi
+    ssh_vm "REPO_URL='$REPO_URL' BRANCH='$BRANCH' DEPOT_CACHE='$DEPOT_CACHE' bash -s" <<'WARM'
 set -e
 [ -x "$HOME/.juliaup/bin/julia" ] || curl -fsSL https://install.julialang.org | sh -s -- --yes
-export PATH="$HOME/.juliaup/bin:$PATH" JULIA_PKG_SERVER=""
+export PATH="$HOME/.juliaup/bin:$PATH"   # no JULIA_PKG_SERVER: the VM uses Julia's public default (registries also ride the depot cache)
 rm -rf EDM && git clone --quiet --branch "$BRANCH" "$REPO_URL" EDM
 # VM-local config.env (gitignored ⇒ not cloned): rocm local backend, no ntfy on the VM, and
 # REDUCE_OVERLAP=1 so each cell's reduction overlaps the next cell's GPU compute (paid-time win).
 printf 'LOCAL_BACKEND=rocm\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=\nREDUCE_OVERLAP=1\n' > EDM/orchestration/config.env
+BK=rocm REPO_DIR="$HOME/EDM"; . EDM/orchestration/depot_cache.sh   # julia-actions/cache semantics (default ~/.julia depot)
+depot_cache_restore   # → DC_RESTORED = exact | prefix (instantiate tops it up) | miss (fresh build)
 ok=0; for i in 1 2 3; do
   if julia --startup=no --project=EDM/scripts -e 'using Pkg; Pkg.instantiate(); Pkg.precompile()'; then ok=1; break; fi
   echo "instantiate retry $i"; sleep 20
 done; [ "$ok" = 1 ] || { echo "instantiate failed"; exit 1; }
+[ "$DC_RESTORED" = exact ] || depot_cache_push   # exact hit ⇒ the store already has this depot
 WARM
 }
 
