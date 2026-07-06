@@ -1,5 +1,8 @@
 # ── Newton light-cone GPU kernel: per-slot root solve + LW accumulation ──
-# Experimental alternative to the GPUKernelRK4 march (kernel_rk4.jl): instead of
+# Lives in the `Experimental` submodule (production staging, like the batched
+# Tsit5 path) and extends the parent `accumulate_potential`/`accumulate_field`.
+#
+# Alternative to the GPUKernelRK4 march (kernel_rk4.jl): instead of
 # integrating dτ_r/dx⁰ = 1/(u⁰ − u⃗·n̂) between saveat slots, solve the light-cone
 # condition (FFT_v2.pdf eq. 1.2)
 #     f(τ) = x⁰_target − x⁰(τ) − |r_obs − x⃗(τ)|  =  0
@@ -8,6 +11,19 @@
 # so the root is unique and the Newton derivative comes for free from the same
 # spline eval that provides the residual.  Unlike the RK4 march, the per-slot
 # error does not accumulate along the observer-time grid.
+#
+# Measured on the W7900 (a₀ = 0.1 production setup, see
+# reports/newton_lightcone_retarded_time.typ): n_iters = 1 sits at the accuracy
+# floor (9.4e-11 vs tight reference; RK4 n_substeps = 1 is 9.5e-10) and runs
+# 1.5–2.0× faster than RK4 n_substeps = 1 on the potential path, time-neutral
+# to ~1.3× faster on the field path.  Strongly-relativistic forward-scattering
+# geometries need n_iters = 3 (the analog of RK4 needing n_substeps = 8 there).
+
+# Shared deps: experimental.jl (included first in this module) already imports
+# Adapt, AK, KernelAbstractions, Backend, StaticArrays, TrajectoryInterpolant,
+# ObserverScreen, and accumulate_potential.  This file additionally needs:
+using ..ElectronDynamicsModels: to_gpu, lienard_wiechert_F_split, extract_EB
+import ..ElectronDynamicsModels: accumulate_field
 
 """
     GPUKernelNewton

@@ -66,15 +66,16 @@ include("field_evaluator.jl")
 include("gpu/interp.jl")
 include("gpu/accumulate.jl")
 include("gpu/kernel_rk4.jl")
-include("gpu/kernel_newton.jl")
 include("gpu_api.jl")   # vendor GPU API (device mgmt + telemetry); impls in ext/EDM{CUDA,AMDGPU}Ext.jl
 include("gpu/multidevice.jl")   # accumulate_field_sharded: electron sharding across GPUs
 
-# Experimental: batched/Tsit5 GPU path, under active development.
+# Experimental: batched/Tsit5 GPU path and the Newton light-cone retarded-time
+# solve — production staging, under active development.
 module Experimental
     include("gpu/experimental.jl")
+    include("gpu/kernel_newton.jl")
 end
 
-using .Experimental: GPUKernelTsit5
+using .Experimental: GPUKernelTsit5, GPUKernelNewton
 
 end
