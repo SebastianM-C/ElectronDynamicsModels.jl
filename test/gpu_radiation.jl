@@ -76,6 +76,59 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         @test rel_l2(A_ak, A_ref) < 5.0e-3
     end
 
+    @testset "GPUKernelNewton matches reference (bulk pattern)" begin
+        # Same transverse setup as the RK4 bulk-pattern test, through the
+        # Newton light-cone kernel. In this gentle regime a single warm-started
+        # Newton correction per slot already sits at the reference floor.
+        traj = analytic_traj(; g = 1.2, A = 0.25, Ω = 2.0, vz = 0.0,
+            τspan = (0.0, 20.0), N = 6000)
+        trajs = [traj]
+        τi, τf = first(traj.itp.t), last(traj.itp.t)
+
+        z = 50.0
+        Nx = Ny = 9
+        half = 8.0
+        x_grid = LinRange(-half, half, Nx)
+        y_grid = LinRange(-half, half, Ny)
+        x⁰ = LinRange(1.2τi + (z - 2half), 1.2τf + (z + 2half), 240)
+        screen = ObserverScreen(x_grid, y_grid, z, x⁰; c = 1.0)
+
+        A_ref = accumulate_potential(trajs, screen, Vern9())
+        A_newton = accumulate_potential(trajs, screen, GPUKernelNewton(), CPU(); n_iters = 1)
+
+        @test size(A_newton) == size(A_ref)
+        @test all(isfinite, A_newton)
+        @test rel_l2(A_newton, A_ref) < 5.0e-3
+    end
+
+    @testset "n_iters drives Newton convergence (forward Doppler)" begin
+        # Stress regime for the light-cone solve: dτ_r per slot is large and f
+        # is curved off-axis, so the Euler predictor lands far and iterations
+        # are genuinely needed. n_iters = 3 (4 spline evals/slot) matches the
+        # RK4 n_substeps = 8 floor (33 evals/slot).
+        traj = analytic_traj(; g = 1.05, A = 0.15, Ω = 2.0, vz = 0.95,
+            τspan = (0.0, 20.0), N = 8000)
+        trajs = [traj]
+        τi, τf = first(traj.itp.t), last(traj.itp.t)
+        g, vz = 1.05, 0.95
+
+        z = 60.0
+        Nx = Ny = 7
+        half = 6.0
+        x_grid = LinRange(-half, half, Nx)
+        y_grid = LinRange(-half, half, Ny)
+        x⁰ = LinRange(g * τi + (z - vz * τf - half), g * τf + (z + half), 200)
+        screen = ObserverScreen(x_grid, y_grid, z, x⁰; c = 1.0)
+
+        A_ref = accumulate_potential(trajs, screen, Vern9())
+        err(n) = rel_l2(accumulate_potential(trajs, screen, GPUKernelNewton(), CPU(); n_iters = n), A_ref)
+
+        e1, e3 = err(1), err(3)
+        @test e1 > 1.0e-2          # a single correction is not enough here
+        @test e3 < 5.0e-3          # three corrections reach reference agreement
+        @test e3 < e1              # adding corrections reduces the discrepancy
+    end
+
     @testset "n_substeps drives RK4 convergence (forward Doppler)" begin
         # Relativistic drift toward the screen ⇒ u⃗·n̂ ≈ u⁰ ⇒ the retarded-time
         # integrand swings hard, so n_substeps = 1 is visibly under-resolved.
@@ -133,6 +186,33 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         @test rel_l2(gpu.E, ref.E) < 5.0e-3         # total field matches
         @test rel_l2(gpu.B, ref.B) < 5.0e-3
         @test rel_l2(gpu.E_far, ref.E_far) < 5.0e-3 # radiation bucket matches
+        @test rel_l2(gpu.B_far, ref.B_far) < 5.0e-3
+    end
+
+    @testset "GPUKernelNewton field matches reference (split E/B)" begin
+        # Field path through the Newton light-cone kernel, same setup as the
+        # RK4 field test above.
+        traj = analytic_traj(; g = 1.2, A = 0.25, Ω = 2.0, vz = 0.0,
+            τspan = (0.0, 20.0), N = 6000)
+        trajs = [traj]
+        τi, τf = first(traj.itp.t), last(traj.itp.t)
+
+        z = 50.0
+        Nx = Ny = 9
+        half = 8.0
+        x_grid = LinRange(-half, half, Nx)
+        y_grid = LinRange(-half, half, Ny)
+        x⁰ = LinRange(1.2τi + (z - 2half), 1.2τf + (z + 2half), 240)
+        screen = ObserverScreen(x_grid, y_grid, z, x⁰; c = 1.0)
+
+        ref = accumulate_field(trajs, screen, Vern9())
+        gpu = accumulate_field(trajs, screen, GPUKernelNewton(), CPU(); n_iters = 2)
+
+        @test keys(gpu) == (:E, :B, :E_far, :B_far)
+        @test all(isfinite, gpu.E) && all(isfinite, gpu.B)
+        @test rel_l2(gpu.E, ref.E) < 5.0e-3
+        @test rel_l2(gpu.B, ref.B) < 5.0e-3
+        @test rel_l2(gpu.E_far, ref.E_far) < 5.0e-3
         @test rel_l2(gpu.B_far, ref.B_far) < 5.0e-3
     end
 end
