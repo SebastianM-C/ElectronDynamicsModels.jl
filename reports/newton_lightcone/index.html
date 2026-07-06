@@ -1,0 +1,748 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Retarded time via a light-cone root solve on the GPU</title>
+<link rel="stylesheet" href="/vendor/katex/katex.min.css">
+<script defer src="/vendor/katex/katex.min.js"></script>
+<script defer src="/vendor/katex/contrib/auto-render.min.js"
+  onload="renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'\\(',right:'\\)',display:false}]})"></script>
+<style>
+  :root {
+    --bg: #ffffff;
+    --surface: #f7f8fb;
+    --surface-2: #eef0f5;
+    --ink: #18181a;
+    --ink-2: #2c2c2f;
+    --muted: #6e6e72;
+    --muted-2: #9a9a9c;
+    --border: #dee2ea;
+    --border-2: #c5cad6;
+    --accent: #3b6fb3;
+    --accent-soft: oklch(0.95 0.04 250);
+    --accent-ink: oklch(0.35 0.16 250);
+    --grid: #e6e8ee;
+
+    /* chart series (validated: CVD ΔE 73.6; aqua <3:1 relieved by value labels + tables) */
+    --s-newton: #2a78d6;
+    --s-rk4: #1baf7a;
+    /* ordinal blue ramp for n_iters = 1/2/3 (steps 250/450/650) */
+    --ord-1: #86b6ef;
+    --ord-2: #2a78d6;
+    --ord-3: #104281;
+
+    --ui:  system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--ui); font-size: 15px; line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  code, .mono { font-family: var(--mono); font-size: 0.92em; }
+
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 24px 96px; }
+
+  header.doc {
+    padding: 40px 0 8px;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 28px;
+  }
+  .crumbs { font-family: var(--mono); font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 14px; }
+  h1 { font-size: 28px; line-height: 1.25; font-weight: 650; letter-spacing: -0.015em; margin: 0 0 6px; }
+  .subtitle { font-size: 16px; color: var(--muted); margin: 0 0 16px; }
+  .provrow { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 18px; }
+  .chip {
+    display: inline-block; padding: 2px 9px; border-radius: 999px;
+    background: var(--surface-2); border: 1px solid var(--border);
+    color: var(--muted); font-size: 11.5px;
+  }
+  .chip.mono { font-family: var(--mono); }
+  .chip.gen { background: var(--accent-soft); color: var(--accent-ink); border-color: transparent; }
+
+  h2 { font-size: 20px; font-weight: 650; letter-spacing: -0.01em; margin: 40px 0 10px; }
+  h3 { font-size: 16px; font-weight: 600; margin: 26px 0 8px; }
+  p, ul, ol { max-width: 76ch; }
+  li { margin-bottom: 4px; }
+
+  .summary {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+    padding: 16px 20px; margin: 0 0 8px;
+  }
+  .summary p { margin: 0; }
+
+  .note {
+    border-left: 3px solid var(--border-2); padding: 2px 0 2px 14px;
+    color: var(--muted); font-size: 14px; margin: 14px 0;
+  }
+
+  table.data {
+    border-collapse: collapse; margin: 14px 0 6px; font-size: 13.5px;
+    font-variant-numeric: tabular-nums;
+  }
+  table.data th, table.data td { padding: 6px 14px 6px 0; text-align: left; }
+  table.data th { font-size: 12px; color: var(--muted); font-weight: 600; border-bottom: 1px solid var(--border-2); }
+  table.data td { border-bottom: 1px solid var(--border); }
+  table.data td.num, table.data th.num { text-align: right; }
+  table.data .hl td { background: var(--accent-soft); }
+  .capt { font-size: 12.5px; color: var(--muted); max-width: 76ch; margin: 4px 0 0; }
+
+  pre.code {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 16px; overflow-x: auto; font-family: var(--mono); font-size: 12.5px;
+    line-height: 1.5;
+  }
+
+  /* ── figure shells & controls ── */
+  .fig {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--bg);
+    padding: 16px 18px 12px; margin: 18px 0;
+  }
+  .fig .figtitle { font-weight: 600; font-size: 14px; margin-bottom: 2px; }
+  .fig .figsub { font-size: 12.5px; color: var(--muted); margin-bottom: 12px; }
+  .controls {
+    display: flex; flex-wrap: wrap; gap: 14px; align-items: center;
+    padding: 8px 0 14px; font-size: 13px;
+  }
+  .controls .grp { display: flex; align-items: center; gap: 6px; }
+  .controls label { color: var(--muted); font-size: 12px; }
+  .seg { display: inline-flex; border: 1px solid var(--border-2); border-radius: 7px; overflow: hidden; }
+  .seg button {
+    appearance: none; border: none; background: var(--bg); color: var(--muted);
+    font: inherit; font-size: 12.5px; padding: 4px 11px; cursor: pointer;
+    border-right: 1px solid var(--border);
+  }
+  .seg button:last-child { border-right: none; }
+  .seg button:hover { background: var(--surface-2); color: var(--ink); }
+  .seg button.on { background: var(--ink); color: var(--bg); }
+  input[type=range] { accent-color: var(--accent); }
+  .legend { display: flex; gap: 18px; align-items: center; font-size: 12.5px; color: var(--ink-2); padding: 2px 0 6px; }
+  .legend .key { display: inline-flex; align-items: center; gap: 6px; }
+  .legend .sw { width: 12px; height: 12px; border-radius: 3px; display: inline-block; }
+  .legend .ln { width: 16px; height: 2px; display: inline-block; }
+
+  svg text { font-family: var(--ui); }
+  .tooltip {
+    position: fixed; pointer-events: none; z-index: 50;
+    background: var(--ink); color: var(--bg);
+    border-radius: 7px; padding: 7px 11px; font-size: 12px; line-height: 1.5;
+    max-width: 300px; display: none;
+  }
+  .tooltip .v { font-weight: 650; font-size: 13px; }
+  .tooltip .k { opacity: 0.75; }
+
+  footer.doc {
+    margin-top: 56px; padding-top: 16px; border-top: 1px solid var(--border);
+    font-size: 12.5px; color: var(--muted);
+  }
+
+  @media print {
+    .controls, .noprint { display: none !important; }
+    .fig { break-inside: avoid; }
+    body { font-size: 12px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="doc">
+  <div class="crumbs"><a href="/reports">reports</a> · EDM</div>
+  <h1>Retarded time via a light-cone root solve on the GPU</h1>
+  <p class="subtitle">Newton iteration on the light-cone condition vs the fixed-step RK4 march, in the unified Liénard–Wiechert kernels.</p>
+  <div class="provrow">
+    <span class="chip gen">claude-generated</span>
+    <span class="chip">gpu</span><span class="chip">performance</span><span class="chip">kernels</span>
+    <span class="chip mono">ElectronDynamicsModels · worktree-newton-lightcone @ ba29f30 / 1dc5ef8</span>
+    <span class="chip mono">AMD W7900 · 2026-07-07</span>
+  </div>
+</header>
+
+<div class="summary">
+  <p><strong>Summary.</strong> Replacing the per-pixel fixed-step RK4 march of the retarded-time ODE with a
+  per-sample Newton solve of the light-cone condition makes the unified GPU Liénard–Wiechert kernels
+  <strong>faster at equal-or-better accuracy</strong> on both code paths. At the production-like
+  \(a_0 = 0.1\) setup a <strong>single</strong> warm-started Newton correction per sample already sits at the
+  accuracy floor (\(9.4\times10^{-11}\) vs \(9.5\times10^{-10}\) for RK4 with <code>n_substeps=1</code>),
+  while running 1.5–2.0× faster on the potential path and time-neutral to ~1.3× faster on the field path.
+  Against the equal-accuracy RK4 configuration (<code>n_substeps=8</code>) the speedup is 4–11×.
+  The kernel now lives in the <code>Experimental</code> submodule as <code>GPUKernelNewton</code>.</p>
+</div>
+
+<h2>1 · Problem</h2>
+<p>The Liénard–Wiechert accumulation evaluates, for every screen pixel \(\mathbf{x}\) and every observer-time
+sample \(x^0_k\), the trajectory state at the retarded proper time \(\tau_r\) defined by the light-cone
+condition (eq. 1.2 of <span class="mono">FFT_v2.pdf</span>):</p>
+$$ f(\tau) \;=\; x^0_k - x^0(\tau) - \left|\mathbf{x} - \mathbf{r}(\tau)\right| \;=\; 0. $$
+<p>The production kernels (<code>src/gpu/kernel_rk4.jl</code>) instead integrate the equivalent ODE (eq. 1.13)</p>
+$$ \frac{d\tau_r}{dx^0} \;=\; \frac{1}{u^0 - \mathbf{u}\cdot\hat{\mathbf{n}}}, \qquad
+   \hat{\mathbf{n}} = \frac{\mathbf{x} - \mathbf{r}(\tau_r)}{\left|\mathbf{x} - \mathbf{r}(\tau_r)\right|}, $$
+<p>with classical RK4 at the sample resolution (<code>n_substeps</code> sub-steps per sample), one GPU thread
+per pixel. Each RK4 sub-step costs four evaluations of the trajectory spline (a <code>GPUCubicSpline</code>
+holding the 8-vector \([x^\mu; u^\mu](\tau)\)), plus one more at the converged \(\tau\) for the accumulation:
+\(4\,n_{\mathrm{sub}}+1\) spline evaluations per sample. Spline evaluations (binary knot search + cubic
+reconstruction) dominate the kernel cost, and the march <em>accumulates</em> integration error along the grid.</p>
+
+<h2>2 · Method: warm-started Newton on the light-cone residual</h2>
+<p>Three structural facts make the root solve a better target than the ODE on the GPU:</p>
+<ol>
+  <li><strong>Monotonicity.</strong> \(f'(\tau) = -(u^0 - \mathbf{u}\cdot\hat{\mathbf{n}}) < 0\) strictly, since
+      \(u^0 \ge |\mathbf{u}|\) on a timelike worldline — the root is unique and Newton is well-behaved.</li>
+  <li><strong>The derivative is free.</strong> \(-1/f'\) is exactly the RHS of the ODE, computed from the
+      <em>same</em> spline evaluation as the residual: one evaluation yields both \(f\) and the Newton step
+      \(\tau \leftarrow \tau + f\cdot(u^0-\mathbf{u}\cdot\hat{\mathbf{n}})^{-1}\).</li>
+  <li><strong>The last evaluation is reused.</strong> The converged residual evaluation carries the full
+      \([x^\mu;u^\mu]\) state and the geometry factors, so the Liénard–Wiechert accumulation costs
+      <em>zero</em> extra spline evaluations.</li>
+</ol>
+<p>The kernel (<code>src/gpu/kernel_newton.jl</code>, sentinel <code>GPUKernelNewton</code>, in
+<code>module Experimental</code>) keeps the RK4 kernel's per-pixel window logic verbatim and replaces the march
+by, per sample: an Euler predictor from the previous sample's converged state (free), then a <em>fixed</em>
+number <code>n_iters</code> of Newton corrections — fixed, so all lanes of a wavefront run in lockstep and no
+warp divergence is introduced. Only \(\tau\) and the Newton factor stay live across samples (one register more
+than RK4), and the per-sample error is set by the last correction alone — it does <strong>not</strong>
+accumulate along the grid.</p>
+
+<table class="data">
+  <thead><tr><th>method</th><th>spline evals / sample</th><th>error behaviour</th></tr></thead>
+  <tbody>
+    <tr><td>RK4, <code>n_substeps</code> = n</td><td>4n + 1</td><td>accumulates along the march</td></tr>
+    <tr><td>Newton, <code>n_iters</code> = m</td><td>m + 1</td><td>per-sample, non-accumulating</td></tr>
+  </tbody>
+</table>
+<p class="capt">Cost model. At the regimes measured below, Newton needs m = 1 (gentle, a₀ = 0.1) to m = 3
+(forward-Doppler stress) where RK4 needs n = 1 to n = 8.</p>
+
+<h2>3 · Watch it converge</h2>
+<p>This figure runs the actual per-pixel algorithm — window, warm start, Euler predictor, fixed Newton
+corrections — in your browser on the analytic worldlines from <code>test/gpu_radiation.jl</code>
+(no spline: \(x^\mu(\tau)\), \(u^\mu(\tau)\) evaluated exactly). Left: the residual \(f(\tau)\) at one
+observer-time sample, with the predictor (◦) and each correction (●). Right: the per-sample error of the
+whole march, one line per <code>n_iters</code> — the non-accumulating error and the hard forward-Doppler
+samples are directly visible.</p>
+
+<div class="fig" id="convfig">
+  <div class="figtitle">Newton on the light-cone residual — the per-pixel march, live</div>
+  <div class="figsub">Analytic worldline; ground truth per sample by bisection. Error is |Δτ| relative to the trajectory's proper-time span, clipped at the 10⁻¹³ display floor (the ground truth's own resolution) — a flat bottom line means "converged".</div>
+  <div class="controls">
+    <div class="grp"><label>regime</label>
+      <span class="seg" id="c-regime">
+        <button data-v="transverse" class="on">transverse (a₀-like)</button>
+        <button data-v="doppler">forward Doppler (v<sub>z</sub>=0.95c)</button>
+      </span>
+    </div>
+    <div class="grp"><label>pixel</label>
+      <span class="seg" id="c-pixel">
+        <button data-v="axis" class="on">on-axis</button>
+        <button data-v="corner">corner</button>
+      </span>
+    </div>
+    <div class="grp"><label>n_iters</label>
+      <span class="seg" id="c-iters">
+        <button data-v="1">1</button>
+        <button data-v="2" class="on">2</button>
+        <button data-v="3">3</button>
+      </span>
+    </div>
+    <div class="grp"><label>sample k</label>
+      <input type="range" id="c-slot" min="0" max="100" value="50" style="width:160px">
+      <span class="mono" id="c-slotlabel" style="font-size:11.5px; color:var(--muted)"></span>
+    </div>
+  </div>
+  <div style="display:flex; flex-wrap:wrap; gap:18px;">
+    <svg id="fplot" width="385" height="300" role="img" aria-label="Residual f(tau) with Newton iterates"></svg>
+    <svg id="errplot" width="385" height="300" role="img" aria-label="Per-sample error vs sample index"></svg>
+  </div>
+  <div class="legend" id="convlegend">
+    <span class="key"><span class="ln" style="background:var(--ink)"></span> f(τ) at sample k</span>
+    <span class="key"><span class="sw" style="background:var(--ord-1)"></span> n_iters = 1</span>
+    <span class="key"><span class="sw" style="background:var(--ord-2)"></span> n_iters = 2</span>
+    <span class="key"><span class="sw" style="background:var(--ord-3)"></span> n_iters = 3</span>
+  </div>
+</div>
+
+<h2>4 · Validation</h2>
+<p><strong>Kernel level, CPU backend.</strong> The actual kernel run under
+<code>KernelAbstractions.CPU()</code>, accumulated potential vs the adaptive <code>Vern9</code> CPU reference
+(relative \(L_2\); both regimes are testsets in <code>test/gpu_radiation.jl</code>, 28 tests pass):</p>
+<table class="data">
+  <thead><tr><th>regime</th><th class="num">RK4 n=1</th><th class="num">RK4 n=8</th><th class="num">Nwt m=1</th><th class="num">Nwt m=2</th><th class="num">Nwt m=3</th></tr></thead>
+  <tbody>
+    <tr><td>transverse</td><td class="num">1.94·10⁻⁵</td><td class="num">1.95·10⁻⁵</td><td class="num">1.95·10⁻⁵</td><td class="num">1.95·10⁻⁵</td><td class="num">1.95·10⁻⁵</td></tr>
+    <tr><td>fwd. Doppler</td><td class="num">1.05·10⁻¹</td><td class="num">1.56·10⁻³</td><td class="num">2.74·10⁻²</td><td class="num">2.08·10⁻³</td><td class="num">1.49·10⁻³</td></tr>
+  </tbody>
+</table>
+<p class="capt">In the stress regime Newton reaches the RK4 n_substeps = 8 floor with n_iters = 3 — at 4 vs 33
+spline evaluations per sample. In the gentle regime every method sits at the shared reference floor.</p>
+
+<p><strong>GPU, production-like physics.</strong> a₀ = 0.1 circularly-polarized Laguerre–Gauss, 100 electrons,
+50² pixels, 1000 samples, vs the CPU two-phase path at <code>reltol = abstol = 1e-12</code>:</p>
+<table class="data">
+  <thead><tr><th>method</th><th class="num">rel. error vs tight reference</th></tr></thead>
+  <tbody>
+    <tr><td>RK4 <code>n_substeps = 1</code></td><td class="num">9.51·10⁻¹⁰</td></tr>
+    <tr><td>RK4 <code>n_substeps = 8</code></td><td class="num">5.73·10⁻¹¹</td></tr>
+    <tr class="hl"><td>Newton <code>n_iters = 1</code></td><td class="num">9.36·10⁻¹¹</td></tr>
+    <tr><td>Newton <code>n_iters = 2, 3</code></td><td class="num">9.36·10⁻¹¹ (identical — converged)</td></tr>
+  </tbody>
+</table>
+<p class="capt">At a₀ = 0.1 a single Newton correction sits at the accuracy floor, an order of magnitude below
+single-substep RK4.</p>
+
+<h2>5 · Benchmarks</h2>
+<p>W7900 (ROCm), same physics as the validation runs, <code>sync_per_electron = true</code>; wall time is
+min-of-k end-to-end (upload, kernel, download, permute). Relative errors are vs the converged anchor of the
+same rung; speedups are within-process. Hover a bar for its full readout.</p>
+
+<div class="fig" id="benchfig">
+  <div class="figtitle">Wall time by method</div>
+  <div class="figsub" id="benchsub"></div>
+  <div class="controls">
+    <div class="grp"><label>rung</label><span class="seg" id="b-rung"></span></div>
+  </div>
+  <div class="legend">
+    <span class="key"><span class="sw" style="background:var(--s-rk4)"></span> RK4 (ODE march)</span>
+    <span class="key"><span class="sw" style="background:var(--s-newton)"></span> Newton (light-cone solve)</span>
+  </div>
+  <svg id="benchplot" width="840" height="240" role="img" aria-label="Benchmark wall times"></svg>
+</div>
+
+<table class="data" id="benchtable">
+  <thead><tr><th>rung</th><th>method</th><th class="num">rel. err</th><th class="num">time (s)</th><th class="num">× RK4 ns=1</th><th class="num">× anchor</th></tr></thead>
+  <tbody></tbody>
+</table>
+<p class="capt">Full benchmark table (the chart above reads from the same data). The field 400² rows come from
+two separate single-shot processes whose anchors differ by ~30% (GPU clock/thermal state) — only within-run
+ratios are meaningful. The 8.2·10⁻⁷ field entries are dominated by the ns=1 anchor's own error.</p>
+
+<p><strong>Reading.</strong> On the potential path the win tracks the eval-count model (2 evals/sample vs 5)
+minus fixed overheads: 1.8–2.0× at 50², 1.5× at 200². On the field path each sample additionally pays an
+acceleration-spline evaluation, the split Faraday tensors and 12 global accumulations, which dilutes the
+spline-eval saving: <code>n_iters = 1</code> is time-neutral against <code>n_substeps = 1</code> at 200²
+(but 17× more accurate) and modestly faster at 400². Unlike the earlier FindFirstFunctions guess-search
+experiment, there is <strong>no</strong> register-pressure regression — the Newton loop replaces the march
+instead of adding state to it.</p>
+
+<h2>6 · Caveats</h2>
+<ul>
+  <li><strong>Forward-Doppler pixels need <code>n_iters = 3</code>.</strong> Where
+    \(u^0 - \mathbf{u}\cdot\hat{\mathbf{n}}\) is small the predictor lands far (try the corner pixel in the
+    Doppler regime above). This is the same regime where RK4 needs <code>n_substeps = 8</code>, and Newton
+    still gets there 8× cheaper. At \(a_0 \lesssim 0.1\) geometries a single correction is at the floor.</li>
+  <li><strong>Cancellation floor.</strong> \(f\) subtracts numbers of size \(x^0 \approx |\mathbf{x}| \approx
+    3\times10^9\) a.u. (screen at \(Z = 2\times10^5\lambda\)), so \(f\) resolves to ~7·10⁻⁷ absolute, i.e.
+    \(\tau\) to ~5·10⁻⁹. Below the observed reference floor, but machine-precision residuals should not be
+    expected, and any \(f\)-based tolerance must stay above ~10⁻⁶.</li>
+  <li><strong>Fixed-cost ceiling.</strong> Buffer-write traffic is method-independent; on write-bound
+    configurations the eval saving cannot show. The RK4 n=1 vs n=8 spread (5–6×) confirms the measured rungs
+    are eval-bound on the potential path and partially so on the field path.</li>
+</ul>
+
+<h2>7 · Recommendation and next steps</h2>
+<p>Adopt the Newton solve as the default retarded-time strategy for the unified kernels:
+<code>n_iters = 1</code> for \(a_0 \lesssim 0.1\) radiation campaigns (potential and field),
+<code>n_iters = 3</code> for strongly-relativistic forward-scattering geometries.
+<code>GPUKernelNewton</code> is staged in the <code>Experimental</code> submodule (alongside
+<code>GPUKernelTsit5</code>, re-exported at top level) for production trials behind the existing dispatch
+seam. Promote to the default once a high-\(a_0\) sweep (where sub-stepping genuinely matters for RK4) and a
+full-campaign A/B (e.g. a <span class="mono">lowa0_maps</span> cell) confirm parity.</p>
+
+<h2 class="noprint">8 · On this dashboard</h2>
+<p class="noprint" id="related">The experiment branches off the spline-error work at commit
+<span class="mono">21d7076</span> — the same code state as the
+<a href="/#q=21d7076" id="rel-commit">spline-error component sweep in the explorer</a>
+(the campaign that motivated scrutiny of the retarded-time path), and the
+<a href="/" id="rel-explorer">full run gallery</a>.</p>
+
+<h2>Appendix · Reproduction</h2>
+<pre class="code">git worktree: .claude/worktrees/newton-lightcone   (branch worktree-newton-lightcone)
+kernel:       src/gpu/kernel_newton.jl             (module Experimental; commits ba29f30, 1dc5ef8)
+
+# validation (from the worktree root)
+julia --project=test    test/gpu_radiation.jl              # 28 tests, incl. Newton potential+field
+julia --project=scripts scripts/v1_newton_root_check.jl    # host τ-roots vs 1e-12 ODE solve
+julia --project=test    scripts/v2_newton_kernel_check.jl  # kernel on CPU backend, both regimes
+julia --project=scripts scripts/diag_newton_precision.jl   # GPU vs tight reference (W7900)
+
+# benchmarks (W7900)
+julia --project=scripts --threads=auto scripts/benchmark_newton_gpu.jl        # potential
+julia --project=scripts --threads=auto scripts/benchmark_newton_field_gpu.jl  # field (split)</pre>
+
+<footer class="doc">
+  Written by Claude (Fable 5) with direction from Sebastian Micluța-Câmpeanu · experiment and text July 2026.
+  The interactive figures compute the real algorithm in-browser; benchmark numbers are measured, not simulated.
+</footer>
+
+</div>
+
+<div class="tooltip" id="tip"></div>
+
+<script>
+'use strict';
+/* ════════════════════════════════════════════════════════════════════════
+   Shared helpers
+   ════════════════════════════════════════════════════════════════════════ */
+const $ = id => document.getElementById(id);
+const svgNS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+  const e = document.createElementNS(svgNS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+const tip = $('tip');
+function showTip(evt, rows) {
+  tip.innerHTML = '';
+  for (const r of rows) {
+    const d = document.createElement('div');
+    if (r.v !== undefined) {
+      const v = document.createElement('span'); v.className = 'v'; v.textContent = r.v;
+      const k = document.createElement('span'); k.className = 'k'; k.textContent = ' ' + r.k;
+      d.appendChild(v); d.appendChild(k);
+    } else { d.className = 'k'; d.textContent = r.k; }
+    tip.appendChild(d);
+  }
+  tip.style.display = 'block';
+  const pad = 14, w = tip.offsetWidth, h = tip.offsetHeight;
+  let x = evt.clientX + pad, y = evt.clientY + pad;
+  if (x + w > innerWidth - 8) x = evt.clientX - w - pad;
+  if (y + h > innerHeight - 8) y = evt.clientY - h - pad;
+  tip.style.left = x + 'px'; tip.style.top = y + 'px';
+}
+function hideTip() { tip.style.display = 'none'; }
+function segWire(node, cb) {
+  node.addEventListener('click', e => {
+    const b = e.target.closest('button'); if (!b) return;
+    for (const x of node.querySelectorAll('button')) x.classList.toggle('on', x === b);
+    cb(b.dataset.v);
+  });
+}
+const fmt = (x, d = 3) => Number(x).toFixed(d);
+const sci = x => {
+  if (x === 0) return '0';
+  const e = Math.floor(Math.log10(Math.abs(x))), m = x / 10 ** e;
+  return `${m.toFixed(1)}e${e}`;
+};
+
+/* ════════════════════════════════════════════════════════════════════════
+   Figure 1 — Newton convergence explorer.
+   Analytic worldline (test/gpu_radiation.jl):
+     x⁰=gτ, x¹=A sin(Ωτ), x²=0, x³=vz τ;  u=(g, AΩ cos(Ωτ), 0, vz);  c=1.
+   Exact replica of the kernel's per-pixel logic, spline replaced by the
+   closed form.
+   ════════════════════════════════════════════════════════════════════════ */
+const REGIMES = {
+  transverse: {
+    g: 1.2, A: 0.25, Om: 2.0, vz: 0.0, ti: 0.0, tf: 20.0,
+    z: 50.0, half: 8.0, N: 240,
+    x0span: t => [1.2 * 0 + (50 - 16), 1.2 * 20 + (50 + 16)],
+  },
+  doppler: {
+    g: 1.05, A: 0.15, Om: 2.0, vz: 0.95, ti: 0.0, tf: 20.0,
+    z: 60.0, half: 6.0, N: 200,
+    x0span: t => [1.05 * 0 + (60 - 0.95 * 20 - 6), 1.05 * 20 + (60 + 6)],
+  },
+};
+function worldline(R) {
+  return {
+    x: t => [R.g * t, R.A * Math.sin(R.Om * t), 0, R.vz * t],
+    u: t => [R.g, R.A * R.Om * Math.cos(R.Om * t), 0, R.vz],
+  };
+}
+// residual + Newton factor at τ for observer (r_obs, x0target)
+function lceval(W, r, x0t, t) {
+  const x = W.x(t), u = W.u(t);
+  const d = [r[0] - x[1], r[1] - x[2], r[2] - x[3]];
+  const R = Math.hypot(d[0], d[1], d[2]);
+  const rhs = R / (R * u[0] - (d[0] * u[1] + d[1] * u[2] + d[2] * u[3]));
+  return { f: x0t - x[0] - R, rhs };
+}
+function bisectRoot(W, r, x0t, lo, hi) {           // ground truth: f monotone ↓
+  let flo = lceval(W, r, x0t, lo).f;
+  for (let i = 0; i < 100; i++) {
+    const mid = 0.5 * (lo + hi);
+    const fm = lceval(W, r, x0t, mid).f;
+    if ((fm > 0) === (flo > 0)) { lo = mid; flo = fm; } else hi = mid;
+    if (hi - lo < 1e-14 * Math.max(1, Math.abs(hi))) break;
+  }
+  return 0.5 * (lo + hi);
+}
+// full march for a pixel; records per-sample iterates + truth
+function march(R, pixel, nIters) {
+  const W = worldline(R);
+  const r = pixel === 'axis' ? [0, 0, R.z] : [R.half, R.half, R.z];
+  const [x0a, x0b] = R.x0span();
+  const dx0 = (x0b - x0a) / (R.N - 1);
+  const advT = t => { const x = W.x(t); return x[0] + Math.hypot(r[0] - x[1], r[1] - x[2], r[2] - x[3]); };
+  const x0i = advT(R.ti), x0f = advT(R.tf);
+  const kStart = Math.max(0, Math.floor((x0i - x0a) / dx0) + 2);   // 0-based
+  const kEnd = Math.min(R.N - 1, Math.ceil((x0f - x0a) / dx0));
+  const clamp = t => Math.min(R.tf, Math.max(R.ti, t));
+  const out = [];
+  let tau = R.ti, rhs = lceval(W, r, advT(R.ti), R.ti).rhs;
+  let x0t = x0a + kStart * dx0, D = x0t - x0i;
+  for (let k = kStart; k <= kEnd; k++) {
+    const iters = [];
+    tau = clamp(tau + D * rhs);                       // Euler predictor
+    let ev = lceval(W, r, x0t, tau);
+    iters.push({ tau, f: ev.f });
+    for (let i = 0; i < nIters; i++) {
+      tau = clamp(tau + ev.f * ev.rhs);               // Newton correction
+      ev = lceval(W, r, x0t, tau);
+      iters.push({ tau, f: ev.f });
+    }
+    rhs = ev.rhs;
+    const truth = bisectRoot(W, r, x0t, R.ti, R.tf);
+    out.push({ k, x0t, iters, truth, err: Math.abs(tau - truth) / (R.tf - R.ti) });
+    x0t += dx0; D = dx0;
+  }
+  return out;
+}
+
+const conv = { regime: 'transverse', pixel: 'axis', iters: 2, slotFrac: 0.5 };
+function renderConv() {
+  const R = REGIMES[conv.regime];
+  const W = worldline(R);
+  const r = conv.pixel === 'axis' ? [0, 0, R.z] : [R.half, R.half, R.z];
+  const all = { 1: march(R, conv.pixel, 1), 2: march(R, conv.pixel, 2), 3: march(R, conv.pixel, 3) };
+  const cur = all[conv.iters];
+  const idx = Math.min(cur.length - 1, Math.round(conv.slotFrac * (cur.length - 1)));
+  const s = cur[idx];
+  $('c-slotlabel').textContent = `k = ${s.k}`;
+
+  /* — left: f(τ) around the root with iterates — */
+  const svg = $('fplot'); svg.innerHTML = '';
+  const Wd = 385, Hd = 300, m = { l: 52, r: 14, t: 16, b: 40 };
+  const iterTaus = s.iters.map(i => i.tau).concat([s.truth]);
+  const spread = Math.max(...iterTaus) - Math.min(...iterTaus);
+  const pad = Math.max(spread * 0.6, 0.4 * Math.abs(s.iters[0].f) * lceval(W, r, s.x0t, s.truth).rhs + 1e-9, 0.05);
+  const tLo = Math.max(R.ti, Math.min(...iterTaus) - pad), tHi = Math.min(R.tf, Math.max(...iterTaus) + pad);
+  const fs = [];
+  for (let i = 0; i <= 160; i++) {
+    const t = tLo + (tHi - tLo) * i / 160;
+    fs.push([t, lceval(W, r, s.x0t, t).f]);
+  }
+  const fLo = Math.min(...fs.map(p => p[1])), fHi = Math.max(...fs.map(p => p[1]));
+  const X = t => m.l + (t - tLo) / (tHi - tLo) * (Wd - m.l - m.r);
+  const Y = f => m.t + (fHi - f) / (fHi - fLo || 1) * (Hd - m.t - m.b);
+  el('line', { x1: m.l, y1: Y(0), x2: Wd - m.r, y2: Y(0), stroke: 'var(--border-2)', 'stroke-width': 1 }, svg);
+  el('text', { x: Wd - m.r, y: Y(0) - 5, 'text-anchor': 'end', 'font-size': 10.5, fill: 'var(--muted)' }, svg).textContent = 'f = 0';
+  el('path', {
+    d: fs.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ' ' + Y(p[1]).toFixed(1)).join(''),
+    fill: 'none', stroke: 'var(--ink)', 'stroke-width': 2, 'stroke-linejoin': 'round',
+  }, svg);
+  el('line', { x1: X(s.truth), y1: m.t, x2: X(s.truth), y2: Hd - m.b, stroke: 'var(--grid)', 'stroke-width': 1 }, svg);
+  s.iters.forEach((it, i) => {
+    const cx = X(it.tau), cy = Y(it.f);
+    el('circle', { cx, cy, r: 7, fill: 'var(--bg)' }, svg);                       // surface ring
+    el('circle', {
+      cx, cy, r: 5,
+      fill: i === 0 ? 'var(--bg)' : `var(--ord-${Math.min(i, 3)})`,
+      stroke: i === 0 ? 'var(--ord-2)' : 'none', 'stroke-width': i === 0 ? 2 : 0,
+    }, svg);
+    el('text', { x: cx, y: cy - 11, 'text-anchor': 'middle', 'font-size': 10.5, fill: 'var(--ink-2)' }, svg)
+      .textContent = i === 0 ? 'predict' : String(i);
+    const hit = el('circle', { cx, cy, r: 14, fill: 'transparent' }, svg);
+    hit.addEventListener('pointermove', e => showTip(e, [
+      { v: i === 0 ? 'predictor' : `correction ${i}`, k: '' },
+      { v: it.tau.toFixed(9), k: 'τ' },
+      { v: sci(it.f), k: 'residual f' },
+      { v: sci(Math.abs(it.tau - s.truth) / (R.tf - R.ti)), k: '|Δτ| / span' },
+    ]));
+    hit.addEventListener('pointerleave', hideTip);
+  });
+  el('text', { x: (m.l + Wd - m.r) / 2, y: Hd - 8, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--muted)' }, svg)
+    .textContent = `proper time τ   (sample k = ${s.k}, observer x⁰ = ${s.x0t.toFixed(2)})`;
+  el('text', { x: 14, y: (m.t + Hd - m.b) / 2, 'font-size': 11, fill: 'var(--muted)', transform: `rotate(-90 14 ${(m.t + Hd - m.b) / 2})`, 'text-anchor': 'middle' }, svg)
+    .textContent = 'light-cone residual f(τ)';
+
+  /* — right: per-sample error, one ordinal line per n_iters — */
+  const sv2 = $('errplot'); sv2.innerHTML = '';
+  const m2 = { l: 56, r: 16, t: 16, b: 40 };
+  // Display floor: bisection ground truth is only good to ~1e-14, so values at
+  // the floor are noise — clip them to 1e-13 so "converged" reads as a flat
+  // line at the bottom instead of a noise band.
+  const eps = 1e-13;
+  let eLo = Infinity, eHi = -Infinity;
+  for (const n of [1, 2, 3]) for (const p of all[n]) {
+    const v = Math.max(p.err, eps);
+    eLo = Math.min(eLo, v); eHi = Math.max(eHi, v);
+  }
+  eLo = Math.max(eLo, eps);
+  if (eHi <= eLo) eHi = eLo * 10;
+  const lg = Math.log10;
+  const X2 = k => m2.l + (k - cur[0].k) / (cur[cur.length - 1].k - cur[0].k || 1) * (Wd - m2.l - m2.r);
+  const Y2 = v => m2.t + (lg(eHi) - lg(Math.max(v, eps))) / (lg(eHi) - lg(eLo) || 1) * (Hd - m2.t - m2.b);
+  for (let d = Math.ceil(lg(eLo)); d <= Math.floor(lg(eHi)); d++) {
+    if (((d % 3) + 3) % 3 !== 0) continue;
+    const y = Y2(10 ** d);
+    el('line', { x1: m2.l, y1: y, x2: Wd - m2.r, y2: y, stroke: 'var(--grid)', 'stroke-width': 1 }, sv2);
+    el('text', { x: m2.l - 6, y: y + 3.5, 'text-anchor': 'end', 'font-size': 10, fill: 'var(--muted)' }, sv2)
+      .textContent = '1e' + d;
+  }
+  // Dots, not connected lines: per-sample error is a comb (wiggle-phase
+  // modulation down to the clipped floor), and line segments through the
+  // floor render as a solid band. Identity comes from the legend below.
+  for (const n of [1, 2, 3]) {
+    if (n === conv.iters) continue;
+    for (const p of all[n]) el('circle', {
+      cx: X2(p.k), cy: Y2(p.err), r: 1.6, fill: `var(--ord-${n})`, opacity: 0.45,
+    }, sv2);
+  }
+  for (const p of all[conv.iters]) el('circle', {
+    cx: X2(p.k), cy: Y2(p.err), r: 2.2, fill: `var(--ord-${conv.iters})`, opacity: 0.9,
+  }, sv2);
+  el('line', { x1: X2(s.k), y1: m2.t, x2: X2(s.k), y2: Hd - m2.b, stroke: 'var(--border-2)', 'stroke-width': 1 }, sv2);
+  el('text', { x: (m2.l + Wd - m2.r) / 2, y: Hd - 8, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--muted)' }, sv2)
+    .textContent = 'observer-time sample k (whole march)';
+  el('text', { x: 14, y: (m2.t + Hd - m2.b) / 2, 'font-size': 11, fill: 'var(--muted)', transform: `rotate(-90 14 ${(m2.t + Hd - m2.b) / 2})`, 'text-anchor': 'middle' }, sv2)
+    .textContent = '|Δτ| / span  (log)';
+  const track = el('rect', { x: m2.l, y: m2.t, width: Wd - m2.l - m2.r, height: Hd - m2.t - m2.b, fill: 'transparent' }, sv2);
+  track.addEventListener('pointermove', e => {
+    const bb = sv2.getBoundingClientRect();
+    const frac = Math.min(1, Math.max(0, (e.clientX - bb.left - m2.l) / (Wd - m2.l - m2.r)));
+    const i = Math.round(frac * (cur.length - 1));
+    const rows = [{ v: 'k = ' + cur[i].k, k: '' }];
+    for (const n of [1, 2, 3]) rows.push({ v: sci(all[n][i].err), k: `n_iters = ${n}` });
+    showTip(e, rows);
+  });
+  track.addEventListener('pointerleave', hideTip);
+}
+segWire($('c-regime'), v => { conv.regime = v; renderConv(); });
+segWire($('c-pixel'), v => { conv.pixel = v; renderConv(); });
+segWire($('c-iters'), v => { conv.iters = +v; renderConv(); });
+$('c-slot').addEventListener('input', e => { conv.slotFrac = e.target.value / 100; renderConv(); });
+
+/* ════════════════════════════════════════════════════════════════════════
+   Figure 2 — benchmark explorer (measured data, W7900)
+   ════════════════════════════════════════════════════════════════════════ */
+const BENCH = [
+  { id: 'p1', label: 'potential · 100 e⁻ · 50²', sub: 'N_samples = 1000, min of 3', anchor: 'RK4 ns=8', rows: [
+    { fam: 'rk4', name: 'RK4 ns=1', t: 3.004, err: '9.5e-10' },
+    { fam: 'rk4', name: 'RK4 ns=8', t: 16.866, err: 'anchor' },
+    { fam: 'newton', name: 'Newton it=1', t: 1.665, err: '7.4e-11' },
+    { fam: 'newton', name: 'Newton it=2', t: 2.134, err: '7.4e-11' },
+    { fam: 'newton', name: 'Newton it=3', t: 2.676, err: '7.4e-11' } ] },
+  { id: 'p2', label: 'potential · 300 e⁻ · 50²', sub: 'N_samples = 1000, min of 3', anchor: 'RK4 ns=8', rows: [
+    { fam: 'rk4', name: 'RK4 ns=1', t: 8.713, err: '9.8e-10' },
+    { fam: 'rk4', name: 'RK4 ns=8', t: 50.401, err: 'anchor' },
+    { fam: 'newton', name: 'Newton it=1', t: 4.430, err: '5.7e-11' },
+    { fam: 'newton', name: 'Newton it=2', t: 6.070, err: '5.7e-11' },
+    { fam: 'newton', name: 'Newton it=3', t: 7.804, err: '5.7e-11' } ] },
+  { id: 'p3', label: 'potential · 1000 e⁻ · 200²', sub: 'N_samples = 1000, min of 2', anchor: 'RK4 ns=8', rows: [
+    { fam: 'rk4', name: 'RK4 ns=1', t: 85.032, err: '9.9e-10' },
+    { fam: 'rk4', name: 'RK4 ns=8', t: 523.304, err: 'anchor' },
+    { fam: 'newton', name: 'Newton it=1', t: 57.239, err: '5.3e-11' },
+    { fam: 'newton', name: 'Newton it=2', t: 73.458, err: '5.3e-11' },
+    { fam: 'newton', name: 'Newton it=3', t: 89.751, err: '5.3e-11' } ] },
+  { id: 'f1', label: 'field (split) · 300 e⁻ · 200²', sub: 'N_samples = 1000, min of 2', anchor: 'RK4 ns=8', rows: [
+    { fam: 'rk4', name: 'RK4 ns=1', t: 48.425, err: '8.2e-07' },
+    { fam: 'rk4', name: 'RK4 ns=8', t: 201.821, err: 'anchor' },
+    { fam: 'newton', name: 'Newton it=1', t: 50.344, err: '4.9e-08' },
+    { fam: 'newton', name: 'Newton it=2', t: 58.862, err: '4.9e-08' },
+    { fam: 'newton', name: 'Newton it=3', t: 78.499, err: '4.9e-08' } ] },
+  { id: 'f2', label: 'field (split) · 300 e⁻ · 400² — run A', sub: 'N_samples = 1000, min of 1; within-run ratios only', anchor: 'RK4 ns=1', rows: [
+    { fam: 'rk4', name: 'RK4 ns=1', t: 158.357, err: 'anchor' },
+    { fam: 'newton', name: 'Newton it=2', t: 121.939, err: '8.2e-07' } ] },
+  { id: 'f3', label: 'field (split) · 300 e⁻ · 400² — run B', sub: 'N_samples = 1000, min of 1; within-run ratios only', anchor: 'RK4 ns=1', rows: [
+    { fam: 'rk4', name: 'RK4 ns=1', t: 118.415, err: 'anchor' },
+    { fam: 'newton', name: 'Newton it=1', t: 103.645, err: '8.2e-07' } ] },
+];
+let bRung = 'p3';
+const bSeg = $('b-rung');
+for (const r of BENCH) {
+  const b = document.createElement('button');
+  b.dataset.v = r.id; b.textContent = r.label.replace('potential · ', 'pot ').replace('field (split) · ', 'field ').replace(' e⁻', '');
+  if (r.id === bRung) b.classList.add('on');
+  bSeg.appendChild(b);
+}
+segWire(bSeg, v => { bRung = v; renderBench(); });
+
+function renderBench() {
+  const rung = BENCH.find(r => r.id === bRung);
+  $('benchsub').textContent = `${rung.label} — ${rung.sub}; relative error vs ${rung.anchor} of this rung`;
+  const svg = $('benchplot'); svg.innerHTML = '';
+  const Wd = 840, m = { l: 118, r: 96, t: 8, b: 34 };
+  const rowH = 34, barH = 22;                       // ≤24px bars, ≥2px gap via row spacing
+  const Hd = m.t + rung.rows.length * rowH + m.b;
+  svg.setAttribute('height', Hd);
+  const tMax = Math.max(...rung.rows.map(r => r.t));
+  const X = t => m.l + t / (tMax * 1.04) * (Wd - m.l - m.r);
+  // hairline ticks at clean numbers
+  const step = tMax > 300 ? 100 : tMax > 100 ? 50 : tMax > 30 ? 10 : tMax > 8 ? 5 : 1;
+  for (let v = step; v <= tMax * 1.02; v += step) {
+    el('line', { x1: X(v), y1: m.t, x2: X(v), y2: Hd - m.b, stroke: 'var(--grid)', 'stroke-width': 1 }, svg);
+    el('text', { x: X(v), y: Hd - m.b + 14, 'text-anchor': 'middle', 'font-size': 10.5, fill: 'var(--muted)' }, svg).textContent = v;
+  }
+  el('line', { x1: m.l, y1: m.t, x2: m.l, y2: Hd - m.b, stroke: 'var(--border-2)', 'stroke-width': 1 }, svg);
+  const ns1 = rung.rows.find(r => r.name === 'RK4 ns=1');
+  const anchor = rung.rows.find(r => r.err === 'anchor');
+  rung.rows.forEach((r, i) => {
+    const y = m.t + i * rowH + (rowH - barH) / 2;
+    const w = Math.max(2, X(r.t) - m.l);
+    const color = r.fam === 'newton' ? 'var(--s-newton)' : 'var(--s-rk4)';
+    // square at baseline, 4px rounded data-end: rounded rect clipped at the left edge
+    const bar = el('path', {
+      d: `M ${m.l} ${y} H ${m.l + w - 4} q 4 0 4 4 v ${barH - 8} q 0 4 -4 4 H ${m.l} Z`,
+      fill: color,
+    }, svg);
+    el('text', { x: m.l - 8, y: y + barH / 2 + 4, 'text-anchor': 'end', 'font-size': 12, fill: 'var(--ink-2)' }, svg)
+      .textContent = r.name;
+    el('text', { x: m.l + w + 7, y: y + barH / 2 + 4, 'font-size': 12, fill: 'var(--ink)', 'font-weight': 600 }, svg)
+      .textContent = fmt(r.t, r.t < 10 ? 2 : 1) + ' s';
+    const hit = el('rect', { x: m.l, y: m.t + i * rowH, width: Wd - m.l - m.r + 80, height: rowH, fill: 'transparent' }, svg);
+    hit.addEventListener('pointermove', e => {
+      bar.setAttribute('opacity', 0.82);
+      const rows = [
+        { v: r.name, k: '' },
+        { v: fmt(r.t, 3) + ' s', k: 'wall time' },
+        { v: r.err, k: r.err === 'anchor' ? '(accuracy anchor)' : 'rel. error vs anchor' },
+      ];
+      if (ns1 && r !== ns1) rows.push({ v: fmt(ns1.t / r.t, 2) + '×', k: 'vs RK4 ns=1' });
+      if (anchor && r !== anchor) rows.push({ v: fmt(anchor.t / r.t, 2) + '×', k: `vs ${anchor.name}` });
+      showTip(e, rows);
+    });
+    hit.addEventListener('pointerleave', () => { bar.removeAttribute('opacity'); hideTip(); });
+  });
+  el('text', { x: (m.l + Wd - m.r) / 2, y: Hd - 6, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--muted)' }, svg)
+    .textContent = 'wall time (s) — end-to-end, upload + kernel + download';
+}
+
+/* full data table (the always-available non-hover view) */
+(function buildTable() {
+  const tb = $('benchtable').querySelector('tbody');
+  for (const rung of BENCH) {
+    const ns1 = rung.rows.find(r => r.name === 'RK4 ns=1');
+    const anchor = rung.rows.find(r => r.err === 'anchor');
+    rung.rows.forEach((r, i) => {
+      const tr = document.createElement('tr');
+      if (r.fam === 'newton' && (r.name === 'Newton it=1')) tr.className = 'hl';
+      const cells = [
+        i === 0 ? rung.label : '',
+        r.name,
+        r.err,
+        fmt(r.t, 3),
+        ns1 ? (r === ns1 ? '1.00' : fmt(ns1.t / r.t, 2)) : '—',
+        anchor ? (r === anchor ? '1.00' : fmt(anchor.t / r.t, 2)) : '—',
+      ];
+      cells.forEach((c, j) => {
+        const td = document.createElement('td');
+        if (j >= 2) td.className = 'num';
+        td.textContent = c;
+        tr.appendChild(td);
+      });
+      tb.appendChild(tr);
+    });
+  }
+})();
+
+renderConv();
+renderBench();
+</script>
+</body>
+</html>
