@@ -55,6 +55,15 @@
 #   EDM_ERR_COMPONENT    spatial acceleration component analyzed: "x" (default), "y", "z"
 #   EDM_ERR_N_TRACE      per-electron error traces drawn / knot-spacing lines (default 16)
 #   EDM_ERR_ZOOM         zoomed-window width in laser periods, centred on the envelope peak (default 3)
+#   EDM_ERR_EXPORT       "" (default, off) | "1" ⇒ splerr_report_<comp>_<base>_<id>.json in
+#                        EDM_OUTDIR | a filename/path — serialize the report payload (per-electron
+#                        full-res zoom traces + knot times, envelopes, spectra, 2ω-band traces)
+#                        for the interactive dashboard report; also adds the splerr_zoomcase_*
+#                        figure. Pure retention/serialization: no computed quantity changes.
+#   EDM_ERR_EXPORT_PERIODS  full-resolution export window in laser periods, centred on the
+#                        envelope peak (default 48 ≈ the pulse core)
+#   EDM_ERR_EXPORT_IDS   comma-separated electron indices to export; "" (default) ⇒ 4 electrons
+#                        radius-uniform over the disk (r₀/Rmax ≈ 0, 1/3, 2/3, 1)
 #
 #   julia --project=scripts scripts/analyze_trajectories.jl
 
@@ -66,6 +75,7 @@ using StaticArrays
 using SymbolicIndexingInterface
 using DataInterpolations     # CubicSpline — the production trajectory interpolant
 using FFTW                   # error spectra (spline-error mode)
+using JSON                   # report-payload export (spline-error mode, EDM_ERR_EXPORT)
 using LinearAlgebra
 using Statistics
 using Printf
@@ -105,6 +115,10 @@ const ERR_COMPONENT = get(ENV, "EDM_ERR_COMPONENT", "x")             # accelerat
 const ERR_N_TRACE = parse(Int, get(ENV, "EDM_ERR_N_TRACE", "16"))    # traces drawn
 const ERR_ZOOM = parse(Float64, get(ENV, "EDM_ERR_ZOOM", "3"))       # zoom window, laser periods
 ERR_COMPONENT in ("x", "y", "z") || error("EDM_ERR_COMPONENT must be \"x\", \"y\" or \"z\", got \"$ERR_COMPONENT\"")
+# report export (all off unless EDM_ERR_EXPORT is set)
+const ERR_EXPORT = get(ENV, "EDM_ERR_EXPORT", "")                    # "" | "1" | filename/path
+const ERR_EXPORT_PERIODS = parse(Float64, get(ENV, "EDM_ERR_EXPORT_PERIODS", "48"))
+const ERR_EXPORT_IDS = get(ENV, "EDM_ERR_EXPORT_IDS", "")            # "" ⇒ radius-uniform 4
 
 # φ₀ for a given manifest: the numeric override (same for every run), or the manifest's own value.
 phi0_for(manifest) = PHASE_SPEC == "manifest" ?
@@ -405,6 +419,20 @@ function band_median(S, orders, center; half = 0.25)
     return median(view(S, lo:hi))
 end
 
+# Zero-phase band-limited component: keep only the rfft bins with harmonic order in
+# center ± half. Deliberately unwindowed — the signals here are compact (pulse ≪ record) so
+# band leakage is negligible; do NOT reuse for signals that fill the record.
+function bandpass(sig, orders, center; half = 0.25)
+    F = rfft(sig)
+    keep = (orders .>= center - half) .& (orders .<= center + half)
+    F[.!keep] .= 0
+    return irfft(F, length(sig))
+end
+
+# Compact JSON payload: 5 significant digits ≫ anything the report figures resolve.
+rd(x::Real) = round(x; sigdigits = 5)
+rd(v::AbstractArray) = rd.(v)
+
 # CubicSplines through uniform knot times with state values AND acceleration knots sampled
 # from the DENSE solution's continuous extension — the knot-placement-only "uniform ideal"
 # variant (same structure radiation.jl builds, ideal knot values).
@@ -538,6 +566,100 @@ function splerr_knot_figure(; sols, idxs, T, zoomT, tracecol, crange, title)
     return fig
 end
 
+# ── FIG 5 (with EDM_ERR_EXPORT): individual splines under the microscope ──
+# Per export electron: left, the adaptive error vs the uniform-ideal control (comparable
+# magnitudes — the knot-PLACEMENT comparison) with the adaptive knots marked; right, the
+# production-saveat error at its own scale (its linear-slope a-knot bias is ~decades larger).
+# Both columns carry a faint a(t) scaled into the error band for phase reference. The static
+# counterpart of the dashboard report's interactive explorer.
+function splerr_zoomcase_figure(; ts, T, ipk, ids, r0w, A0, A_tr, E_adap, E_prod_tr,
+        E_ideal_tr, sols, title)
+    fig = Figure(size = (1250, 185 * length(ids) + 90))
+    Label(fig[0, 1:2], title; fontsize = 15, font = :bold)
+    w = searchsortedfirst(ts, ts[ipk] - 2T):searchsortedlast(ts, ts[ipk] + 2T)
+    tsT = ts[w] ./ T
+    aref(sig, δmax) = sig .* (0.9 * δmax / max(maximum(abs, sig), 1e-300))
+    nid = length(ids)
+    axl = Axis[]; axr = Axis[]
+    for (k, i) in enumerate(ids)
+        δa = view(E_adap, w, i) ./ A0
+        δi = E_ideal_tr[i][w] ./ A0
+        δp = E_prod_tr[i][w] ./ A0
+        at = view(A_tr[i], w)
+        ax1 = Axis(fig[k, 1]; ylabel = L"\delta a / a_\mathrm{peak}", titlesize = 11,
+            titlealign = :left, xlabel = k == nid ? L"\tau/T" : "",
+            title = k == 1 ? @sprintf("adaptive vs uniform ideal — electron %d (r₀/w₀ = %.2f)", i, r0w[i]) :
+                @sprintf("electron %d (r₀/w₀ = %.2f)", i, r0w[i]))
+        τk = filter(t -> ts[w[1]] <= t <= ts[w[end]], sols[i].t) ./ T
+        vlines!(ax1, τk; color = (:crimson, 0.18), linewidth = 0.6)
+        lines!(ax1, tsT, aref(at, maximum(abs, δa)); color = (:gray, 0.35), label = "a(t) (scaled)")
+        lines!(ax1, tsT, δa; color = :crimson, linewidth = 1.0, label = "adaptive")
+        lines!(ax1, tsT, δi; color = :steelblue, linewidth = 1.0,
+            label = @sprintf("uniform ideal (%d/period)", ERR_SAVEAT))
+        ax2 = Axis(fig[k, 2]; titlesize = 11, titlealign = :left,
+            xlabel = k == nid ? L"\tau/T" : "",
+            title = k == 1 ? "production saveat (own scale)" : "")
+        lines!(ax2, tsT, aref(at, maximum(abs, δp)); color = (:gray, 0.35))
+        lines!(ax2, tsT, δp; color = :seagreen, linewidth = 1.0,
+            label = @sprintf("uniform saveat, production (%d/period)", ERR_SAVEAT))
+        k == 1 && axislegend(ax1; position = :rt, framevisible = false, labelsize = 8)
+        k == 1 && axislegend(ax2; position = :rt, framevisible = false, labelsize = 8)
+        k < nid && (hidexdecorations!(ax1; grid = false); hidexdecorations!(ax2; grid = false))
+        push!(axl, ax1); push!(axr, ax2)
+    end
+    linkxaxes!(axl..., axr...)
+    return fig
+end
+
+# ── Report-payload export (EDM_ERR_EXPORT): everything the interactive dashboard report
+# needs, serialized once so the report never recomputes physics. Trace arrays are
+# pre-normalized (time domain ÷ A0, spectra ÷ Sω) and rounded to 5 sigdigits; uniform time
+# grids are stored as (t0T, dtT/dT) pairs, never as arrays. Knot times keep 6 decimals of
+# τ/T so consecutive differences (the spacing figures) stay clean.
+function write_splerr_export(fexp; component, config, laser, setup, run_id, T, τi, spp,
+        np_tot, orders, N, arms, μ, rms, μ2, ā2, Sphys, Scoh, Sinc, Sω, A0,
+        export_ids, r0, Rmax, w₀, A_tr, E_adap, E_prod_tr, E_ideal_tr, sols, saveat, ts, wexp)
+    kT(t) = round(t / T; digits = 6)
+    env(sig) = rd(period_env(sig, spp) ./ A0)   # period_env is already |·|-max per period
+    sel = 1:searchsortedlast(orders, 6.5)       # DC … 6.5ω — all the report's spectra show
+    electrons = map(export_ids) do i
+        (; i, r0_w0 = rd(r0[i] / w₀), r0_Rmax = rd(r0[i] / Rmax),
+            a = rd(A_tr[i][wexp] ./ A0),
+            err = (; adaptive = rd(E_adap[wexp, i] ./ A0),
+                uniform_prod = rd(E_prod_tr[i][wexp] ./ A0),
+                uniform_ideal = rd(E_ideal_tr[i][wexp] ./ A0)),
+            knots_adaptive = kT.(filter(t -> ts[first(wexp)] <= t <= ts[last(wexp)], sols[i].t)),
+            knots_adaptive_full = kT.(sols[i].t))
+    end
+    payload = (;
+        schema = 1, kind = "splerr_report", component, run_id, T, spp, N,
+        config, laser, setup,
+        norm = (; A0 = round(A0; sigdigits = 8), S_omega = round(Sω; sigdigits = 8)),
+        period_env = (;
+            np = np_tot, t0T = kT(τi + T / 2), dT = 1.0,
+            arms = env(arms),
+            mu = (; (v => env(μ[v]) for v in VARIANTS)...),
+            rms = (; (v => env(rms[v]) for v in VARIANTS)...),
+            mu2w = (; (v => env(μ2[v]) for v in VARIANTS)...),
+            phys2w = env(ā2)),
+        spectrum = (;
+            dorder = orders[2] - orders[1],
+            phys = rd(Sphys[sel] ./ Sω),
+            coh = (; (v => rd(Scoh[v][sel] ./ Sω) for v in VARIANTS)...),
+            inc = (; (v => rd(Sinc[v][sel] ./ Sω) for v in VARIANTS)...)),
+        zoom = (;
+            t0T = kT(ts[first(wexp)]), dtT = 1 / spp,
+            electrons,
+            uniform_knots = (; t0T = kT(saveat[1]), dT = 1 / ERR_SAVEAT)),
+        band2w = (;
+            t0T = kT(ts[first(wexp)]), dtT = 1 / spp,
+            phys = rd(ā2[wexp] ./ A0),
+            mu = (; (v => rd(μ2[v][wexp] ./ A0) for v in VARIANTS)...)),
+    )
+    open(io -> JSON.json(io, payload), fexp, "w")
+    return fexp
+end
+
 # ── Spline-error analysis of one source run ──
 function analyze_spline_error(mfile)
     rec = reconstruct(mfile)
@@ -578,6 +700,13 @@ function analyze_spline_error(mfile)
     orders = (0:(nf - 1)) .* (ERR_SPP / nt)   # rfft bin → harmonic order f/ω
 
     trace_list = unique(round.(Int, range(1, N; length = min(ERR_N_TRACE, N))))
+    # Electrons whose full-resolution traces are exported for the interactive report:
+    # radius-uniform over the disk (index-uniform would cluster at the rim, r ∝ √k).
+    export_ids = ERR_EXPORT == "" ? Int[] :
+        !isempty(ERR_EXPORT_IDS) ?
+        sort(unique(clamp.(parse.(Int, split(ERR_EXPORT_IDS, ",")), 1, N))) :
+        unique([argmin(abs.(r0 ./ Rmax .- s)) for s in (0.0, 1 / 3, 2 / 3, 1.0)])
+    export_set = Set(export_ids)
     Σa = zeros(nt)
     Σa² = zeros(nt)
     Σδ = Dict(v => zeros(nt) for v in VARIANTS)
@@ -585,12 +714,15 @@ function analyze_spline_error(mfile)
     ΣS = Dict(v => zeros(nf) for v in VARIANTS)
     E_adap = Matrix{Float64}(undef, nt, N)      # full adaptive error (heatmap + traces)
     E_ideal_tr = Dict{Int, Vector{Float64}}()   # uniform-ideal traces (subset only)
+    A_tr = Dict{Int, Vector{Float64}}()         # dense-truth acceleration (export subset)
+    E_prod_tr = Dict{Int, Vector{Float64}}()    # uniform-prod traces (export subset)
 
     t_err = @elapsed for i in 1:N
         sol = sols[i]
         atrue = [v[ai] for v in sol(ts, Val{1}).u]   # dense Vern9 derivative = truth
         Σa .+= atrue
         Σa² .+= abs2.(atrue)
+        i in export_set && (A_tr[i] = atrue)
         traj_ideal = ideal_uniform_interpolant(sol, saveat, x_idxs, u_idxs, K)
         for (v, traj) in ((:adaptive, trajs_adap[i]), (:uniform_prod, trajs_prod[i]),
                 (:uniform_ideal, traj_ideal))
@@ -599,7 +731,8 @@ function analyze_spline_error(mfile)
             Σδ²[v] .+= abs2.(δ)
             ΣS[v] .+= abs.(rfft(win .* δ))
             v == :adaptive && (E_adap[:, i] = δ)
-            v == :uniform_ideal && i in trace_list && (E_ideal_tr[i] = δ)
+            v == :uniform_prod && i in export_set && (E_prod_tr[i] = δ)
+            v == :uniform_ideal && (i in trace_list || i in export_set) && (E_ideal_tr[i] = δ)
         end
     end
     @info "spline errors measured" t_err nt
@@ -639,43 +772,7 @@ function analyze_spline_error(mfile)
     aknot_rel = sqrt(sum(abs2, aknot_prod .- aknot_true) / max(sum(abs2, aknot_true), eps()))
     @info "production saveat a_itp knot deviation (electron 1)" aknot_rms_rel = aknot_rel
 
-    # Zoom window (ERR_ZOOM periods around the envelope peak) + plotting helpers.
-    ipk = argmax(abs.(ā))
-    zoom = searchsortedfirst(ts, ts[ipk] - ERR_ZOOM * T / 2):searchsortedlast(ts, ts[ipk] + ERR_ZOOM * T / 2)
-    tsT = ts ./ T
-    pcT = (τi .+ ((1:np_tot) .- 0.5) .* T) ./ T   # per-period envelope bin centres
-    r0w = r0 ./ w₀
-    crange = (0.0, Rmax / w₀)
-    cg = cgrad(:viridis)
-    tracecol = i -> cg[clamp((r0w[i] - crange[1]) / (crange[2] - crange[1]), 0.0, 1.0)]
-    traces = Dict(:adaptive => [(i, E_adap[:, i]) for i in trace_list],
-        :uniform_ideal => [(i, E_ideal_tr[i]) for i in trace_list])
-
-    philab = phi_label(φ₀)
-    pstr = @sprintf("a₀=%.0e, φ₀=%s, N=%d, δa^%s", a₀, philab, N, ERR_COMPONENT)
-    base = @sprintf("a0_%.0e_phi%.4f", a₀, φ₀)
-    id8 = first(string(uuid4()), 8)
-    mkpath(OUTDIR)
-    figs = (
-        ("time", splerr_time_figure(; tsT, zoom, pcT, spp = ERR_SPP, A0, arms, μ, rms, traces,
-            tracecol, crange, N,
-            title = "Trajectory-spline error vs dense Vern9 — " * pstr)),
-        ("heat", splerr_heat_figure(; tsT, zoom, E = E_adap, A0, N,
-            title = "Per-electron spline error, adaptive knots — " * pstr)),
-        ("spec", splerr_spec_figure(; orders, Sphys, Scoh, Sinc, Sω, N, floor2, phys2,
-            title = "Spline-error spectra: coherent survival at 2ω — " * pstr)),
-        ("knots", splerr_knot_figure(; sols, idxs = trace_list, T,
-            zoomT = (tsT[first(zoom)], tsT[last(zoom)]), tracecol, crange,
-            title = "Adaptive knot spacing — " * pstr)),
-    )
-    plots = String[]
-    for (tag, fig) in figs
-        fname = "splerr_$(tag)_$(base)_$(id8).png"
-        save(joinpath(OUTDIR, fname), fig)
-        push!(plots, fname)
-        println("saved → $(joinpath(OUTDIR, fname))")
-    end
-
+    # Manifest dicts (built early: the report export embeds the same metrics verbatim).
     run_id = string(uuid4())
     config = Dict(
         "kind" => "spline_error", "a0" => a₀, "initial_phase" => φ₀, "N" => N,
@@ -705,8 +802,68 @@ function analyze_spline_error(mfile)
         "temporal_width" => τ0, "focus_position" => z_focus, "phi0" => φ₀,
     )
     setup_out = Dict("Rmax" => Rmax, "τi" => τi, "τf" => τf)
+
+    # Zoom window (ERR_ZOOM periods around the envelope peak) + plotting helpers.
+    ipk = argmax(abs.(ā))
+    zoom = searchsortedfirst(ts, ts[ipk] - ERR_ZOOM * T / 2):searchsortedlast(ts, ts[ipk] + ERR_ZOOM * T / 2)
+    tsT = ts ./ T
+    pcT = (τi .+ ((1:np_tot) .- 0.5) .* T) ./ T   # per-period envelope bin centres
+    r0w = r0 ./ w₀
+    crange = (0.0, Rmax / w₀)
+    cg = cgrad(:viridis)
+    tracecol = i -> cg[clamp((r0w[i] - crange[1]) / (crange[2] - crange[1]), 0.0, 1.0)]
+    traces = Dict(:adaptive => [(i, E_adap[:, i]) for i in trace_list],
+        :uniform_ideal => [(i, E_ideal_tr[i]) for i in trace_list])
+
+    philab = phi_label(φ₀)
+    pstr = @sprintf("a₀=%.0e, φ₀=%s, N=%d, δa^%s", a₀, philab, N, ERR_COMPONENT)
+    base = @sprintf("a0_%.0e_phi%.4f", a₀, φ₀)
+    id8 = first(string(uuid4()), 8)
+    mkpath(OUTDIR)
+
+    # Report-payload export (+ the zoomcase figure below): full-res window around the peak.
+    exportfile = nothing
+    if ERR_EXPORT != ""
+        wexp = searchsortedfirst(ts, ts[ipk] - ERR_EXPORT_PERIODS * T / 2):searchsortedlast(ts, ts[ipk] + ERR_EXPORT_PERIODS * T / 2)
+        μ2 = Dict(v => bandpass(μ[v], orders, 2.0) for v in VARIANTS)
+        ā2 = bandpass(ā, orders, 2.0)
+        fexp = ERR_EXPORT == "1" ?
+            joinpath(OUTDIR, "splerr_report_$(ERR_COMPONENT)_$(base)_$(id8).json") :
+            isabspath(ERR_EXPORT) ? ERR_EXPORT : joinpath(OUTDIR, ERR_EXPORT)
+        write_splerr_export(fexp; component = ERR_COMPONENT, config, laser = laser_out,
+            setup = setup_out, run_id, T, τi, spp = ERR_SPP, np_tot, orders, N, arms, μ, rms,
+            μ2, ā2, Sphys, Scoh, Sinc, Sω, A0, export_ids, r0, Rmax, w₀, A_tr, E_adap,
+            E_prod_tr, E_ideal_tr, sols, saveat, ts, wexp)
+        exportfile = basename(fexp)
+        println("export → $fexp")
+    end
+
+    figs = Any[
+        ("time", splerr_time_figure(; tsT, zoom, pcT, spp = ERR_SPP, A0, arms, μ, rms, traces,
+            tracecol, crange, N,
+            title = "Trajectory-spline error vs dense Vern9 — " * pstr)),
+        ("heat", splerr_heat_figure(; tsT, zoom, E = E_adap, A0, N,
+            title = "Per-electron spline error, adaptive knots — " * pstr)),
+        ("spec", splerr_spec_figure(; orders, Sphys, Scoh, Sinc, Sω, N, floor2, phys2,
+            title = "Spline-error spectra: coherent survival at 2ω — " * pstr)),
+        ("knots", splerr_knot_figure(; sols, idxs = trace_list, T,
+            zoomT = (tsT[first(zoom)], tsT[last(zoom)]), tracecol, crange,
+            title = "Adaptive knot spacing — " * pstr)),
+    ]
+    ERR_EXPORT == "" || push!(figs,
+        ("zoomcase", splerr_zoomcase_figure(; ts, T, ipk, ids = export_ids, r0w, A0,
+            A_tr, E_adap, E_prod_tr, E_ideal_tr, sols,
+            title = "Individual splines under the microscope — " * pstr)))
+    plots = String[]
+    for (tag, fig) in figs
+        fname = "splerr_$(tag)_$(base)_$(id8).png"
+        save(joinpath(OUTDIR, fname), fig)
+        push!(plots, fname)
+        println("saved → $(joinpath(OUTDIR, fname))")
+    end
+
     write_run_manifest(OUTDIR; run_id, script = basename(PROGRAM_FILE),
-        config, laser = laser_out, setup = setup_out, plots)
+        config, laser = laser_out, setup = setup_out, datafile = exportfile, plots)
     println("manifest → $(joinpath(OUTDIR, "run_$(run_id).toml"))")
     return run_id
 end
