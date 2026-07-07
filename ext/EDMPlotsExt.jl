@@ -123,6 +123,12 @@ function ElectronDynamicsModels.plot_phase_with_rings(
         idxs, az = ElectronDynamicsModels.ring_pixels(x_grid, y_grid, R; tol)
         (R = R, color = ringcolor(i), idxs = idxs, az = az)
     end
+    # Rings outside the grid (small screens, e.g. EDM_SCREEN_HW < 4) have no pixels: they keep a
+    # NaN slot in the fits (fixed length across radii) but must not be drawn — their annuli would
+    # inflate the heatmap axis limits — and must not reach the legend (Makie's Legend errors when
+    # NO series carries a label, which crashed small-screen runs after the cube was written).
+    live = [r for r in rings if !isempty(r.idxs)]
+    isempty(live) && @warn "plot_phase_with_rings: no test ring fits the grid — phase panels will have no ring scatter/fits" radii_w0 = round.(collect(radii) ./ w₀; sigdigits = 3) grid_halfwidth_w0 = round(maximum(abs, xs); sigdigits = 3)
     ntr = ncomp                          # every component gets the unwrapped fit ∠F ≈ slope·φ + b (Eᶻ/Bᶻ wind too)
     fits = Dict{Int, NamedTuple}()       # component => (; slope, b) vectors over radii (NaN for empty rings)
     θ = range(-Float64(π), Float64(π), 200)
@@ -150,7 +156,7 @@ function ElectronDynamicsModels.plot_phase_with_rings(
             Colorbar(f[c, 2], hm; width = 10, height = panelsize, label = "∠F [rad]")
             # R±tol annuli: a white underlay for contrast on the cyclic :phase map (which already
             # cycles through the series colours), with the series-matched dashed line on top.
-            for r in rings, Rb in (r.R - tol, r.R + tol)
+            for r in live, Rb in (r.R - tol, r.R + tol)
                 cx, cy = (Rb / w₀) .* cos.(θ), (Rb / w₀) .* sin.(θ)
                 lines!(axh, cx, cy; color = :white, linewidth = 2.2)
                 lines!(axh, cx, cy; color = r.color, linestyle = :dash, linewidth = 1.0)
@@ -179,7 +185,7 @@ function ElectronDynamicsModels.plot_phase_with_rings(
                 end
             end
             c ≤ ntr && (fits[c] = (slope = sl, b = bb))
-            c == 1 && axislegend(axr; labelsize = 8, position = :lt)
+            c == 1 && !isempty(live) && axislegend(axr; labelsize = 8, position = :lt)
         end
         resize_to_layout!(f)
         f

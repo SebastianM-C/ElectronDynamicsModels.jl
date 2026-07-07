@@ -37,12 +37,17 @@ const dir = dirname(abspath(datafile))
 const parent = find_parent_manifest(dir, basename(datafile))
 parent === nothing && error("no run_*.toml in $dir binds $(basename(datafile)) — needed for samples_per_period")
 const spp = spp_from_manifest(parent[2])
+# Screen geometry from the run's [setup] when recorded (EDM_SCREEN_HW / windowed runs, e.g.
+# inverse_thomson_scattering.jl); legacy fallbacks reproduce the historical ±25w₀ full window.
+const setup_sec = get(parent[2], "setup", Dict{String, Any}())
+const screen_hw = get(setup_sec, "screen_hw", 25w₀)
+const x⁰_start_rec = get(setup_sec, "x0_start", nothing)
 
 function thomson_screen(Nx, N_samples)
     δt = 2π / ω / spp
-    x⁰_start = c * τi + hypot(Z, 25w₀ + Rmax)
+    x⁰_start = x⁰_start_rec === nothing ? c * τi + hypot(Z, screen_hw + Rmax) : x⁰_start_rec
     x⁰ = range(start = x⁰_start, step = c * δt, length = N_samples)
-    return ObserverScreen(LinRange(-25w₀, 25w₀, Nx), LinRange(-25w₀, 25w₀, Nx), Z, x⁰; c)
+    return ObserverScreen(LinRange(-screen_hw, screen_hw, Nx), LinRange(-screen_hw, screen_hw, Nx), Z, x⁰; c)
 end
 
 # ── Reduced products + cache ──────────────────────────────────────────────────
@@ -52,7 +57,7 @@ end
 # skip BOTH the 86 GB .jls reload and the (minutes-long) screen_observables recompute
 # when re-plotting. Bump OBS_CACHE_VERSION whenever the reduced schema/math changes,
 # so an older cache is detected as stale and recomputed.
-const OBS_CACHE_VERSION = 2
+const OBS_CACHE_VERSION = 3   # v3: screen geometry (screen_hw / x0_start) now read from the manifest
 const cachefile = stem * "_obscache.jls"
 const recompute = ("--recompute" in ARGS) || get(ENV, "EDM_OBS_RECOMPUTE", "0") == "1"
 

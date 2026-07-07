@@ -180,6 +180,17 @@ function run_spec_from_manifest(manifest::AbstractDict)
     env["EDM_GPU_BACKEND"] = string(prov["gpu_backend"])
     env["EDM_SYNC_PER_ELECTRON"] = string(cfg["sync_per_electron"])
     env["EDM_FIELD_MODE"] = string(get(cfg, "mode", "split"))   # default keeps pre-mode manifests replaying as before
+    # Inverse-Thomson knobs (inverse_thomson_scattering.jl) — guarded: absent in rest-electron
+    # manifests. Without these a "reproduce" of a boosted/narrow run silently reran the γ=10
+    # :full defaults (and misused the narrow-mode auto-sized N_samples as a :full window length).
+    haskey(cfg, "gamma") && (env["EDM_GAMMA"] = string(cfg["gamma"]))
+    haskey(cfg, "window") && (env["EDM_WINDOW"] = string(cfg["window"]))
+    haskey(cfg, "screen_hw_w0") && (env["EDM_SCREEN_HW"] = string(cfg["screen_hw_w0"]))
+    haskey(cfg, "harmonics") && (env["EDM_HARMONICS"] = join(cfg["harmonics"], ","))
+    haskey(cfg, "reltol") && (env["EDM_RELTOL"] = string(cfg["reltol"]))
+    haskey(cfg, "abstol") && (env["EDM_ABSTOL"] = string(cfg["abstol"]))
+    sv = get(cfg, "interp_saveat", "adaptive")
+    sv != "adaptive" && (env["EDM_INTERP_SAVEAT"] = string(sv))
     return (; commit, env)
 end
 
