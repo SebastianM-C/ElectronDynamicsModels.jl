@@ -64,6 +64,8 @@
 #                        envelope peak (default 48 ≈ the pulse core)
 #   EDM_ERR_EXPORT_IDS   comma-separated electron indices to export; "" (default) ⇒ 4 electrons
 #                        radius-uniform over the disk (r₀/Rmax ≈ 0, 1/3, 2/3, 1)
+#   EDM_ERR_RELTOL       override the solve reltol ("" = manifest value) — the knot-DENSITY
+#   EDM_ERR_ABSTOL       override the solve abstol ("" = manifest value)   levers
 #
 #   julia --project=scripts scripts/analyze_trajectories.jl
 
@@ -119,6 +121,11 @@ ERR_COMPONENT in ("x", "y", "z") || error("EDM_ERR_COMPONENT must be \"x\", \"y\
 const ERR_EXPORT = get(ENV, "EDM_ERR_EXPORT", "")                    # "" | "1" | filename/path
 const ERR_EXPORT_PERIODS = parse(Float64, get(ENV, "EDM_ERR_EXPORT_PERIODS", "48"))
 const ERR_EXPORT_IDS = get(ENV, "EDM_ERR_EXPORT_IDS", "")            # "" ⇒ radius-uniform 4
+# solve-tolerance overrides ("" ⇒ the manifest's own values) — the reltol/abstol levers:
+# tighter/looser stepping changes the adaptive knot DENSITY but not its dynamics-locked
+# placement, so these test density-vs-placement without touching the source campaign.
+const ERR_RELTOL = get(ENV, "EDM_ERR_RELTOL", "")
+const ERR_ABSTOL = get(ENV, "EDM_ERR_ABSTOL", "")
 
 # φ₀ for a given manifest: the numeric override (same for every run), or the manifest's own value.
 phi0_for(manifest) = PHASE_SPEC == "manifest" ?
@@ -665,6 +672,8 @@ function analyze_spline_error(mfile)
     rec = reconstruct(mfile)
     (; λ, w₀, m_az, p_rad, pol, profile, τ0, z_focus,
         a₀, N, Rmax, τi, τf, φ₀, parent_run_id, reltol, abstol, ensemble, r0) = rec
+    isempty(ERR_RELTOL) || (reltol = parse(Float64, ERR_RELTOL))
+    isempty(ERR_ABSTOL) || (abstol = parse(Float64, ERR_ABSTOL))
     T = λ / c   # laser period; τ ≈ t at these a₀ (γ − 1 ~ a₀²), so harmonics read directly
     comp = findfirst(==(ERR_COMPONENT), ("x", "y", "z"))
 
