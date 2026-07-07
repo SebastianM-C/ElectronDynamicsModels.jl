@@ -369,11 +369,16 @@ end
     for x in (0.0, 0.4), y in (0.0, 0.5), z in (-0.3, 0.0, 0.5), t in (0.0, 0.7)
         r_neg     = fe_neg_c([t, x, y, z])
         r_pos_at_neg = fe_pos_c([t, x, y, -z])
-        @test r_neg.E[1] ≈  r_pos_at_neg.E[1]
-        @test r_neg.E[2] ≈  r_pos_at_neg.E[2]
-        @test r_neg.E[3] ≈ -r_pos_at_neg.E[3]
-        @test r_neg.B[1] ≈ -r_pos_at_neg.B[1]
-        @test r_neg.B[2] ≈ -r_pos_at_neg.B[2]
-        @test r_neg.B[3] ≈ -r_pos_at_neg.B[3]
+        # atol: components that are physical zeros at a sample point (e.g. E_z
+        # on axis) come out as O(1e-14) roundoff whose value differs between the
+        # ±ẑ code paths — a bare ≈ (relative) comparison trips on that noise.
+        # Fields are O(1) in these units, so 1e-10 is far above roundoff and far
+        # below any real component.
+        @test r_neg.E[1] ≈  r_pos_at_neg.E[1] atol = 1e-10
+        @test r_neg.E[2] ≈  r_pos_at_neg.E[2] atol = 1e-10
+        @test r_neg.E[3] ≈ -r_pos_at_neg.E[3] atol = 1e-10
+        @test r_neg.B[1] ≈ -r_pos_at_neg.B[1] atol = 1e-10
+        @test r_neg.B[2] ≈ -r_pos_at_neg.B[2] atol = 1e-10
+        @test r_neg.B[3] ≈ -r_pos_at_neg.B[3] atol = 1e-10
     end
 end
