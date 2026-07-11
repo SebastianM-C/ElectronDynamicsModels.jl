@@ -56,6 +56,14 @@ t_end = 36T0
 n_frames = 480
 frame_times = LinRange(t_start, t_end, n_frames)
 
+# Playback window: what the slider and animate() actually show. Decoupled from
+# frame_times (the DATA clock — changing that invalidates every precomputed
+# product), so it can be trimmed freely; with the detector at +16λ the show is
+# over by ~26T0 and the last stretch of the data window is dead air.
+t_play_end = 28T0
+n_play_frames = 400
+play_times = LinRange(t_start, t_play_end, n_play_frames)
+
 # ── Electron cloud: sunflower disk at the focal plane, at rest ──
 const ϕg = (1 + √5) / 2
 

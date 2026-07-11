@@ -43,6 +43,11 @@ end
 NT = parse(Int, get(ENV, "EDM_RAD_NT", "96"))
 NSLICES = parse(Int, get(ENV, "EDM_RAD_NSLICES", "128"))
 BENCH = get(ENV, "EDM_BENCH", "0") == "1"
+# Production convention (thomson_scattering.jl): async per-electron launches.
+# The kernel-level default is true; at animation-scale screens (~16k pixels)
+# the device is occupancy-starved per electron, so overlapping the 800
+# launches matters even more here than at production size.
+SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 
 txs = LinRange(-2w₀, 2w₀, NT)
 tys = LinRange(-2w₀, 2w₀, NT)
@@ -60,7 +65,7 @@ end
 function far_intensity(screen)
     fld = accumulate_field(
         trajs, screen, GPUKernelRK4(), gpu_backend;
-        n_substeps = NSUB, mode = Val(:split),
+        n_substeps = NSUB, mode = Val(:split), sync_per_electron = SYNC,
     )
     return Float32.(dropdims(sum(abs2, fld.E_far; dims = 2); dims = 2))
 end

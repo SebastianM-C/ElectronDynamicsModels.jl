@@ -8,10 +8,17 @@
 # until PR #35 merges.
 CAMPAIGN=radiation_cube
 SCRIPT=animation/precompute_radiation.jl
+# No manifest/cube to reduce (the script serializes its own product); the hook
+# keeps REDUCE_OVERLAP backends from running the default harmonic reducer, but
+# must still drop the .reduced marker reap_reduces checks — a bare no-op gets
+# counted as a failed reduce (cosmetic, but noisy).
+REDUCE_HOOK='touch "$CAMP/${uuid}.reduced"'
 BASE=(
   EDM_NSUBSTEPS=4
 )
 CELLS=(
-  # hero-res: 128² transverse × 192 slices × 480 frames ≈ 6 GB Float32
-  "hero|EDM_RAD_NT=128 EDM_RAD_NSLICES=192"
+  # hero-res: 128² transverse × 160 slices × 480 frames ≈ 5 GB Float32.
+  # 160 slices (6.7/λ vs the local cube's 5.3/λ) keeps an H200 NVL run ≈ $8 —
+  # safely inside a tight balance where 192 would flirt with the kill-line.
+  "hero|EDM_RAD_NT=128 EDM_RAD_NSLICES=160"
 )
