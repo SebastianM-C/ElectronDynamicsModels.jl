@@ -12,7 +12,6 @@ using SciMLBase
 using StaticArrays
 using SymbolicIndexingInterface
 using LinearAlgebra
-using GeometryBasics: Point3f   # what GLMakie re-exports; keeps setup Makie-free
 
 # Atomic units
 const c = 137.03599908330932
@@ -126,7 +125,9 @@ trajs = trajectory_interpolants(solution)
 #   scene X = physics z (propagation, horizontal, pulse travels −X → +X)
 #   scene Y = physics x
 #   scene Z = physics y (screen-vertical, orbit axis)
-scene_point(xμ) = Point3f(xμ[4], xμ[2], xμ[3])
+# SVector instead of Point3f: Makie converts StaticVectors natively, and this
+# keeps setup.jl loadable in the scripts env (no GeometryBasics there).
+scene_point(xμ) = SVector{3, Float32}(xμ[4], xμ[2], xμ[3])
 
 # ── Lab-time sampling ──
 # Trajectories are parameterized by proper time; invert x⁰(τ)/c = t by bisection

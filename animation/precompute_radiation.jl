@@ -80,7 +80,12 @@ if BENCH
 end
 
 rad = Array{Float32}(undef, n_frames, NSLICES, NT, NT)
-outfile = joinpath(@__DIR__, "radiation_cube.jls")
+# Orchestration-aware output: run_cell.sh sets EDM_OUTDIR (campaign dir) and
+# EDM_RUN_TAG (uuid); a direct local run keeps the plain name in animation/.
+OUTDIR = get(ENV, "EDM_OUTDIR", @__DIR__)
+RUN_TAG = get(ENV, "EDM_RUN_TAG", "")
+outfile = joinpath(OUTDIR, isempty(RUN_TAG) ? "radiation_cube.jls" : "radiation_cube_$(RUN_TAG).jls")
+mkpath(OUTDIR)
 
 t_total = @elapsed for (si, zsl) in enumerate(slice_zs)
     t_slice = @elapsed begin

@@ -76,8 +76,10 @@ gpu_profile() {
 # poll round; the first that schedules in EU-RO-1 wins (and its gpu_profile sets image+backend+depot).
 # This encodes your "use whatever's available in EU-RO-1" strategy.
 gpu_candidates() {
-    echo "AMD Instinct MI300X OAM"   # primary
-    echo "NVIDIA B200"               # in-region fallback
+    echo "AMD Instinct MI300X OAM"   # primary (best FP64/$ for the LW kernel)
+    echo "NVIDIA H200 NVL"           # CUDA fallbacks, cheapest first ($3.79 vs $4.39/hr secure)
+    echo "NVIDIA H200"
+    echo "NVIDIA B200"               # last resort
 }
 
 ensure_volume() {   # opt-in: only called when RUNPOD_VOLUME_GB > 0; must match OUR datacenter
