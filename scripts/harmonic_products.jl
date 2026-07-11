@@ -257,9 +257,11 @@ function recover_from_manifest(toml)
     check_schema_version(m; source = basename(toml))
     dir = dirname(abspath(toml))
     cfg, las = m["config"], m["laser"]
-    # Only title/filename differ by family — both use the shared harmonic_field_style() colormap.
+    # Only title/filename differ by family — all use the shared harmonic_field_style() colormap.
     lpwa = get(cfg, "trajectory_source", "") == "lpwa_analytic"
-    title_prefix, fileprefix = lpwa ? ("LPWA", "lpwa") : ("Thomson scattering", "thomson")
+    inverse = get(cfg, "scattering", "") == "inverse"
+    title_prefix, fileprefix = lpwa ? ("LPWA", "lpwa") :
+        inverse ? ("Inverse Thomson scattering", "inverse_thomson") : ("Thomson scattering", "thomson")
     run_tag = m["provenance"]["run_id"]
     cube = joinpath(dir, m["outputs"]["datafile"])
 
@@ -267,8 +269,11 @@ function recover_from_manifest(toml)
         λ = las["wavelength"]
         ω = C_LIGHT * 2π / λ
         δt = 2π / ω / spp_from_manifest(m)
-        x_grid = LinRange(-25las["w0"], 25las["w0"], cfg["Nx"])
-        y_grid = LinRange(-25las["w0"], 25las["w0"], cfg["Ny"])
+        # Screen half-width from [setup] when the run recorded it (EDM_SCREEN_HW runs);
+        # legacy runs predate the knob and were all ±25w₀.
+        hw = get(get(m, "setup", Dict()), "screen_hw", 25las["w0"])
+        x_grid = LinRange(-hw, hw, cfg["Nx"])
+        y_grid = LinRange(-hw, hw, cfg["Ny"])
         println("loading $(m["outputs"]["datafile"]) …")
         raw = deserialize(cube)
         # A split cube carries E_far/B_far — keep them so write_harmonic_products also emits the
@@ -278,6 +283,9 @@ function recover_from_manifest(toml)
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
             source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
+            # The run's own bins (≈4γ²ω for inverse :narrow) — a deferred reduction must produce
+            # exactly what the inline (non-SKIP_POST) path would have; legacy default (1,2,3,4).
+            harmonics = Tuple(get(cfg, "harmonics", (1, 2, 3, 4))),
         )
         # Close the loop the inline (non-SKIP_POST) path already does: a deferred/async reduction
         # must ALSO declare what it produced, so [outputs] is complete for resolve_hmaps + the

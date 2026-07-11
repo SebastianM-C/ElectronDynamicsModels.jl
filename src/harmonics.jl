@@ -8,9 +8,21 @@
 The `rfft` bin indices closest to the harmonics `n·ω` of the fundamental, for a time series
 of `N_samples` samples spaced `δt` apart. `harmonics` is any iterable of integers (e.g.
 `(1, 2)`). Deduplicates the locator copied across the solver/plot scripts.
+
+Errors when a requested harmonic lies above the sampling Nyquist `1/(2δt)`: nearest-match
+would otherwise silently clamp it onto the last rfft bin, and the caller would publish maps
+labeled with the requested `n` while holding that bin's content (the inverse-Thomson
+≈4γ²ω aliasing trap).
 """
 function harmonic_bins(N_samples::Integer, δt::Real, ω::Real, harmonics)
     freqs = rfftfreq(N_samples, 1 / δt)
+    f_nyq = last(freqs)
+    bad = [n for n in harmonics if n * ω / 2π > f_nyq * (1 + 1.0e-9)]   # tolerance: Nyquist-exact passes
+    isempty(bad) || error(
+        "harmonic_bins: harmonic(s) $(join(bad, ", ")) exceed the sampling Nyquist " *
+            "(≈$(round(f_nyq * 2π / ω, digits = 2))ω for N_samples=$N_samples, δt=$δt); " *
+            "raise the sampling rate to ≥ 2·max(harmonic) samples per fundamental period."
+    )
     return [findmin(f -> abs(f - n * ω / 2π), freqs)[2] for n in harmonics]
 end
 
