@@ -46,24 +46,6 @@ function _edgewindow(n, frac = 0.1f0)
     return w
 end
 
-# ── Detector screen (optional): scr :: (n_frames, tx, ty) |E_far|² on a plane
-# beyond the +X end of the box (precompute_screen.jl) — rendered as a textured
-# plate that lights up as the scattered radiation arrives.
-const SCREEN_FILE = get(ENV, "EDM_SCREEN_TIMESERIES", joinpath(@__DIR__, "screen_timeseries.jls"))
-const HAS_SCREEN = isfile(SCREEN_FILE)
-if haskey(ENV, "EDM_SCREEN_TIMESERIES") && !HAS_SCREEN
-    @warn "EDM_SCREEN_TIMESERIES is set but no such file exists — screen DISABLED." SCREEN_FILE
-end
-
-if HAS_SCREEN
-    using Serialization
-    @info "loading screen time series $SCREEN_FILE"
-    const SCR = deserialize(SCREEN_FILE)
-    _ss = filter(>(0.0f0), vec(@view SCR.scr[1:2:end, 1:3:end, 1:3:end]))
-    const SCR_CEIL = partialsort!(_ss, max(1, round(Int, 0.002 * length(_ss))); rev = true)
-    scr_frame_index(t) = clamp(searchsortedlast(SCR.frame_times, t), 1, length(SCR.frame_times))
-end
-
 if HAS_RADIATION
     using Serialization
     @info "loading radiation cube $RADIATION_CUBE"
@@ -82,8 +64,32 @@ if HAS_RADIATION
     end
 end
 
+# ── Detector screen: a dedicated far plane (precompute_screen.jl, best pattern
+# — more propagation distance to organize) when the file exists; otherwise the
+# cube's LAST SLICE (+X box end) serves as a free, geometrically continuous
+# fallback detector — same exact LW data, just at the box boundary.
+const SCREEN_FILE = get(ENV, "EDM_SCREEN_TIMESERIES", joinpath(@__DIR__, "screen_timeseries.jls"))
+const DEDICATED_SCREEN = isfile(SCREEN_FILE)
+if haskey(ENV, "EDM_SCREEN_TIMESERIES") && !DEDICATED_SCREEN
+    @warn "EDM_SCREEN_TIMESERIES is set but no such file exists — falling back to the cube edge." SCREEN_FILE
+end
+const HAS_SCREEN = DEDICATED_SCREEN || HAS_RADIATION
+
+if DEDICATED_SCREEN
+    using Serialization
+    @info "loading screen time series $SCREEN_FILE"
+    const SCR = deserialize(SCREEN_FILE)
+elseif HAS_RADIATION
+    @info "no dedicated screen data — using the radiation cube's +X edge slice as the detector"
+    const SCR = (; scr = RAD.rad[:, end, :, :], txs = RAD.txs, tys = RAD.tys,
+        z_screen = last(RAD.slice_zs), frame_times = RAD.frame_times)
+end
+
 if HAS_SCREEN
+    _ss = filter(>(0.0f0), vec(@view SCR.scr[1:2:end, 1:3:end, 1:3:end]))
+    const SCR_CEIL = partialsort!(_ss, max(1, round(Int, 0.002 * length(_ss))); rev = true)
     const SCR_FLOOR = SCR_CEIL / exp10(RAD_DECADES)
+    scr_frame_index(t) = clamp(searchsortedlast(SCR.frame_times, t), 1, length(SCR.frame_times))
     function scr_transfer!(dst, f)
         src = @view SCR.scr[f, :, :]
         @. dst = clamp(log10(max(src, SCR_FLOOR) / SCR_FLOOR) / RAD_DECADES, 0.0f0, 1.0f0)
