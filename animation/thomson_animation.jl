@@ -8,8 +8,9 @@
 #
 # Stage A: trajectory solve + static scene prototypes (two PNGs).
 # Stage B: record() animation loop over the observables + scripted camera path.
-# Stage C (planned): radiated far-field cube from precompute_radiation.jl as a
-#   second emissive volume layer.
+# Stage C: radiated far-field cube (precompute_radiation.jl output) as a second
+#   emissive volume layer — loads automatically when animation/radiation_cube.jls
+#   exists (override path with EDM_RADIATION_CUBE).
 #
 # Run: julia +release -t auto --startup=no --project=animation animation/thomson_animation.jl
 # (-t auto matters: the per-frame field sampling is threaded.)
@@ -17,6 +18,31 @@
 include(joinpath(@__DIR__, "setup.jl"))
 
 using GLMakie
+
+# ── Stage C: radiated far-field cube (optional) ──
+# rad :: Float32 (n_frames, slices(X), x(Y), y(Z)) = |E_far|² at the frame times.
+# Transfer: |E_far|² spans ~8 decades (1/R² decay + near-electron 1/R spikes on
+# pixels that graze trajectories). Clip the ceiling at the 99.5th percentile
+# (sacrifices only spike pixels) and log-compress RAD_DECADES below it into
+# [0, 1] so the rendering shows the emission wavefronts, not the singularities.
+const RADIATION_CUBE = get(ENV, "EDM_RADIATION_CUBE", joinpath(@__DIR__, "radiation_cube.jls"))
+const HAS_RADIATION = isfile(RADIATION_CUBE)
+const RAD_DECADES = 4.0f0
+
+if HAS_RADIATION
+    using Serialization
+    @info "loading radiation cube $RADIATION_CUBE"
+    const RAD = deserialize(RADIATION_CUBE)
+    _rs = filter(>(0.0f0), vec(@view RAD.rad[1:3:end, 1:5:end, 1:5:end, 1:5:end]))
+    const RAD_CEIL = partialsort!(_rs, max(1, round(Int, 0.005 * length(_rs))); rev = true)
+    const RAD_FLOOR = RAD_CEIL / exp10(RAD_DECADES)
+    rad_frame_index(t) = clamp(searchsortedlast(RAD.frame_times, t), 1, length(RAD.frame_times))
+    function rad_transfer!(dst, f)
+        src = @view RAD.rad[f, :, :, :]
+        @. dst = clamp(log10(max(src, RAD_FLOOR) / RAD_FLOOR) / RAD_DECADES, 0.0f0, 1.0f0)
+        return dst
+    end
+end
 
 # ── Pulse scalar: what the volume rendering shows ──
 # A signed field component (E[1] = Ex, chosen) exposes the helical wavefronts as
@@ -71,6 +97,22 @@ function build_scene(Xs, Ys, Zs, vol0, epos0)
         )
     end
 
+    # Radiation glow UNDER the pulse isosurfaces in draw order: an emissive
+    # absorption volume over black reads as light the disk gives off.
+    radvol = nothing
+    if HAS_RADIATION
+        radvol = Observable(zeros(Float32, size(RAD.rad, 2), size(RAD.rad, 3), size(RAD.rad, 4)))
+        rXe = (first(RAD.slice_zs), last(RAD.slice_zs))
+        rYe = (first(RAD.txs), last(RAD.txs))
+        rZe = (first(RAD.tys), last(RAD.tys))
+        volume!(
+            ax, rXe, rYe, rZe, radvol;
+            algorithm = :absorption, absorption = 9.0f0,
+            colormap = :afmhot, colorrange = (0.0f0, 1.0f0),
+            transparency = true,
+        )
+    end
+
     meshscatter!(
         ax, epos;
         markersize = 0.28λ, color = :gold,
@@ -82,13 +124,17 @@ function build_scene(Xs, Ys, Zs, vol0, epos0)
     # travel left → right; distance frames the extended ±12λ box.
     update_cam!(ax.scene, Vec3f(2.5w₀, -8w₀, 3w₀), Vec3f(0), Vec3f(0, 0, 1))
 
-    return fig, ax, vol, epos
+    return fig, ax, vol, epos, radvol
 end
 
 set_time!(t) = begin
     sample_pulse!(vol[], fe, xs, ys, zs, t)
     notify(vol)
     epos[] = electron_positions(trajs, t)
+    if HAS_RADIATION
+        rad_transfer!(radvol[], rad_frame_index(t))
+        notify(radvol)
+    end
     return nothing
 end
 
@@ -98,7 +144,11 @@ t_snap = 0.0
 vol0 = sample_pulse!(Array{Float32}(undef, nz, nx, ny), fe, xs, ys, zs, t_snap)
 epos0 = electron_positions(trajs, t_snap)
 
-fig, ax, vol, epos = build_scene(zs, xs, ys, vol0, epos0)
+fig, ax, vol, epos, radvol = build_scene(zs, xs, ys, vol0, epos0)
+if HAS_RADIATION   # backfill the radiation layer for the t_snap frame
+    rad_transfer!(radvol[], rad_frame_index(t_snap))
+    notify(radvol)
+end
 outfile = joinpath(@__DIR__, "static_frame.png")
 save(outfile, fig)
 @info "saved $outfile"
@@ -107,6 +157,13 @@ set_time!(-5T0)
 outfile2 = joinpath(@__DIR__, "static_frame_approach.png")
 save(outfile2, fig)
 @info "saved $outfile2"
+
+if HAS_RADIATION   # flash mid-expansion: radiation shell chasing the departing pulse
+    set_time!(4T0)
+    outfile3 = joinpath(@__DIR__, "static_frame_radiation.png")
+    save(outfile3, fig)
+    @info "saved $outfile3"
+end
 
 # ── Interactive exploration ──
 # Attach a time slider + camera-save button and open the window. Dragging the
