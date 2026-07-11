@@ -16,6 +16,8 @@ BASE=(
   EDM_NSUBSTEPS=4
 )
 CELLS=(
-  # hero-res: 128² transverse × 192 slices × 480 frames ≈ 6 GB Float32
-  "hero|EDM_RAD_NT=128 EDM_RAD_NSLICES=192"
+  # hero-res: 128² transverse × 160 slices × 480 frames ≈ 5 GB Float32.
+  # 160 slices (6.7/λ vs the local cube's 5.3/λ) keeps an H200 NVL run ≈ $8 —
+  # safely inside a tight balance where 192 would flirt with the kill-line.
+  "hero|EDM_RAD_NT=128 EDM_RAD_NSLICES=160"
 )
