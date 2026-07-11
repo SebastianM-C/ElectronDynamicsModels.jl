@@ -26,7 +26,11 @@
 # auth as — e.g. your YubiKey pubkey; ControlMaster ⇒ one touch/run).
 set -Eeuo pipefail
 ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."; ORCH="$(cd "$ORCH" && pwd)"
+# Caller-env overrides must survive config.env (sourced via run_cell.sh below, where a plain
+# RUNPOD_BRANCH=... assignment would clobber them) — capture before, prefer after.
+_CALLER_BRANCH="${RUNPOD_BRANCH-}"
 . "$ORCH/run_cell.sh"        # config.env + notify() (notifications fire from THIS driving machine)
+[ -n "$_CALLER_BRANCH" ] && RUNPOD_BRANCH="$_CALLER_BRANCH"
 
 MODE="${1:?usage: runpod.sh run <campaign.sh> | attach <campaign.sh> | teardown}"
 TOK=$(cat "${RUNPOD_TOKEN_FILE:-$HOME/.config/runpod/token}")
@@ -233,7 +237,10 @@ run_campaign() {
     local cf="${1:?usage: runpod.sh run <campaign.sh>}" cname; cname=$(basename "$cf")
     . "$cf"   # CAMPAIGN + KEEP_CUBE (names product paths + sets cube download policy); re-read on the pod
     if pod_reachable; then
-        log "reusing kept pod $POD ($IP:$PORT) from $STATE (no grab/warm)"
+        log "reusing kept pod $POD ($IP:$PORT) from $STATE (no grab/warm) — syncing repo to $BRANCH"
+        # A kept pod carries whatever branch it was warmed with; sync so a re-run
+        # with a different RUNPOD_BRANCH doesn't silently execute stale code.
+        ssh_vm "cd EDM && git fetch --quiet origin '$BRANCH' && git checkout --quiet -f '$BRANCH' && git reset --quiet --hard 'origin/$BRANCH' && echo '[sync] now at' \$(git rev-parse --short HEAD) 'on' \$(git branch --show-current)"
     else
         if [ -f "$STATE" ]; then   # unreachable but maybe still billing — never silently orphan it
             read -r POD _ < "$STATE"
