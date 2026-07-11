@@ -27,7 +27,20 @@ using GLMakie
 # [0, 1] so the rendering shows the emission wavefronts, not the singularities.
 const RADIATION_CUBE = get(ENV, "EDM_RADIATION_CUBE", joinpath(@__DIR__, "radiation_cube.jls"))
 const HAS_RADIATION = isfile(RADIATION_CUBE)
-const RAD_DECADES = 4.0f0
+const RAD_DECADES = 3.0f0
+
+# Edge fade: the volume's clipped faces otherwise render the departing shell as
+# a glowing solid box; smoothstep → 0 over the outer 10% of each axis turns the
+# boundary crossing into fog instead.
+function _edgewindow(n, frac = 0.1f0)
+    m = max(2, round(Int, frac * n))
+    w = ones(Float32, n)
+    for i in 1:m
+        s = Float32(i - 1) / m
+        w[i] = w[n + 1 - i] = s * s * (3 - 2s)
+    end
+    return w
+end
 
 if HAS_RADIATION
     using Serialization
@@ -36,10 +49,13 @@ if HAS_RADIATION
     _rs = filter(>(0.0f0), vec(@view RAD.rad[1:3:end, 1:5:end, 1:5:end, 1:5:end]))
     const RAD_CEIL = partialsort!(_rs, max(1, round(Int, 0.005 * length(_rs))); rev = true)
     const RAD_FLOOR = RAD_CEIL / exp10(RAD_DECADES)
+    const RAD_WIN = reshape(_edgewindow(size(RAD.rad, 2)), :, 1, 1) .*
+        reshape(_edgewindow(size(RAD.rad, 3)), 1, :, 1) .*
+        reshape(_edgewindow(size(RAD.rad, 4)), 1, 1, :)
     rad_frame_index(t) = clamp(searchsortedlast(RAD.frame_times, t), 1, length(RAD.frame_times))
     function rad_transfer!(dst, f)
         src = @view RAD.rad[f, :, :, :]
-        @. dst = clamp(log10(max(src, RAD_FLOOR) / RAD_FLOOR) / RAD_DECADES, 0.0f0, 1.0f0)
+        @. dst = RAD_WIN * clamp(log10(max(src, RAD_FLOOR) / RAD_FLOOR) / RAD_DECADES, 0.0f0, 1.0f0)
         return dst
     end
 end
@@ -97,19 +113,28 @@ function build_scene(Xs, Ys, Zs, vol0, epos0)
         )
     end
 
-    # Radiation glow UNDER the pulse isosurfaces in draw order: an emissive
-    # absorption volume over black reads as light the disk gives off.
+    # :additive + transparency — the only compositing combo where all three
+    # layers survive: :absorption/OIT dims what's behind the box, and either
+    # algorithm without the transparency flag writes depth and occludes the
+    # pulse contour and electrons outright. The residual WBOIT quirk (an
+    # ALL-ZERO volume still drags the weighted average dark, dimming the gold
+    # disk) is handled in set_time! by hiding the plot on glow-free frames.
     radvol = nothing
+    radplot = nothing
     if HAS_RADIATION
         radvol = Observable(zeros(Float32, size(RAD.rad, 2), size(RAD.rad, 3), size(RAD.rad, 4)))
         rXe = (first(RAD.slice_zs), last(RAD.slice_zs))
         rYe = (first(RAD.txs), last(RAD.txs))
         rZe = (first(RAD.tys), last(RAD.tys))
-        volume!(
+        # Alpha ramp from EXACTLY 0: zero-field fragments then carry zero OIT
+        # weight, so empty regions of the box cannot dim geometry behind them.
+        cmap = Makie.to_colormap(:afmhot)
+        rad_cmap = [Makie.RGBAf(c.r, c.g, c.b, (i - 1) / (length(cmap) - 1)) for (i, c) in enumerate(cmap)]
+        radplot = volume!(
             ax, rXe, rYe, rZe, radvol;
-            algorithm = :absorption, absorption = 9.0f0,
-            colormap = :afmhot, colorrange = (0.0f0, 1.0f0),
-            transparency = true,
+            algorithm = :additive,
+            colormap = rad_cmap, colorrange = (0.0f0, 0.7f0),
+            transparency = true, visible = false,
         )
     end
 
@@ -124,7 +149,7 @@ function build_scene(Xs, Ys, Zs, vol0, epos0)
     # travel left → right; distance frames the extended ±12λ box.
     update_cam!(ax.scene, Vec3f(2.5w₀, -8w₀, 3w₀), Vec3f(0), Vec3f(0, 0, 1))
 
-    return fig, ax, vol, epos, radvol
+    return fig, ax, vol, epos, radvol, radplot
 end
 
 set_time!(t) = begin
@@ -134,6 +159,15 @@ set_time!(t) = begin
     if HAS_RADIATION
         rad_transfer!(radvol[], rad_frame_index(t))
         notify(radvol)
+        # Mean, not max: the log transfer amplifies faint late-time wisps to
+        # visible values, but they fill a tiny fraction of the box — the mean
+        # separates "glow present" from "effectively empty" (where the WBOIT
+        # dimming of the gold disk is all the volume would contribute).
+        # Hysteresis: the fading tail decays slowly through the threshold, so a
+        # single cut would flicker across many frames.
+        m = sum(radvol[]) / length(radvol[])
+        rad_visible[] = rad_visible[] ? (m > 4.0f-4) : (m > 8.0f-4)
+        radplot.visible = rad_visible[]
     end
     return nothing
 end
@@ -144,10 +178,14 @@ t_snap = 0.0
 vol0 = sample_pulse!(Array{Float32}(undef, nz, nx, ny), fe, xs, ys, zs, t_snap)
 epos0 = electron_positions(trajs, t_snap)
 
-fig, ax, vol, epos, radvol = build_scene(zs, xs, ys, vol0, epos0)
+fig, ax, vol, epos, radvol, radplot = build_scene(zs, xs, ys, vol0, epos0)
+const rad_visible = Ref(true)
+
 if HAS_RADIATION   # backfill the radiation layer for the t_snap frame
     rad_transfer!(radvol[], rad_frame_index(t_snap))
     notify(radvol)
+    rad_visible[] = sum(radvol[]) / length(radvol[]) > 4.0f-4
+    radplot.visible = rad_visible[]
 end
 outfile = joinpath(@__DIR__, "static_frame.png")
 save(outfile, fig)
