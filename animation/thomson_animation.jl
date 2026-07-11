@@ -27,6 +27,10 @@ using GLMakie
 # [0, 1] so the rendering shows the emission wavefronts, not the singularities.
 const RADIATION_CUBE = get(ENV, "EDM_RADIATION_CUBE", joinpath(@__DIR__, "radiation_cube.jls"))
 const HAS_RADIATION = isfile(RADIATION_CUBE)
+if haskey(ENV, "EDM_RADIATION_CUBE") && !HAS_RADIATION
+    @warn "EDM_RADIATION_CUBE is set but no such file exists — radiation layer DISABLED. " *
+        "Globs are not expanded inside VAR=… assignments; pass the exact path." RADIATION_CUBE
+end
 const RAD_DECADES = 3.0f0
 
 # Edge fade: the volume's clipped faces otherwise render the departing shell as
@@ -40,6 +44,24 @@ function _edgewindow(n, frac = 0.1f0)
         w[i] = w[n + 1 - i] = s * s * (3 - 2s)
     end
     return w
+end
+
+# ── Detector screen (optional): scr :: (n_frames, tx, ty) |E_far|² on a plane
+# beyond the +X end of the box (precompute_screen.jl) — rendered as a textured
+# plate that lights up as the scattered radiation arrives.
+const SCREEN_FILE = get(ENV, "EDM_SCREEN_TIMESERIES", joinpath(@__DIR__, "screen_timeseries.jls"))
+const HAS_SCREEN = isfile(SCREEN_FILE)
+if haskey(ENV, "EDM_SCREEN_TIMESERIES") && !HAS_SCREEN
+    @warn "EDM_SCREEN_TIMESERIES is set but no such file exists — screen DISABLED." SCREEN_FILE
+end
+
+if HAS_SCREEN
+    using Serialization
+    @info "loading screen time series $SCREEN_FILE"
+    const SCR = deserialize(SCREEN_FILE)
+    _ss = filter(>(0.0f0), vec(@view SCR.scr[1:2:end, 1:3:end, 1:3:end]))
+    const SCR_CEIL = partialsort!(_ss, max(1, round(Int, 0.002 * length(_ss))); rev = true)
+    scr_frame_index(t) = clamp(searchsortedlast(SCR.frame_times, t), 1, length(SCR.frame_times))
 end
 
 if HAS_RADIATION
@@ -56,6 +78,15 @@ if HAS_RADIATION
     function rad_transfer!(dst, f)
         src = @view RAD.rad[f, :, :, :]
         @. dst = RAD_WIN * clamp(log10(max(src, RAD_FLOOR) / RAD_FLOOR) / RAD_DECADES, 0.0f0, 1.0f0)
+        return dst
+    end
+end
+
+if HAS_SCREEN
+    const SCR_FLOOR = SCR_CEIL / exp10(RAD_DECADES)
+    function scr_transfer!(dst, f)
+        src = @view SCR.scr[f, :, :]
+        @. dst = clamp(log10(max(src, SCR_FLOOR) / SCR_FLOOR) / RAD_DECADES, 0.0f0, 1.0f0)
         return dst
     end
 end
@@ -138,6 +169,28 @@ function build_scene(Xs, Ys, Zs, vol0, epos0)
         )
     end
 
+    # Detector plate beyond the +X box end: 2×2 vertex grid textured with the
+    # screen image (grid dim1 = scene Y = physics x, dim2 = scene Z = physics y,
+    # matching scr's (tx, ty) layout).
+    scrimg = nothing
+    if HAS_SCREEN
+        scrimg = Observable(zeros(Float32, length(SCR.txs), length(SCR.tys)))
+        Xs = Float32(SCR.z_screen)
+        ylo, yhi = Float32(first(SCR.txs)), Float32(last(SCR.txs))
+        zlo, zhi = Float32(first(SCR.tys)), Float32(last(SCR.tys))
+        surface!(
+            ax, [Xs Xs; Xs Xs], [ylo ylo; yhi yhi], [zlo zhi; zlo zhi];
+            color = scrimg, colormap = :magma, colorrange = (0.0f0, 1.0f0),
+            shading = NoShading,
+        )
+        lines!(
+            ax,
+            [Point3f(Xs, ylo, zlo), Point3f(Xs, yhi, zlo), Point3f(Xs, yhi, zhi),
+                Point3f(Xs, ylo, zhi), Point3f(Xs, ylo, zlo)];
+            color = (:white, 0.35), linewidth = 1.5,
+        )
+    end
+
     meshscatter!(
         ax, epos;
         markersize = 0.28λ, color = :gold,
@@ -146,10 +199,15 @@ function build_scene(Xs, Ys, Zs, vol0, epos0)
 
     # Scene axes put propagation on X, so the Makie default z-up camera and its
     # fixed-axis orbiting behave naturally: eye on the −Y side makes the pulse
-    # travel left → right; distance frames the extended ±12λ box.
-    update_cam!(ax.scene, Vec3f(2.5w₀, -8w₀, 3w₀), Vec3f(0), Vec3f(0, 0, 1))
+    # travel left → right; when the detector screen is present, shift the frame
+    # toward +X so box and screen both fit.
+    if HAS_SCREEN
+        update_cam!(ax.scene, Vec3f(3.2w₀, -9.5w₀, 3.2w₀), Vec3f(1.2w₀, 0, 0), Vec3f(0, 0, 1))
+    else
+        update_cam!(ax.scene, Vec3f(2.5w₀, -8w₀, 3w₀), Vec3f(0), Vec3f(0, 0, 1))
+    end
 
-    return fig, ax, vol, epos, radvol, radplot
+    return fig, ax, vol, epos, radvol, radplot, scrimg
 end
 
 set_time!(t) = begin
@@ -171,6 +229,10 @@ set_time!(t) = begin
         rad_visible[] = t <= 2T0 || (rad_visible[] ? (m > 4.0f-4) : (m > 8.0f-4))
         radplot.visible = rad_visible[]
     end
+    if HAS_SCREEN
+        scr_transfer!(scrimg[], scr_frame_index(t))
+        notify(scrimg)
+    end
     return nothing
 end
 
@@ -180,7 +242,11 @@ t_snap = 0.0
 vol0 = sample_pulse!(Array{Float32}(undef, nz, nx, ny), fe, xs, ys, zs, t_snap)
 epos0 = electron_positions(trajs, t_snap)
 
-fig, ax, vol, epos, radvol, radplot = build_scene(zs, xs, ys, vol0, epos0)
+fig, ax, vol, epos, radvol, radplot, scrimg = build_scene(zs, xs, ys, vol0, epos0)
+if HAS_SCREEN
+    scr_transfer!(scrimg[], scr_frame_index(t_snap))
+    notify(scrimg)
+end
 const rad_visible = Ref(true)
 
 if HAS_RADIATION   # backfill the radiation layer for the t_snap frame
@@ -203,6 +269,13 @@ if HAS_RADIATION   # flash mid-expansion: radiation shell chasing the departing 
     outfile3 = joinpath(@__DIR__, "static_frame_radiation.png")
     save(outfile3, fig)
     @info "saved $outfile3"
+end
+
+if HAS_SCREEN   # burst arriving on the detector plate
+    set_time!(22T0)
+    outfile4 = joinpath(@__DIR__, "static_frame_screen.png")
+    save(outfile4, fig)
+    @info "saved $outfile4"
 end
 
 # ── Interactive exploration ──
