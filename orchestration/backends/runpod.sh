@@ -80,10 +80,16 @@ gpu_profile() {
 # poll round; the first that schedules in EU-RO-1 wins (and its gpu_profile sets image+backend+depot).
 # This encodes your "use whatever's available in EU-RO-1" strategy.
 gpu_candidates() {
+    # RUNPOD_GPU_CANDIDATES (comma-separated gpuTypeIds) overrides the ladder —
+    # e.g. pin MI300X-only when the budget can't absorb a pricey fallback.
+    if [ -n "${RUNPOD_GPU_CANDIDATES:-}" ]; then
+        echo "$RUNPOD_GPU_CANDIDATES" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$'
+        return
+    fi
     echo "AMD Instinct MI300X OAM"   # primary (best FP64/$ for the LW kernel)
     echo "NVIDIA H200 NVL"           # CUDA fallbacks, cheapest first ($3.79 vs $4.39/hr secure)
     echo "NVIDIA H200"
-    echo "NVIDIA B200"               # last resort
+    echo "NVIDIA B200"               # last resort — Blackwell FP64 is weak (measured 67 s/slice, ~2× MI300X cost-time)
 }
 
 ensure_volume() {   # opt-in: only called when RUNPOD_VOLUME_GB > 0; must match OUR datacenter
