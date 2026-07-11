@@ -301,7 +301,7 @@ function interactive()
         controls_attached[] = true
         sg = SliderGrid(
             fig[2, 1],
-            (label = "t / T₀", range = (t_start / T0):0.05:(t_end / T0), startvalue = t_snap / T0,
+            (label = "t / T₀", range = (t_start / T0):0.05:(t_play_end / T0), startvalue = t_snap / T0,
                 format = v -> string(round(v; digits = 2))),
         )
         tobs = sg.sliders[1].value
@@ -313,7 +313,7 @@ function interactive()
             cam = cameracontrols(ax.scene)
             inw₀(v) = "Vec3f(" * join(string.(round.(Float64.(v) ./ w₀; digits = 3)) .* "w₀", ", ") * ")"
             raw(v) = "Vec3f(" * join(string.(round.(Float64.(v); digits = 4)), ", ") * ")"
-            s = (tobs[] * T0 - t_start) / (t_end - t_start)
+            s = (tobs[] * T0 - t_start) / (t_play_end - t_start)
             snippet = "# s = $(round(s; digits = 3))\n" *
                 "(t = $(round(tobs[]; digits = 2))T0, eye = $(inw₀(cam.eyeposition[])), " *
                 "lookat = $(inw₀(cam.lookat[])), up = $(raw(cam.upvector[]))),\n"
@@ -345,8 +345,9 @@ const CAMERA_KEYFRAMES = [
 
 smoothstep(x) = x * x * (3 - 2x)
 
-function camera_path(s)
-    t = t_start + s * (t_end - t_start)
+# Takes lab time directly (keyframes are t-keyed), so trimming the playback
+# window never distorts the shot timing.
+function camera_path(t)
     kfs = CAMERA_KEYFRAMES
     t <= kfs[1].t && return (kfs[1].eye, kfs[1].lookat, kfs[1].up)
     t >= kfs[end].t && return (kfs[end].eye, kfs[end].lookat, kfs[end].up)
@@ -358,13 +359,12 @@ function camera_path(s)
 end
 
 function animate(; file = joinpath(@__DIR__, "thomson.mp4"),
-        t_range = frame_times, framerate = 30)
+        t_range = play_times, framerate = 30)
     controls_attached[] &&
         @warn "interactive controls are part of the figure and will show up in the video; re-include for a clean render"
     record(fig, file, t_range; framerate) do t
         set_time!(t)
-        s = (t - t_start) / (t_end - t_start)
-        eye, lookat, up = camera_path(s)
+        eye, lookat, up = camera_path(t)
         update_cam!(ax.scene, eye, lookat, up)
     end
     @info "saved $file"

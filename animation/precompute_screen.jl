@@ -32,9 +32,13 @@ else
     error("EDM_GPU_BACKEND must be \"cuda\" or \"rocm\", got $(repr(GPU_BACKEND))")
 end
 
-XLAM = parse(Float64, get(ENV, "EDM_SCREEN_XLAM", "18"))
+# Defaults match the volume box cross-section (±2w₀) so the plate reads at the
+# same spatial scale as the cube — a wider/farther screen looks "zoomed" next
+# to the box. Kept close (+16λ) while the box ends at +12λ; retune both here
+# when a bigger-box production run extends the volume.
+XLAM = parse(Float64, get(ENV, "EDM_SCREEN_XLAM", "16"))
 NT = parse(Int, get(ENV, "EDM_SCREEN_NT", "256"))
-HALFW = parse(Float64, get(ENV, "EDM_SCREEN_HALFW", "3"))
+HALFW = parse(Float64, get(ENV, "EDM_SCREEN_HALFW", "2"))
 NSUB = parse(Int, get(ENV, "EDM_NSUBSTEPS", "4"))
 SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 
