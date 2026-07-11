@@ -159,14 +159,16 @@ set_time!(t) = begin
     if HAS_RADIATION
         rad_transfer!(radvol[], rad_frame_index(t))
         notify(radvol)
-        # Mean, not max: the log transfer amplifies faint late-time wisps to
-        # visible values, but they fill a tiny fraction of the box — the mean
-        # separates "glow present" from "effectively empty" (where the WBOIT
-        # dimming of the gold disk is all the volume would contribute).
-        # Hysteresis: the fading tail decays slowly through the threshold, so a
-        # single cut would flicker across many frames.
+        # The visible volume costs a small constant WBOIT dim on everything
+        # behind it. Keep it ON through approach + crossing so that cost never
+        # STEPS in at ignition (the brightest moment, where the eye catches
+        # it); allow the hide only in the fading tail, where the empty-box dim
+        # is all the volume would contribute (the olive-disk artifact) and the
+        # scene is too dark for the toggle to read. Mean, not max: the log
+        # transfer amplifies faint wisps that fill a tiny fraction of the box.
+        # Hysteresis: the tail decays slowly, a single cut would flicker.
         m = sum(radvol[]) / length(radvol[])
-        rad_visible[] = rad_visible[] ? (m > 4.0f-4) : (m > 8.0f-4)
+        rad_visible[] = t <= 2T0 || (rad_visible[] ? (m > 4.0f-4) : (m > 8.0f-4))
         radplot.visible = rad_visible[]
     end
     return nothing
