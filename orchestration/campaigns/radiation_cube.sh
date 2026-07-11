@@ -8,10 +8,11 @@
 # until PR #35 merges.
 CAMPAIGN=radiation_cube
 SCRIPT=animation/precompute_radiation.jl
-# No manifest/cube to reduce (the script serializes its own product); a no-op
-# hook keeps REDUCE_OVERLAP backends from running the default harmonic reducer
-# against a manifest that doesn't exist.
-REDUCE_HOOK='true'
+# No manifest/cube to reduce (the script serializes its own product); the hook
+# keeps REDUCE_OVERLAP backends from running the default harmonic reducer, but
+# must still drop the .reduced marker reap_reduces checks — a bare no-op gets
+# counted as a failed reduce (cosmetic, but noisy).
+REDUCE_HOOK='touch "$CAMP/${uuid}.reduced"'
 BASE=(
   EDM_NSUBSTEPS=4
 )
