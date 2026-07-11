@@ -202,7 +202,10 @@ function build_scene(Xs, Ys, Zs, vol0, epos0)
     # travel left → right; when the detector screen is present, shift the frame
     # toward +X so box and screen both fit.
     if HAS_SCREEN
-        update_cam!(ax.scene, Vec3f(3.2w₀, -9.5w₀, 3.2w₀), Vec3f(1.2w₀, 0, 0), Vec3f(0, 0, 1))
+        # frame the midpoint between box start and screen, backed off with span
+        cx = Float32((first(zs) + SCR.z_screen) / 2)
+        span = Float32(SCR.z_screen - first(zs))
+        update_cam!(ax.scene, Vec3f(cx + 0.5span, -1.05span, 0.32span), Vec3f(cx, 0, 0), Vec3f(0, 0, 1))
     else
         update_cam!(ax.scene, Vec3f(2.5w₀, -8w₀, 3w₀), Vec3f(0), Vec3f(0, 0, 1))
     end
