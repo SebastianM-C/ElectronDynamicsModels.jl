@@ -149,6 +149,10 @@ dim_room = get(ENV, "EDM_RPR_LIGHTS", "") == "dim"
 white_room = get(ENV, "EDM_RPR_BG", "dark") == "room"
 ribbon_style = get(ENV, "EDM_RPR_RIBBONS", "emissive")
 electron_style = get(ENV, "EDM_RPR_ELECTRONS", "gold")
+# room-dome intensity (room mode; dim mode has its own default) and a global
+# scale on ribbon emission — the two grading levers besides EDM_RPR_EXPOSURE
+ambient_room = parse(Float32, get(ENV, "EDM_RPR_AMBIENT", dim_room ? "0.15" : "0.9"))
+emis_scale = parse(Float32, get(ENV, "EDM_RPR_EMIS", "1.0"))
 rad_levels = parse.(Float32, split(get(ENV, "EDM_RPR_RAD_LEVELS", "0.85,0.65"), ","))
 # shells = emissive isosurfaces (works everywhere); volume = true emissive
 # participating medium (HybridPro or CPU only — Northstar-GPU segfaults)
@@ -298,8 +302,7 @@ function render_frame(t, outpath)
         # the pulse/radiation emission itself (lantern projections become the
         # feature; the flash visibly lights the room); the small ambient floor
         # keeps the tile grid readable in the dark tail act.
-        dim_room ? [AmbientLight(RGBf(0.15, 0.15, 0.16))] :
-            [AmbientLight(RGBf(0.9, 0.9, 0.92))]
+        [AmbientLight(RGBf(ambient_room, ambient_room, 1.022f0 * ambient_room))]
     elseif laser_lit
         # the pulse's own emission is the key light — the electrons are lit by
         # the laser; keep only a weak fill + ambient so the dark side isn't dead
@@ -446,7 +449,7 @@ function render_frame(t, outpath)
         end
         if ribbon_style == "glassglow"
             # stronger inner glow when the room is lit BY the pulse (dim mode)
-            emc, emw = dim_room ? (3.0f0, 0.35f0) : (1.5f0, 0.25f0)
+            emc, emw = dim_room ? (3.0f0 * emis_scale, 0.35f0) : (1.5f0 * emis_scale, 0.25f0)
             # BLEND nodes are unsupported on the Hybrid plugins — fold the
             # emissive layer into the glass Uber itself (same node carries
             # refraction + emission); Northstar keeps the LayerMaterial blend
@@ -461,7 +464,7 @@ function render_frame(t, outpath)
         # 5× emission in laser mode: bright enough to light the electrons, low
         # enough that tone mapping doesn't bleach the stripe colors; 3× when
         # the room/studio provides the light
-        mult = ((laser_lit && !white_room) || dim_room) ? 5 : 3
+        mult = emis_scale * (((laser_lit && !white_room) || dim_room) ? 5 : 2.5f0)
         # NB: mode enums must be passed RAW (not UInt(...)-wrapped): RPR.jl
         # routes plain integers through the float setter (Vec4f coercion),
         # which Northstar tolerates but HybridPro rejects with
