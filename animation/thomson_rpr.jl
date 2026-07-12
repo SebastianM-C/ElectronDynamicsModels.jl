@@ -280,6 +280,18 @@ function render_frame(t, outpath)
     screen = RPRMakie.Screen(ax.scene)
     matsys = screen.matsys
 
+    # HybridPro exposes render-quality presets (RadeonProRender_Baikal.h:
+    # RPR_CONTEXT_RENDER_QUALITY = 0x1001, low=0 … ultra=3) that gate its
+    # algorithmic shortcuts — EDM_RPR_QUALITY=low|medium|high|ultra (hybrid only)
+    if hybrid_rt
+        q = get(ENV, "EDM_RPR_QUALITY", "")
+        if !isempty(q)
+            qv = UInt32(findfirst(==(q), ["low", "medium", "high", "ultra"]) - 1)
+            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
+                reinterpret(RPR.rpr_context_info, Int32(0x1001)), qv)
+        end
+    end
+
     if white_room
         # gray 3-plane corner (real geometry is the only way to get a light
         # backdrop). The three seams run along the scene axes: floor∩back =
