@@ -78,6 +78,40 @@ using Printf
 flat_material(matsys, c) = RPR.UberMaterial(matsys;
     color = to_color(c), diffuse_weight = Vec4f(1), reflection_weight = Vec4f(0))
 
+# ── Emission-aware Volume conversion (method overwrite of RPRMakie's) ──
+# RPR's VolumeMaterial has an `emission` input RPRMakie never wires — with it a
+# volume GLOWS proportionally to its density grid, which is exactly what the
+# radiated field needs. RAD_VOL_EMISSION[] carries the emission color into the
+# conversion (volume! rejects unknown attributes). Identical to RPRMakie's
+# version otherwise. Volumes only render on HybridPro/CPU (Northstar-GPU
+# segfaults on volume grids).
+const RAD_VOL_EMISSION = Ref(Makie.Vec4f(0, 0, 0, 0))
+function RPRMakie.to_rpr_object(context, matsys, scene, plot::Makie.Volume)
+    volume = plot.volume[]
+    cube = RPR.VolumeCube(context)
+    mi = (minimum(plot.x[]), minimum(plot.y[]), minimum(plot.z[]))
+    w = (maximum(plot.x[]) - mi[1], maximum(plot.y[]) - mi[2], maximum(plot.z[]) - mi[3])
+    m2 = Makie.Mat4f(w[1], 0, 0, 0, 0, w[2], 0, 0, 0, 0, w[3], 0, mi[1], mi[2], mi[3], 1)
+    RPR.transform!(cube, convert(Makie.Mat4f, plot.model[]) * m2)
+    lo, hi = extrema(volume)
+    grid = RPR.VoxelGrid(context, (volume .- lo) ./ max(hi - lo, eps(Float32)))
+    gridsampler = RPR.GridSamplerMaterial(matsys)
+    gridsampler.data = grid
+    color_sampler = RPR.ImageTextureMaterial(matsys)
+    color_sampler.data = RPR.Image(context, reverse(to_colormap(plot.colormap[])))
+    color_sampler.uv = gridsampler
+    volmat = RPR.VolumeMaterial(matsys)
+    volmat.density = Vec4f(plot.absorption[], 0, 0, 0)
+    volmat.densitygrid = gridsampler
+    volmat.color = color_sampler
+    if RAD_VOL_EMISSION[][4] > 0
+        volmat.emission = Vec4f(RAD_VOL_EMISSION[][1], RAD_VOL_EMISSION[][2],
+            RAD_VOL_EMISSION[][3], 0)
+    end
+    RPR.set!(cube, volmat)
+    return [cube]
+end
+
 # ── Pulse scalar + sampler (same as thomson_animation.jl) ──
 pulse_scalar(E, B) = E[1]
 
@@ -115,6 +149,9 @@ dim_room = get(ENV, "EDM_RPR_LIGHTS", "") == "dim"
 white_room = get(ENV, "EDM_RPR_BG", "dark") == "room"
 ribbon_style = get(ENV, "EDM_RPR_RIBBONS", "emissive")
 rad_levels = parse.(Float32, split(get(ENV, "EDM_RPR_RAD_LEVELS", "0.85,0.65"), ","))
+# shells = emissive isosurfaces (works everywhere); volume = true emissive
+# participating medium (HybridPro or CPU only — Northstar-GPU segfaults)
+rad_style = get(ENV, "EDM_RPR_RAD_STYLE", "shells")
 
 # Densified grids for the isosurface only — setup.jl's grids stay canonical for
 # the GLMakie animation and the radiation precompute.
@@ -427,7 +464,21 @@ function render_frame(t, outpath)
     # log-compressed |E_far|² (RPR volumes segfault the GPU). Levels live in the
     # [0,1] transfer: 0.85 ≈ 35% and 0.65 ≈ 9% of peak intensity — much lower
     # levels wrap the whole box in faint wisps and bury the scene.
-    if RAD !== nothing
+    # volume style is Northstar-CPU ONLY: Northstar-GPU segfaults on volume
+    # grids and HybridPro SILENTLY IGNORES them (verified against a CPU control
+    # — identical scene renders the volume on CPU, background-only on hybrid).
+    # The emission input also showed no effect on CPU; shells remain the
+    # production radiation representation.
+    use_rad_volume = rad_style == "volume" && !hybrid_rt && !gpu
+    rad_style == "volume" && !use_rad_volume &&
+        @warn "EDM_RPR_RAD_STYLE=volume requires EDM_RPR_RESOURCE=cpu with Northstar — rendering shells instead"
+    if RAD !== nothing && use_rad_volume
+        u = rad_slice(t)
+        RAD_VOL_EMISSION[] = Makie.Vec4f(2.4, 1.7, 0.9, 1)
+        volume!(ax, (first(RAD.slice_zs), last(RAD.slice_zs)),
+            (first(RAD.txs), last(RAD.txs)), (first(RAD.tys), last(RAD.tys)), u;
+            algorithm = :absorption, absorption = 6.0f0, colormap = :afmhot)
+    elseif RAD !== nothing
         u = rad_slice(t)
         for (lvl, emis, transp) in ((rad_levels[1], Vec4f(6.0, 5.0, 3.2, 1), 0.4f0),
                                     (rad_levels[2], Vec4f(2.2, 1.4, 0.8, 1), 0.72f0))
