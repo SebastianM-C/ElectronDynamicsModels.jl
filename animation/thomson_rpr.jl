@@ -55,6 +55,19 @@
 #                             outer faint/translucent). t ≈ 2–6 T0 is the flash.
 #   EDM_RPR_RAD_LEVELS=0.85,0.65  shell isolevels in the log transfer
 #                             (0.85 ≈ 35%, 0.65 ≈ 9% of peak intensity)
+#   EDM_RPR_RAD_STYLE=shells|striped|both|volume
+#                             striped: ± isosurfaces of the SIGNED Ex_far
+#                             (v2 cube's rad_s) — λ-period wavefront stripes in
+#                             the pulse ribbons' red/blue language, cubic-
+#                             upsampled 4× along the slice axis (validated:
+#                             median relL2 1.4% vs 32/λ ground truth). both:
+#                             stripes inside the outer intensity shell. Old
+#                             cubes without rad_s fall back to shells.
+#   EDM_RPR_RAD_SLEVEL=0.3    stripe isolevel as a fraction of the |Ex_far|
+#                             ceiling (99.5th pct)
+#   EDM_RPR_RAD_MAT=emissive|glassglow  stripe material (emissive translucent
+#                             like the pulse ribbons, or tinted glass + glow)
+#   EDM_RPR_RAD_UPSAMPLE=4    slice-axis upsample factor for striped/both
 #   EDM_RPR_SCREEN=1          detector plate at z_screen textured with the LW
 #                             far-field time series (screen_timeseries.jls, or
 #                             the cube's +X edge as fallback). The camera path
@@ -72,6 +85,7 @@ import GeometryBasics
 using FileIO
 using Serialization
 using Printf
+import DataInterpolations
 
 # matte single-color material via Uber — RPR_MATERIAL_NODE_DIFFUSE is
 # UNSUPPORTED on the Hybrid plugins, and Uber-diffuse looks identical
@@ -154,9 +168,13 @@ electron_style = get(ENV, "EDM_RPR_ELECTRONS", "gold")
 ambient_room = parse(Float32, get(ENV, "EDM_RPR_AMBIENT", dim_room ? "0.15" : "0.9"))
 emis_scale = parse(Float32, get(ENV, "EDM_RPR_EMIS", "1.0"))
 rad_levels = parse.(Float32, split(get(ENV, "EDM_RPR_RAD_LEVELS", "0.85,0.65"), ","))
-# shells = emissive isosurfaces (works everywhere); volume = true emissive
-# participating medium (HybridPro or CPU only — Northstar-GPU segfaults)
+# shells = emissive isosurfaces (works everywhere); striped/both = ± signed
+# Ex_far wavefronts (needs a rad_s cube); volume = true emissive participating
+# medium (HybridPro or CPU only — Northstar-GPU segfaults)
 rad_style = get(ENV, "EDM_RPR_RAD_STYLE", "shells")
+rad_slevel = parse(Float32, get(ENV, "EDM_RPR_RAD_SLEVEL", "0.3"))
+rad_mat = get(ENV, "EDM_RPR_RAD_MAT", "emissive")
+rad_upsample = parse(Int, get(ENV, "EDM_RPR_RAD_UPSAMPLE", "4"))
 
 # Densified grids for the isosurface only — setup.jl's grids stay canonical for
 # the GLMakie animation and the radiation precompute.
@@ -174,29 +192,69 @@ RAD = nothing
 rad_win = nothing
 rad_floor = 0.0f0
 const rad_decades = 3.0f0
+rad_s_ceil = 0.0f0
 if isfile(radiation_cube) && get(ENV, "EDM_RPR_RADIATION", "1") == "1"
     @info "loading radiation cube $radiation_cube"
     RAD = deserialize(radiation_cube)
     _rs = filter(>(0.0f0), vec(@view RAD.rad[1:3:end, 1:5:end, 1:5:end, 1:5:end]))
     rad_ceil = partialsort!(_rs, max(1, round(Int, 0.005 * length(_rs))); rev = true)
     rad_floor = rad_ceil / exp10(rad_decades)
-    edgewindow(n, frac = 0.1f0) = begin
+    # hi=false: no fade at the +X end of the slice axis — the v2 cube meets the
+    # detector plane exactly, so the wavefront should CLIP at the plate, not
+    # dissolve ~2.8λ before impact (the other five faces keep the soft fade).
+    edgewindow(n, frac = 0.1f0; lo = true, hi = true) = begin
         m = max(2, round(Int, frac * n))
         w = ones(Float32, n)
         for i in 1:m
             s = Float32(i - 1) / m
-            w[i] = w[n + 1 - i] = s * s * (3 - 2s)
+            lo && (w[i] = s * s * (3 - 2s))
+            hi && (w[n + 1 - i] = s * s * (3 - 2s))
         end
         w
     end
-    rad_win = reshape(edgewindow(size(RAD.rad, 2)), :, 1, 1) .*
+    rad_win = reshape(edgewindow(size(RAD.rad, 2); hi = false), :, 1, 1) .*
         reshape(edgewindow(size(RAD.rad, 3)), 1, :, 1) .*
         reshape(edgewindow(size(RAD.rad, 4)), 1, 1, :)
+    if haskey(RAD, :rad_s)
+        _ss = filter(!iszero, vec(@view RAD.rad_s[1:3:end, 1:5:end, 1:5:end, 1:5:end]))
+        map!(abs, _ss, _ss)
+        rad_s_ceil = partialsort!(_ss, max(1, round(Int, 0.005 * length(_ss))); rev = true)
+    end
 end
 rad_slice(t) = begin   # log-compressed, edge-faded transfer of the frame's cube slice
     f = clamp(searchsortedlast(RAD.frame_times, t), 1, length(RAD.frame_times))
     @. rad_win * clamp(
         log10(max($(@view RAD.rad[f, :, :, :]), rad_floor) / rad_floor) / rad_decades, 0.0f0, 1.0f0)
+end
+# Signed Ex_far wavefronts: the ~6.8 slices/λ cube carries the full λ-period
+# stripe signal (>3× Nyquist for the narrowband field); cubic-spline upsampling
+# along the slice axis reconstructs it at median relL2 1.4% vs a 32/λ ground
+# truth (lookdev/stripe_interp_test.png), so marching cubes sees smooth lobes
+# without paying for a denser cloud cube.
+function upsample_dim1(v, x, xu)
+    out = Array{Float32}(undef, length(xu), size(v, 2), size(v, 3))
+    Threads.@threads for k in axes(v, 3)
+        for j in axes(v, 2)
+            sp = DataInterpolations.CubicSpline(collect(@view v[:, j, k]), x)
+            @inbounds for (i, xi) in enumerate(xu)
+                out[i, j, k] = Float32(sp(xi))
+            end
+        end
+    end
+    return out
+end
+rad_s_grid() = LinRange(first(RAD.slice_zs), last(RAD.slice_zs),
+    rad_upsample * (length(RAD.slice_zs) - 1) + 1)
+rad_s_slice(t) = begin   # edge-faded, ceiling-normalized signed volume, upsampled
+    f = clamp(searchsortedlast(RAD.frame_times, t), 1, length(RAD.frame_times))
+    zu = rad_s_grid()
+    s = upsample_dim1(@view(RAD.rad_s[f, :, :, :]), RAD.slice_zs, zu)
+    w1 = edgewindow(length(zu); hi = false)
+    w2 = edgewindow(size(s, 2))
+    w3 = edgewindow(size(s, 3))
+    @. s = clamp(s / rad_s_ceil, -1.0f0, 1.0f0) *
+        $(reshape(w1, :, 1, 1)) * $(reshape(w2, 1, :, 1)) * $(reshape(w3, 1, 1, :))
+    s
 end
 
 screen_file = get(ENV, "EDM_SCREEN_TIMESERIES", joinpath(@__DIR__, "screen_timeseries.jls"))
@@ -498,12 +556,71 @@ function render_frame(t, outpath)
     use_rad_volume = rad_style == "volume" && !hybrid_rt && !gpu
     rad_style == "volume" && !use_rad_volume &&
         @warn "EDM_RPR_RAD_STYLE=volume requires EDM_RPR_RESOURCE=cpu with Northstar — rendering shells instead"
+    (rad_style == "striped" || rad_style == "both") && RAD !== nothing &&
+        !haskey(RAD, :rad_s) &&
+        @warn "cube has no rad_s (pre-v2) — rendering shells instead" maxlog = 1
     if RAD !== nothing && use_rad_volume
         u = rad_slice(t)
         RAD_VOL_EMISSION[] = Makie.Vec4f(2.4, 1.7, 0.9, 1)
         volume!(ax, (first(RAD.slice_zs), last(RAD.slice_zs)),
             (first(RAD.txs), last(RAD.txs)), (first(RAD.tys), last(RAD.tys)), u;
             algorithm = :absorption, absorption = 6.0f0, colormap = :afmhot)
+    elseif RAD !== nothing && (rad_style == "striped" || rad_style == "both") &&
+           haskey(RAD, :rad_s)
+        # ± wavefronts of the signed Ex_far in the pulse ribbons' red/blue
+        # language — the flash visibly echoes the laser's stripe pattern.
+        s = rad_s_slice(t)
+        for (lvl, c) in ((+rad_slevel, RGBf(0.85, 0.25, 0.15)),
+                         (-rad_slevel, RGBf(0.2, 0.4, 0.95)))
+            msh = iso_mesh(s, rad_s_grid(), RAD.txs, RAD.tys, lvl)
+            msh === nothing && continue
+            mat = if rad_mat == "glassglow"
+                emc, emw = dim_room ? (3.0f0 * emis_scale, 0.35f0) :
+                           (1.5f0 * emis_scale, 0.25f0)
+                if hybrid_rt   # BLEND unsupported — fold emission into the glass Uber
+                    RPR.UberMaterial(matsys;
+                        color = Vec4f(0), diffuse_weight = Vec4f(0),
+                        reflection_color = Vec4f(0.3 + 0.7c.r, 0.3 + 0.7c.g, 0.3 + 0.7c.b, 1),
+                        reflection_weight = Vec4f(1), reflection_roughness = Vec4f(0),
+                        reflection_ior = Vec4f(1.5),
+                        refraction_color = Vec4f(c.r, c.g, c.b, 1),
+                        refraction_weight = Vec4f(1), refraction_roughness = Vec4f(0),
+                        refraction_ior = Vec4f(1.5),
+                        emission_color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1),
+                        emission_weight = Vec4f(emw))
+                else
+                    RPR.LayerMaterial(
+                        RPR.Glass(matsys;
+                            refraction_color = Vec4f(c.r, c.g, c.b, 1),
+                            reflection_color = Vec4f(0.3 + 0.7c.r, 0.3 + 0.7c.g, 0.3 + 0.7c.b, 1),
+                            refraction_thin_surface = true, refraction_caustics = false),
+                        RPR.EmissiveMaterial(matsys;
+                            color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1));
+                        weight = Vec4f(emw))
+                end
+            else
+                mult = emis_scale * (((laser_lit && !white_room) || dim_room) ? 5 : 2.5f0)
+                RPR.UberMaterial(matsys;
+                    diffuse_weight = Vec4f(0), reflection_weight = Vec4f(0),
+                    emission_color = Vec4f(mult * c.r, mult * c.g, mult * c.b, 1),
+                    emission_weight = Vec4f(1),
+                    emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED,
+                    transparency = Vec4f(0.55))
+            end
+            mesh!(ax, msh; color = c, material = mat)
+        end
+        if rad_style == "both"   # one faint intensity envelope around the stripes
+            u = rad_slice(t)
+            msh = iso_mesh(u, RAD.slice_zs, RAD.txs, RAD.tys, rad_levels[2])
+            if msh !== nothing
+                shellmat = RPR.UberMaterial(matsys;
+                    diffuse_weight = Vec4f(0), reflection_weight = Vec4f(0),
+                    emission_color = Vec4f(2.2, 1.4, 0.8, 1), emission_weight = Vec4f(1),
+                    emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED,
+                    transparency = Vec4f(0.85))
+                mesh!(ax, msh; color = RGBf(1, 0.85, 0.5), material = shellmat)
+            end
+        end
     elseif RAD !== nothing
         u = rad_slice(t)
         for (lvl, emis, transp) in ((rad_levels[1], Vec4f(6.0, 5.0, 3.2, 1), 0.4f0),
