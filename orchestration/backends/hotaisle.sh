@@ -120,15 +120,18 @@ run_campaign() {
     notify hourglass_flowing_sand default "EDM hotaisle started" "$CAMPAIGN on $NAME (${GPUS}×MI300X)"
     log "launching $CAMPAIGN on the VM via the local backend (rocm), detached…"
     # nohup + a pidfile (not setsid): keeps the driver's PID so we can tell "still running" from "crashed".
-    ssh_vm "cd EDM && mkdir -p runs && nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid"
+    # juliaup's PATH lives in .bashrc/.profile, which a non-interactive ssh shell never sources — export
+    # it here or every julia invocation dies rc=127. The { …; } grouping keeps the pidfile write INSIDE
+    # the cd (a bare `A && B & C` backgrounds A&&B and runs C in the ssh cwd = $HOME).
+    ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && { nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
     log "polling for completion (DONE marker, or driver-death = crash so we don't poll forever while billing)…"
-    until ssh_vm "grep -q '\\] ${CAMPAIGN} DONE' runs/${CAMPAIGN}.out 2>/dev/null"; do
-        if ! ssh_vm "kill -0 \$(cat runs/${CAMPAIGN}.pid 2>/dev/null) 2>/dev/null"; then
+    until ssh_vm "grep -q '\\] ${CAMPAIGN} DONE' EDM/runs/${CAMPAIGN}.out 2>/dev/null"; do
+        if ! ssh_vm "kill -0 \$(cat EDM/runs/${CAMPAIGN}.pid 2>/dev/null) 2>/dev/null"; then
             notify rotating_light urgent "EDM hotaisle CRASH" "$CAMPAIGN driver died with no DONE on $NAME — VM KEPT for inspection; teardown when done (verify in TUI)."
-            log "[ERROR] driver process gone, no DONE marker — likely crashed. VM $NAME KEPT. tail:"; ssh_vm "tail -n 20 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[vm] /'
+            log "[ERROR] driver process gone, no DONE marker — likely crashed. VM $NAME KEPT. tail:"; ssh_vm "tail -n 20 EDM/runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[vm] /'
             return 1
         fi
-        sleep 60; ssh_vm "tail -n1 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[vm] /'
+        sleep 60; ssh_vm "tail -n1 EDM/runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[vm] /'
     done
     log "campaign done; downloading reduced products (cubes excluded)…"
     mkdir -p "$OUT/$CAMPAIGN"
