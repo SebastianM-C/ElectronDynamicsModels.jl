@@ -70,6 +70,11 @@ using FileIO
 using Serialization
 using Printf
 
+# matte single-color material via Uber — RPR_MATERIAL_NODE_DIFFUSE is
+# UNSUPPORTED on the Hybrid plugins, and Uber-diffuse looks identical
+flat_material(matsys, c) = RPR.UberMaterial(matsys;
+    color = to_color(c), diffuse_weight = Vec4f(1), reflection_weight = Vec4f(0))
+
 # ── Pulse scalar + sampler (same as thomson_animation.jl) ──
 pulse_scalar(E, B) = E[1]
 
@@ -198,7 +203,29 @@ end
 plugin = let p = lowercase(get(ENV, "EDM_RPR_PLUGIN", "northstar"))
     p == "hybridpro" ? RPR.HybridPro : p == "hybrid" ? RPR.Hybrid : RPR.Northstar
 end
+# Hybrid plugins: Vulkan HW-RT, reduced feature set — DIFFUSE material nodes and
+# thin-surface/caustics glass inputs are unsupported, and (crucially)
+# rprContextResolveFrameBuffer silently zeroes, so colorbuffer() returns black:
+# read the RAW framebuffer and normalize RGB by alpha (= accumulated sample
+# count), then gamma — see capture() below.
+hybrid_rt = plugin !== RPR.Northstar
 RPRMakie.activate!(; iterations, max_recursion = 20, plugin, resource)
+
+function capture(screen)
+    hybrid_rt || return colorbuffer(screen)
+    colorbuffer(screen)   # drives the render loop; its resolved output is black on Hybrid
+    raw = RPR.get_data(screen.framebuffer1)
+    # Hybrid also skips Northstar's tonemapping operator, so the HDR emission
+    # values blow out under a plain clamp — exposure-scaled Reinhard + gamma
+    # instead (EDM_RPR_EXPOSURE ≈ 0.2 lands near the Northstar photolinear look)
+    ex = parse(Float32, get(ENV, "EDM_RPR_EXPOSURE", "0.2"))
+    tm(x) = (ex * x / (1 + ex * x))^0.4545f0
+    img = map(raw) do c
+        a = max(c.alpha, 1.0f-6)
+        Makie.RGBf(tm(c.r / a), tm(c.g / a), tm(c.b / a))
+    end
+    return permutedims(reshape(img, screen.fb_size))
+end
 
 function render_frame(t, outpath)
     sample_pulse!(vol_buf, fe, xsr, ysr, zsr, t)
@@ -271,13 +298,13 @@ function render_frame(t, outpath)
                 Rect3f(Point3f(C[1], ylo_w, C[3]), Vec3f(s, ylen, s)),      # Y
                 Rect3f(Point3f(C[1], C[2] - s, C[3]), Vec3f(s, s, zlen)),   # Z
             )
-            mesh!(ax, a; color = axis_gray, material = RPR.DiffuseMaterial(matsys; color = to_color(axis_gray)))
+            mesh!(ax, a; color = axis_gray, material = flat_material(matsys, axis_gray))
         end
         # thin square grid, spacing 2w₀, registered to the origin: reads as
         # calibrated space and keeps the walls visually uniform
         g = 0.02w₀
         grid_gray = RGBf(0.5, 0.5, 0.53)
-        gmat = RPR.DiffuseMaterial(matsys; color = to_color(grid_gray))
+        gmat = flat_material(matsys, grid_gray)
         gridmults(lo, hi) = (2 * ceil(Int, lo / 2w₀):2:2 * floor(Int, hi / 2w₀)) .* w₀
         strips = Rect3f[]
         for xg in gridmults(C[1], xhi)      # floor (∥Y) and back wall (∥Z)
@@ -308,17 +335,37 @@ function render_frame(t, outpath)
         # thin-sheet tinted glass: the isosurfaces are open sheets, so
         # refraction_thin_surface is the physical model; tint both transmission
         # and reflection or the white reflections wash the lobes to neutral
-        tinted_glass() = RPR.Glass(matsys;
-            refraction_color = Vec4f(c.r, c.g, c.b, 1),
-            reflection_color = Vec4f(0.3 + 0.7c.r, 0.3 + 0.7c.g, 0.3 + 0.7c.b, 1),
-            refraction_thin_surface = true,
-            refraction_caustics = false,
-        )
+        # Hybrid plugins reject thin_surface/caustics AND the RPR.Glass preset
+        # itself (its defaults include reflection_mode/thin_surface/caustics) —
+        # build the glass Uber from scratch there with only supported inputs
+        tinted_glass() = hybrid_rt ?
+            RPR.UberMaterial(matsys;
+                color = Vec4f(0), diffuse_weight = Vec4f(0),
+                reflection_color = Vec4f(0.3 + 0.7c.r, 0.3 + 0.7c.g, 0.3 + 0.7c.b, 1),
+                reflection_weight = Vec4f(1), reflection_roughness = Vec4f(0),
+                reflection_ior = Vec4f(1.5),
+                refraction_color = Vec4f(c.r, c.g, c.b, 1),
+                refraction_weight = Vec4f(1), refraction_roughness = Vec4f(0),
+                refraction_ior = Vec4f(1.5)) :
+            RPR.Glass(matsys;
+                refraction_color = Vec4f(c.r, c.g, c.b, 1),
+                reflection_color = Vec4f(0.3 + 0.7c.r, 0.3 + 0.7c.g, 0.3 + 0.7c.b, 1),
+                refraction_thin_surface = true,
+                refraction_caustics = false,
+            )
         ribbon_style == "glass" && return tinted_glass()
-        ribbon_style == "glassglow" &&
-            return RPR.LayerMaterial(tinted_glass(),
+        if ribbon_style == "glassglow"
+            # BLEND nodes are unsupported on the Hybrid plugins — fold the
+            # emissive layer into the glass Uber itself (same node carries
+            # refraction + emission); Northstar keeps the LayerMaterial blend
+            hybrid_rt || return RPR.LayerMaterial(tinted_glass(),
                 RPR.EmissiveMaterial(matsys; color = Vec4f(1.5c.r, 1.5c.g, 1.5c.b, 1));
                 weight = Vec4f(0.25))
+            g = tinted_glass()
+            g.emission_color = Vec4f(1.5c.r, 1.5c.g, 1.5c.b, 1)
+            g.emission_weight = Vec4f(0.25)
+            return g
+        end
         # 5× emission in laser mode: bright enough to light the electrons, low
         # enough that tone mapping doesn't bleach the stripe colors; 3× when
         # the room/studio provides the light
@@ -409,7 +456,7 @@ function render_frame(t, outpath)
     eye, lookat = camera_for(t)
     update_cam!(ax.scene, eye, lookat, Vec3f(0, 0, 1))
 
-    t_render = @elapsed img = colorbuffer(screen)
+    t_render = @elapsed img = capture(screen)
     save(outpath, img)
     return t_render
 end
