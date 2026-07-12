@@ -20,13 +20,12 @@ outdir = joinpath(@__DIR__, "faint_laser")
 mkpath(outdir)
 
 #             tag                     emis   ambient  exposure  mat        tint
+# (dim first-round and dome-3.0 variants removed after the user picked the
+# bright grading — see rpr-look-locked; whisper re-rendered at the same
+# grading for a fair comparison)
 const VARIANTS = [
-    ("emis0.4_amb0.9", 0.4f0, 0.9f0, "0.12", "glass", 1.0f0),
-    ("emis0.2_amb0.9", 0.2f0, 0.9f0, "0.12", "glass", 1.0f0),
-    ("emis0.4_amb1.8", 0.4f0, 1.8f0, "0.12", "glass", 1.0f0),
-    ("pale_bright", 0.7f0, 3.0f0, "0.25", "glass", 0.5f0),
-    ("pale_bright_whisper", 0.7f0, 3.0f0, "0.25", "glassglow", 0.5f0),
     ("pale_brighter", 0.7f0, 5.0f0, "0.3", "glass", 0.5f0),
+    ("pale_brightest_whisper", 0.7f0, 5.0f0, "0.3", "glassglow", 0.5f0),
 ]
 
 for (tag, t) in (("flash", 4T0), ("travel", 10T0))

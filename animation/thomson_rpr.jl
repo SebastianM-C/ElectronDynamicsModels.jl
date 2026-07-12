@@ -72,6 +72,9 @@
 #   EDM_RPR_RAY_DEPTH         hybrid only: max_recursion + refraction/glossy
 #                             ray depths (unset = quality preset). Nested glass
 #                             stripes want 12-16 — depth-exhausted rays go black
+#   EDM_RPR_SOFTBOX=0         room mode: emissive ceiling panel strength —
+#                             shaped highlights on glossy surfaces (vs the flat
+#                             sheen of the uniform dome); ≈3 at ambient 5
 #   EDM_RPR_SCREEN=1          detector plate at z_screen textured with the LW
 #                             far-field time series (screen_timeseries.jls, or
 #                             the cube's +X edge as fallback). The camera path
@@ -454,6 +457,21 @@ function render_frame(t, outpath)
                 (Rect3f(Point3f(C[1] - th, ylo_w, C[3]), Vec3f(th, ylen, zlen)), RGBf(0.66, 0.66, 0.68)), # left
             )
             mesh!(ax, slab; color = col, material = satin(col))
+        end
+        # EDM_RPR_SOFTBOX > 0: emissive ceiling panel (studio softbox). The
+        # uniform ambient dome gives glossy surfaces only a flat gray sheen —
+        # a bright rectangle overhead is what puts SHAPED highlights on the
+        # glass stripes and gold electrons (the product-photography trick).
+        # Value = emission multiplier (≈3 reads well at ambient 5).
+        sbox = parse(Float32, get(ENV, "EDM_RPR_SOFTBOX", "0"))
+        if sbox > 0
+            panel = Rect3f(Point3f(-4w₀, -8w₀, 12w₀), Vec3f(16w₀, 12w₀, 0.05w₀))
+            sbmat = RPR.UberMaterial(matsys;
+                diffuse_weight = Vec4f(0), reflection_weight = Vec4f(0),
+                emission_color = Vec4f(sbox, sbox, 1.03f0 * sbox, 1),
+                emission_weight = Vec4f(1),
+                emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED)
+            mesh!(ax, panel; color = RGBf(1, 1, 1), material = sbmat)
         end
         s = 0.09w₀
         axis_gray = RGBf(0.32, 0.33, 0.36)
