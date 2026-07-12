@@ -309,7 +309,9 @@ scr_striped_img(t) = begin
     f = clamp(searchsortedlast(RAD.frame_times, t), 1, length(RAD.frame_times))
     pos, neg = RGBf(0.85, 0.25, 0.15), RGBf(0.2, 0.4, 0.95)
     map(@view RAD.rad_s[f, end, :, :]) do s
-        w = clamp(abs(s) / scr_s_ceil, 0.0f0, 1.0f0)^0.45f0   # lift the weak tail
+        # floor cut BEFORE the 0.45 gamma: the lift otherwise amplifies the
+        # numerical floor into a visible pattern before any light arrives
+        w = clamp((abs(s) / scr_s_ceil - 0.03f0) / 0.97f0, 0.0f0, 1.0f0)^0.45f0
         base = s >= 0 ? pos : neg
         hot = max(0.0f0, 2.5f0 * (w - 0.75f0))   # white-hot core near the peak
         RGBf(clamp(w * base.r + hot, 0, 1), clamp(w * base.g + hot, 0, 1),
@@ -378,13 +380,26 @@ function capture(screen)
     # (the amber radiation shells desaturate to cream). EDM_RPR_EXPOSURE ≈ 0.2
     # lands near the Northstar photolinear look.
     ex = parse(Float32, get(ENV, "EDM_RPR_EXPOSURE", "0.2"))
+    # EDM_RPR_SAT: post-tonemap saturation (gamma space). Northstar's own
+    # per-channel photolinear shoulder reads more vibrant than the hue-safe
+    # luminance Reinhard; ≈1.25 recovers that punch without the blow-to-white
+    # of true per-channel compression.
+    sat = parse(Float32, get(ENV, "EDM_RPR_SAT", "1.0"))
     img = map(raw) do c
         a = max(c.alpha, 1.0f-6)
         r, g, b = ex * c.r / a, ex * c.g / a, ex * c.b / a
         L = 0.2126f0 * r + 0.7152f0 * g + 0.0722f0 * b
         s = L > 0 ? (L / (1 + L)) / L : 0.0f0
-        Makie.RGBf(clamp(s * r, 0, 1)^0.4545f0, clamp(s * g, 0, 1)^0.4545f0,
-            clamp(s * b, 0, 1)^0.4545f0)
+        rr = clamp(s * r, 0, 1)^0.4545f0
+        gg = clamp(s * g, 0, 1)^0.4545f0
+        bb = clamp(s * b, 0, 1)^0.4545f0
+        if sat != 1
+            Lg = 0.2126f0 * rr + 0.7152f0 * gg + 0.0722f0 * bb
+            rr = clamp(Lg + sat * (rr - Lg), 0, 1)
+            gg = clamp(Lg + sat * (gg - Lg), 0, 1)
+            bb = clamp(Lg + sat * (bb - Lg), 0, 1)
+        end
+        Makie.RGBf(rr, gg, bb)
     end
     return permutedims(reshape(img, screen.fb_size))
 end
