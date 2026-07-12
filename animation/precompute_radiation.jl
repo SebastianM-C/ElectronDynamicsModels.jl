@@ -51,7 +51,12 @@ SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 
 txs = LinRange(-2w₀, 2w₀, NT)
 tys = LinRange(-2w₀, 2w₀, NT)
-slice_zs = LinRange(first(zs), last(zs), NSLICES)
+# Slice extent along propagation, in λ units (defaults = the pulse box). The
+# animation's detector plane sits at +16λ; extending ZMAX there makes the cube
+# meet the screen with no gap.
+ZMIN = parse(Float64, get(ENV, "EDM_RAD_ZMIN_LAMBDA", string(first(zs) / λ))) * λ
+ZMAX = parse(Float64, get(ENV, "EDM_RAD_ZMAX_LAMBDA", string(last(zs) / λ))) * λ
+slice_zs = LinRange(ZMIN, ZMAX, NSLICES)
 x⁰_samples = c .* frame_times
 
 slice_screen(z) = ObserverScreen(txs, tys, z, x⁰_samples; c)
@@ -61,21 +66,26 @@ NSUB = let s = get(ENV, "EDM_NSUBSTEPS", "")
 end
 @info "radiation precompute" GPU_BACKEND NT NSLICES n_frames NSUB n_electrons = length(trajs)
 
-# |E_far|² per (t, x, y), Float32 — the only thing the renderer needs.
-function far_intensity(screen)
+# |E_far|² AND the signed polarization component Ex_far per (t, x, y), Float32.
+# The intensity drives the emission envelope; the signed component carries the
+# wavefront phase (± isosurfaces = phase-striped radiation shells, matching the
+# pulse's ribbons). Both come from the same kernel output — storing Ex is free.
+function far_fields(screen)
     fld = accumulate_field(
         trajs, screen, GPUKernelRK4(), gpu_backend;
         n_substeps = NSUB, mode = Val(:split), sync_per_electron = SYNC,
     )
-    return Float32.(dropdims(sum(abs2, fld.E_far; dims = 2); dims = 2))
+    intens = Float32.(dropdims(sum(abs2, fld.E_far; dims = 2); dims = 2))
+    signed = Float32.(fld.E_far[:, 1, :, :])
+    return intens, signed
 end
 
 if BENCH
     # Mid slice = worst case (contains the electron disk). First call compiles
     # the kernel; the second is the honest per-slice cost.
     mid = slice_screen(slice_zs[NSLICES ÷ 2 + 1])
-    t1 = @elapsed far_intensity(mid)
-    t2 = @elapsed far_intensity(mid)
+    t1 = @elapsed far_fields(mid)
+    t2 = @elapsed far_fields(mid)
     total = t2 * NSLICES
     @info @sprintf(
         "bench: slice %.1fs (compile run %.1fs) → full cube ≈ %.1f min on this GPU",
@@ -84,7 +94,17 @@ if BENCH
     exit(0)
 end
 
-rad = Array{Float32}(undef, n_frames, NSLICES, NT, NT)
+# EDM_RAD_BATCH > 0: stream the cube out as per-batch slice files instead of
+# one monolith — each completed batch is serialized (atomic .tmp → rename) and
+# its buffer reused, so (a) a local puller can download batches WHILE later
+# slices compute, (b) the VM never holds the whole cube in RAM: cube size is
+# capped by budget, not memory. Assemble locally with
+# animation/assemble_radiation_cube.jl. 0 = legacy single-file output.
+BATCH = parse(Int, get(ENV, "EDM_RAD_BATCH", "0"))
+if BATCH == 0
+    rad = Array{Float32}(undef, n_frames, NSLICES, NT, NT)
+    rad_s = Array{Float32}(undef, n_frames, NSLICES, NT, NT)
+end
 # Orchestration-aware output: run_cell.sh sets EDM_OUTDIR (campaign dir) and
 # EDM_RUN_TAG (uuid); a direct local run keeps the plain name in animation/.
 OUTDIR = get(ENV, "EDM_OUTDIR", @__DIR__)
@@ -92,16 +112,47 @@ RUN_TAG = get(ENV, "EDM_RUN_TAG", "")
 outfile = joinpath(OUTDIR, isempty(RUN_TAG) ? "radiation_cube.jls" : "radiation_cube_$(RUN_TAG).jls")
 mkpath(OUTDIR)
 
-t_total = @elapsed for (si, zsl) in enumerate(slice_zs)
-    t_slice = @elapsed begin
-        rad[:, si, :, :] .= far_intensity(slice_screen(zsl))
+if BATCH > 0
+    base = replace(outfile, r"\.jls$" => "")
+    nb = cld(NSLICES, BATCH)
+    serialize("$(base)_manifest.jls",
+        (; slice_zs, txs, tys, frame_times, NSLICES, NT, batch = BATCH, n_batches = nb))
+    buf = Array{Float32}(undef, n_frames, BATCH, NT, NT)
+    buf_s = Array{Float32}(undef, n_frames, BATCH, NT, NT)
+    t_total = @elapsed for bi in 1:nb
+        lo, hi = (bi - 1) * BATCH + 1, min(bi * BATCH, NSLICES)
+        for (k, si) in enumerate(lo:hi)
+            t_slice = @elapsed begin
+                intens, signed = far_fields(slice_screen(slice_zs[si]))
+                buf[:, k, :, :] .= intens
+                buf_s[:, k, :, :] .= signed
+            end
+            @info @sprintf("slice %3d/%d (X = %+6.1fλ)  %.1fs", si, NSLICES, slice_zs[si] / λ, t_slice)
+        end
+        n = hi - lo + 1
+        bf = @sprintf("%s_batch%03d.jls", base, bi)
+        serialize(bf * ".tmp", (; rad = buf[:, 1:n, :, :], rad_s = buf_s[:, 1:n, :, :],
+            slices = lo:hi))
+        mv(bf * ".tmp", bf; force = true)
+        @info "batch $bi/$nb sealed → $bf"
     end
-    @info @sprintf("slice %3d/%d (X = %+6.1fλ)  %.1fs", si, NSLICES, zsl / λ, t_slice)
-    if si % 16 == 0 && si < NSLICES
-        serialize(outfile * ".partial", (; rad, slice_zs, txs, tys, frame_times, done = si))
+    touch("$(base)_done")
+    @info @sprintf("radiation slices done in %.1f min → %s_batch*.jls (%d batches)",
+        t_total / 60, base, nb)
+else
+    t_total = @elapsed for (si, zsl) in enumerate(slice_zs)
+        t_slice = @elapsed begin
+            intens, signed = far_fields(slice_screen(zsl))
+            rad[:, si, :, :] .= intens
+            rad_s[:, si, :, :] .= signed
+        end
+        @info @sprintf("slice %3d/%d (X = %+6.1fλ)  %.1fs", si, NSLICES, zsl / λ, t_slice)
+        if si % 16 == 0 && si < NSLICES
+            serialize(outfile * ".partial", (; rad, rad_s, slice_zs, txs, tys, frame_times, done = si))
+        end
     end
+    serialize(outfile, (; rad, rad_s, slice_zs, txs, tys, frame_times))
+    rm(outfile * ".partial"; force = true)
+    @info @sprintf("radiation cube done in %.1f min → %s (%.2f GB)", t_total / 60, outfile,
+        (sizeof(rad) + sizeof(rad_s)) / 1e9)
 end
-
-serialize(outfile, (; rad, slice_zs, txs, tys, frame_times))
-rm(outfile * ".partial"; force = true)
-@info @sprintf("radiation cube done in %.1f min → %s (%.2f GB)", t_total / 60, outfile, sizeof(rad) / 1e9)
