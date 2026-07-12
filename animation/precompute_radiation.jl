@@ -13,6 +13,7 @@
 #   EDM_RAD_NT        transverse pixels per side        (default 96)
 #   EDM_RAD_NSLICES   slices along propagation          (default 128)
 #   EDM_NSUBSTEPS     retarded-solve substeps           (default recommended_n_substeps)
+#   EDM_RAD_FRAME_STRIDE  subsample the frame clock (test strips only, default 1)
 #   EDM_BENCH         "1" → time the worst-case mid slice twice (2nd run excludes
 #                     kernel compile), print the full-cube estimate, exit
 #
@@ -57,6 +58,14 @@ tys = LinRange(-2w₀, 2w₀, NT)
 ZMIN = parse(Float64, get(ENV, "EDM_RAD_ZMIN_LAMBDA", string(first(zs) / λ))) * λ
 ZMAX = parse(Float64, get(ENV, "EDM_RAD_ZMAX_LAMBDA", string(last(zs) / λ))) * λ
 slice_zs = LinRange(ZMIN, ZMAX, NSLICES)
+# Frame subsetting for cheap controlled tests (slice-density/interpolation
+# studies): stride > 1 subsamples the animation frame clock. NOT for production
+# cubes — the renderer indexes frames by the full frame_times.
+FRAME_STRIDE = parse(Int, get(ENV, "EDM_RAD_FRAME_STRIDE", "1"))
+if FRAME_STRIDE > 1
+    frame_times = frame_times[1:FRAME_STRIDE:end]
+    n_frames = length(frame_times)
+end
 x⁰_samples = c .* frame_times
 
 slice_screen(z) = ObserverScreen(txs, tys, z, x⁰_samples; c)
