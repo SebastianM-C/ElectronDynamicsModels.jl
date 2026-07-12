@@ -65,9 +65,13 @@
 #                             cubes without rad_s fall back to shells.
 #   EDM_RPR_RAD_SLEVEL=0.3    stripe isolevel as a fraction of the |Ex_far|
 #                             ceiling (99.5th pct)
-#   EDM_RPR_RAD_MAT=emissive|glassglow  stripe material (emissive translucent
-#                             like the pulse ribbons, or tinted glass + glow)
+#   EDM_RPR_RAD_MAT=emissive|glassglow|glass  stripe material (emissive
+#                             translucent like the pulse ribbons, tinted glass
+#                             + glow, or pure glass — no emission at all)
 #   EDM_RPR_RAD_UPSAMPLE=4    slice-axis upsample factor for striped/both
+#   EDM_RPR_RAY_DEPTH         hybrid only: max_recursion + refraction/glossy
+#                             ray depths (unset = quality preset). Nested glass
+#                             stripes want 12-16 — depth-exhausted rays go black
 #   EDM_RPR_SCREEN=1          detector plate at z_screen textured with the LW
 #                             far-field time series (screen_timeseries.jls, or
 #                             the cube's +X edge as fallback). The camera path
@@ -175,6 +179,9 @@ rad_style = get(ENV, "EDM_RPR_RAD_STYLE", "shells")
 rad_slevel = parse(Float32, get(ENV, "EDM_RPR_RAD_SLEVEL", "0.3"))
 rad_mat = get(ENV, "EDM_RPR_RAD_MAT", "emissive")
 rad_upsample = parse(Int, get(ENV, "EDM_RPR_RAD_UPSAMPLE", "4"))
+# stripe tint saturation: 1 = full red/blue, 0.5 = pale (glass absorbs less —
+# translucent stripes need this in dim gradings or they go near-black)
+rad_tint = parse(Float32, get(ENV, "EDM_RPR_RAD_TINT", "1.0"))
 
 # Densified grids for the isosurface only — setup.jl's grids stay canonical for
 # the GLMakie animation and the radiation precompute.
@@ -397,6 +404,26 @@ function render_frame(t, outpath)
             RPR.rprContextSetParameterByKey1u(screen.context.pointer,
                 reinterpret(RPR.rpr_context_info, Int32(0x102D)), dv)
         end
+        # Ray-depth budget (probed: HybridPro ACCEPTS max_recursion + the
+        # diffuse/glossy/refraction/glossy_refraction depths; rejects shadow/
+        # RR/sampler/adaptive). Nested translucent shells need this: a camera
+        # ray through k stacked glass stripes crosses 2k refracting interfaces,
+        # and rays that exhaust the preset depth terminate BLACK — the murky
+        # interiors in dim glass gradings. EDM_RPR_RAY_DEPTH=N sets recursion/
+        # refraction/glossy_refraction to N and glossy to min(N, 8); diffuse
+        # depth stays on the quality preset (raising it mostly buys GI noise).
+        rd = get(ENV, "EDM_RPR_RAY_DEPTH", "")
+        if !isempty(rd)
+            n = parse(UInt, rd)
+            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
+                RPR.RPR_CONTEXT_MAX_RECURSION, n)
+            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
+                RPR.RPR_CONTEXT_MAX_DEPTH_REFRACTION, n)
+            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
+                RPR.RPR_CONTEXT_MAX_DEPTH_GLOSSY_REFRACTION, n)
+            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
+                RPR.RPR_CONTEXT_MAX_DEPTH_GLOSSY, min(n, UInt(8)))
+        end
     end
 
     if white_room
@@ -570,30 +597,37 @@ function render_frame(t, outpath)
         # ± wavefronts of the signed Ex_far in the pulse ribbons' red/blue
         # language — the flash visibly echoes the laser's stripe pattern.
         s = rad_s_slice(t)
-        for (lvl, c) in ((+rad_slevel, RGBf(0.85, 0.25, 0.15)),
-                         (-rad_slevel, RGBf(0.2, 0.4, 0.95)))
+        for (lvl, c0) in ((+rad_slevel, RGBf(0.85, 0.25, 0.15)),
+                          (-rad_slevel, RGBf(0.2, 0.4, 0.95)))
+            c = RGBf(1 - rad_tint * (1 - c0.r), 1 - rad_tint * (1 - c0.g),
+                1 - rad_tint * (1 - c0.b))
             msh = iso_mesh(s, rad_s_grid(), RAD.txs, RAD.tys, lvl)
             msh === nothing && continue
-            mat = if rad_mat == "glassglow"
+            stripe_glass() = hybrid_rt ?   # BLEND/Glass preset unsupported on hybrid
+                RPR.UberMaterial(matsys;
+                    color = Vec4f(0), diffuse_weight = Vec4f(0),
+                    reflection_color = Vec4f(0.3 + 0.7c.r, 0.3 + 0.7c.g, 0.3 + 0.7c.b, 1),
+                    reflection_weight = Vec4f(1), reflection_roughness = Vec4f(0),
+                    reflection_ior = Vec4f(1.5),
+                    refraction_color = Vec4f(c.r, c.g, c.b, 1),
+                    refraction_weight = Vec4f(1), refraction_roughness = Vec4f(0),
+                    refraction_ior = Vec4f(1.5)) :
+                RPR.Glass(matsys;
+                    refraction_color = Vec4f(c.r, c.g, c.b, 1),
+                    reflection_color = Vec4f(0.3 + 0.7c.r, 0.3 + 0.7c.g, 0.3 + 0.7c.b, 1),
+                    refraction_thin_surface = true, refraction_caustics = false)
+            mat = if rad_mat == "glass"   # pure translucent wavefronts, no glow
+                stripe_glass()
+            elseif rad_mat == "glassglow"
                 emc, emw = dim_room ? (3.0f0 * emis_scale, 0.35f0) :
                            (1.5f0 * emis_scale, 0.25f0)
-                if hybrid_rt   # BLEND unsupported — fold emission into the glass Uber
-                    RPR.UberMaterial(matsys;
-                        color = Vec4f(0), diffuse_weight = Vec4f(0),
-                        reflection_color = Vec4f(0.3 + 0.7c.r, 0.3 + 0.7c.g, 0.3 + 0.7c.b, 1),
-                        reflection_weight = Vec4f(1), reflection_roughness = Vec4f(0),
-                        reflection_ior = Vec4f(1.5),
-                        refraction_color = Vec4f(c.r, c.g, c.b, 1),
-                        refraction_weight = Vec4f(1), refraction_roughness = Vec4f(0),
-                        refraction_ior = Vec4f(1.5),
-                        emission_color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1),
-                        emission_weight = Vec4f(emw))
+                if hybrid_rt   # fold emission into the glass Uber
+                    g = stripe_glass()
+                    g.emission_color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1)
+                    g.emission_weight = Vec4f(emw)
+                    g
                 else
-                    RPR.LayerMaterial(
-                        RPR.Glass(matsys;
-                            refraction_color = Vec4f(c.r, c.g, c.b, 1),
-                            reflection_color = Vec4f(0.3 + 0.7c.r, 0.3 + 0.7c.g, 0.3 + 0.7c.b, 1),
-                            refraction_thin_surface = true, refraction_caustics = false),
+                    RPR.LayerMaterial(stripe_glass(),
                         RPR.EmissiveMaterial(matsys;
                             color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1));
                         weight = Vec4f(emw))
