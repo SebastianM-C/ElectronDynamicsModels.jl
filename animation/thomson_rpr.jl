@@ -23,8 +23,11 @@
 #                             existing files are skipped, so runs are resumable
 #   EDM_RPR_RADIUS=0.14       electron sphere radius in units of λ (sunflower
 #                             spacing is ~0.30λ — radii ≳0.15λ merge into a plate)
-#   EDM_RPR_LIGHTS=laser|studio  lighting rig (default laser: the pulse itself is
-#                             the key light — the electrons are lit by the laser)
+#   EDM_RPR_LIGHTS=laser|studio|dim  lighting rig (default laser: the pulse
+#                             itself is the key light — the electrons are lit by
+#                             the laser). dim (room mode): dimmed-lab chamber lit
+#                             mostly by the pulse/radiation emission — lantern
+#                             projections on the tiles, the flash lights the room.
 #   EDM_RPR_BG=dark|room      dark: blue-gray backdrop (compositing; fast).
 #                             room: gray 3-plane corner with a 2w₀ square grid;
 #                             the seams are the coordinate axes. Slower (~2-4×,
@@ -108,6 +111,7 @@ resource = gpu ?
     RPR.RPR_CREATION_FLAGS_ENABLE_GPU0 | RPR.RPR_CREATION_FLAGS_ENABLE_OPENCL :
     RPR.RPR_CREATION_FLAGS_ENABLE_CPU
 laser_lit = get(ENV, "EDM_RPR_LIGHTS", "laser") == "laser"
+dim_room = get(ENV, "EDM_RPR_LIGHTS", "") == "dim"
 white_room = get(ENV, "EDM_RPR_BG", "dark") == "room"
 ribbon_style = get(ENV, "EDM_RPR_RIBBONS", "emissive")
 rad_levels = parse.(Float32, split(get(ENV, "EDM_RPR_RAD_LEVELS", "0.85,0.65"), ","))
@@ -215,14 +219,23 @@ function capture(screen)
     hybrid_rt || return colorbuffer(screen)
     colorbuffer(screen)   # drives the render loop; its resolved output is black on Hybrid
     raw = RPR.get_data(screen.framebuffer1)
+    # calibration aid: dump the raw HDR buffer so exposure/tonemap variants can
+    # be regenerated offline (lookdev/tonemap_sweep.jl) without re-rendering
+    dump_raw = get(ENV, "EDM_RPR_DUMP_RAW", "")
+    isempty(dump_raw) || serialize(dump_raw, (; raw, fb_size = screen.fb_size))
     # Hybrid also skips Northstar's tonemapping operator, so the HDR emission
-    # values blow out under a plain clamp — exposure-scaled Reinhard + gamma
-    # instead (EDM_RPR_EXPOSURE ≈ 0.2 lands near the Northstar photolinear look)
+    # values blow out under a plain clamp. LUMINANCE-based Reinhard, not
+    # per-channel: per-channel compression drags saturated highlights to white
+    # (the amber radiation shells desaturate to cream). EDM_RPR_EXPOSURE ≈ 0.2
+    # lands near the Northstar photolinear look.
     ex = parse(Float32, get(ENV, "EDM_RPR_EXPOSURE", "0.2"))
-    tm(x) = (ex * x / (1 + ex * x))^0.4545f0
     img = map(raw) do c
         a = max(c.alpha, 1.0f-6)
-        Makie.RGBf(tm(c.r / a), tm(c.g / a), tm(c.b / a))
+        r, g, b = ex * c.r / a, ex * c.g / a, ex * c.b / a
+        L = 0.2126f0 * r + 0.7152f0 * g + 0.0722f0 * b
+        s = L > 0 ? (L / (1 + L)) / L : 0.0f0
+        Makie.RGBf(clamp(s * r, 0, 1)^0.4545f0, clamp(s * g, 0, 1)^0.4545f0,
+            clamp(s * b, 0, 1)^0.4545f0)
     end
     return permutedims(reshape(img, screen.fb_size))
 end
@@ -243,7 +256,12 @@ function render_frame(t, outpath)
         # bug). Point lights are avoided: they cast hard fan shadows through
         # the layered translucent ribbons. The pulse still "lantern-projects"
         # its stripe pattern onto the walls — genuine light transport.
-        [AmbientLight(RGBf(0.9, 0.9, 0.92))]
+        # EDM_RPR_LIGHTS=dim: dimmed-lab variant — the chamber is lit mostly by
+        # the pulse/radiation emission itself (lantern projections become the
+        # feature; the flash visibly lights the room); the small ambient floor
+        # keeps the tile grid readable in the dark tail act.
+        dim_room ? [AmbientLight(RGBf(0.15, 0.15, 0.16))] :
+            [AmbientLight(RGBf(0.9, 0.9, 0.92))]
     elseif laser_lit
         # the pulse's own emission is the key light — the electrons are lit by
         # the laser; keep only a weak fill + ambient so the dark side isn't dead
@@ -355,21 +373,23 @@ function render_frame(t, outpath)
             )
         ribbon_style == "glass" && return tinted_glass()
         if ribbon_style == "glassglow"
+            # stronger inner glow when the room is lit BY the pulse (dim mode)
+            emc, emw = dim_room ? (3.0f0, 0.35f0) : (1.5f0, 0.25f0)
             # BLEND nodes are unsupported on the Hybrid plugins — fold the
             # emissive layer into the glass Uber itself (same node carries
             # refraction + emission); Northstar keeps the LayerMaterial blend
             hybrid_rt || return RPR.LayerMaterial(tinted_glass(),
-                RPR.EmissiveMaterial(matsys; color = Vec4f(1.5c.r, 1.5c.g, 1.5c.b, 1));
-                weight = Vec4f(0.25))
+                RPR.EmissiveMaterial(matsys; color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1));
+                weight = Vec4f(emw))
             g = tinted_glass()
-            g.emission_color = Vec4f(1.5c.r, 1.5c.g, 1.5c.b, 1)
-            g.emission_weight = Vec4f(0.25)
+            g.emission_color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1)
+            g.emission_weight = Vec4f(emw)
             return g
         end
         # 5× emission in laser mode: bright enough to light the electrons, low
         # enough that tone mapping doesn't bleach the stripe colors; 3× when
         # the room/studio provides the light
-        mult = (laser_lit && !white_room) ? 5 : 3
+        mult = ((laser_lit && !white_room) || dim_room) ? 5 : 3
         # NB: mode enums must be passed RAW (not UInt(...)-wrapped): RPR.jl
         # routes plain integers through the float setter (Vec4f coercion),
         # which Northstar tolerates but HybridPro rejects with
