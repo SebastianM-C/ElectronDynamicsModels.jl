@@ -7,11 +7,13 @@ set -euo pipefail
 REMOTE="$1"; RDIR="$2"; LDIR="$3"; IVL="${4:-60}"
 mkdir -p "$LDIR"
 while true; do
-    rsync -a --include='radiation_*' --exclude='*' --exclude='*.tmp' \
+    # filter order matters: first match wins, so *.tmp must be excluded
+    # BEFORE the radiation_* include (else half-written batches get pulled)
+    rsync -a --exclude='*.tmp' --include='radiation_*' --exclude='*' \
         "$REMOTE:$RDIR/" "$LDIR/" 2>/dev/null || true
     if ls "$LDIR"/radiation_*_done >/dev/null 2>&1; then
         # one final sweep, then stop
-        rsync -a --include='radiation_*' --exclude='*' --exclude='*.tmp' \
+        rsync -a --exclude='*.tmp' --include='radiation_*' --exclude='*' \
             "$REMOTE:$RDIR/" "$LDIR/" 2>/dev/null || true
         echo "done marker pulled — all batches local"
         break
