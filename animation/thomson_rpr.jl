@@ -327,6 +327,14 @@ function render_frame(t, outpath)
             RPR.rprContextSetParameterByKey1u(screen.context.pointer,
                 reinterpret(RPR.rpr_context_info, Int32(0x1001)), qv)
         end
+        # PT denoiser (RPR_CONTEXT_PT_DENOISER = 0x102D): lets low iteration
+        # counts pass for converged frames — the animation-speed multiplier
+        dn = get(ENV, "EDM_RPR_DENOISER", "")
+        if !isempty(dn)
+            dv = UInt32(findfirst(==(dn), ["none", "svgf", "asvgf", "ml"]) - 1)
+            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
+                reinterpret(RPR.rpr_context_info, Int32(0x102D)), dv)
+        end
     end
 
     if white_room
