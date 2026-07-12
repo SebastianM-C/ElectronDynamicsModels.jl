@@ -75,6 +75,10 @@
 #   EDM_RPR_SOFTBOX=0         room mode: emissive ceiling panel strength —
 #                             shaped highlights on glossy surfaces (vs the flat
 #                             sheen of the uniform dome); ≈3 at ambient 5
+#   EDM_RPR_SCREEN_STYLE=magma|striped  detector display: magma |E_far|² heat
+#                             map, or the v2 cube's signed Ex_far edge slice in
+#                             the wavefronts' red/blue (screen shows the same
+#                             colors as the stripes hitting it)
 #   EDM_RPR_SCREEN=1          detector plate at z_screen textured with the LW
 #                             far-field time series (screen_timeseries.jls, or
 #                             the cube's +X edge as fallback). The camera path
@@ -289,6 +293,29 @@ scr_slice(t) = begin
     f = clamp(searchsortedlast(SCR.frame_times, t), 1, length(SCR.frame_times))
     @. clamp(log10(max($(@view SCR.scr[f, :, :]), scr_floor) / scr_floor) / 3.0f0, 0.0f0, 1.0f0)
 end
+# Synchronized screen: the v2 cube's +X edge slice IS the detector plane, so
+# the plate can display the arriving SIGNED Ex_far — the same red/blue phase
+# stripes as the in-flight wavefronts, in the same colors, at the moment they
+# land (EDM_RPR_SCREEN_STYLE=striped; default magma = |E_far|² heat display).
+screen_style = get(ENV, "EDM_RPR_SCREEN_STYLE", "magma")
+scr_s_ceil = 0.0f0
+if RAD !== nothing && haskey(RAD, :rad_s)
+    _sv = filter(!iszero, vec(@view RAD.rad_s[1:2:end, end, 1:3:end, 1:3:end]))
+    map!(abs, _sv, _sv)
+    isempty(_sv) ||
+        (scr_s_ceil = partialsort!(_sv, max(1, round(Int, 0.002 * length(_sv))); rev = true))
+end
+scr_striped_img(t) = begin
+    f = clamp(searchsortedlast(RAD.frame_times, t), 1, length(RAD.frame_times))
+    pos, neg = RGBf(0.85, 0.25, 0.15), RGBf(0.2, 0.4, 0.95)
+    map(@view RAD.rad_s[f, end, :, :]) do s
+        w = clamp(abs(s) / scr_s_ceil, 0.0f0, 1.0f0)^0.45f0   # lift the weak tail
+        base = s >= 0 ? pos : neg
+        hot = max(0.0f0, 2.5f0 * (w - 0.75f0))   # white-hot core near the peak
+        RGBf(clamp(w * base.r + hot, 0, 1), clamp(w * base.g + hot, 0, 1),
+            clamp(w * base.b + hot, 0, 1))
+    end
+end
 # camera span for the zoomed-out box+screen framing (0 = hero framing)
 span_scr = SCR === nothing ? 0.0f0 : Float32(SCR.z_screen - first(zs))
 
@@ -323,6 +350,18 @@ end
 # read the RAW framebuffer and normalize RGB by alpha (= accumulated sample
 # count), then gamma — see capture() below.
 hybrid_rt = plugin !== RPR.Northstar
+# HybridPro segfaults in rprSceneClear when the previous context is RELEASED
+# (the singleton Context constructor frees the old one on every new Screen —
+# i.e. on every render_frame). Non-singleton contexts leak instead — MEASURED
+# ~1.7 GB/frame with the striped-radiation scene (48 GB W7900 = ~25 frames):
+# render frame ranges in chunks of ~16 frames per process (EDM_RPR_FRAMES is
+# resumable, so a wrapper loop over subranges is all it takes).
+if hybrid_rt
+    function RPR.Context(; plugin = RPR.Northstar,
+            resource = RPR.RPR_CREATION_FLAGS_ENABLE_GPU0, singleton = true)
+        return RPR.Context(plugin, resource, false)
+    end
+end
 RPRMakie.activate!(; iterations, max_recursion = 20, plugin, resource)
 
 function capture(screen)
@@ -696,13 +735,18 @@ function render_frame(t, outpath)
     # under Makie 0.24). Instead: colormap the image on the CPU and put it on a
     # manual quad as an emissive texture — a glowing detector display.
     if SCR !== nothing
-        su = scr_slice(t)
         Xs_scr = Float32(SCR.z_screen)
         ylo, yhi = Float32(first(SCR.txs)), Float32(last(SCR.txs))
         zlo, zhi = Float32(first(SCR.tys)), Float32(last(SCR.tys))
-        cmap = Makie.to_colormap(:magma)
-        scr_img = [RGBf(cmap[clamp(round(Int, v * (length(cmap) - 1)) + 1, 1, length(cmap))])
-                   for v in su]
+        scr_img = if screen_style == "striped" && RAD !== nothing &&
+                     haskey(RAD, :rad_s) && scr_s_ceil > 0
+            scr_striped_img(t)
+        else
+            su = scr_slice(t)
+            cmap = Makie.to_colormap(:magma)
+            [RGBf(cmap[clamp(round(Int, v * (length(cmap) - 1)) + 1, 1, length(cmap))])
+             for v in su]
+        end
         pts = Point3f[(Xs_scr, ylo, zlo), (Xs_scr, yhi, zlo), (Xs_scr, yhi, zhi), (Xs_scr, ylo, zhi)]
         fcs = [GeometryBasics.GLTriangleFace(1, 2, 3), GeometryBasics.GLTriangleFace(1, 3, 4)]
         uvs = GeometryBasics.Vec2f[(0, 0), (1, 0), (1, 1), (0, 1)]
