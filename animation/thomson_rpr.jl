@@ -148,6 +148,7 @@ laser_lit = get(ENV, "EDM_RPR_LIGHTS", "laser") == "laser"
 dim_room = get(ENV, "EDM_RPR_LIGHTS", "") == "dim"
 white_room = get(ENV, "EDM_RPR_BG", "dark") == "room"
 ribbon_style = get(ENV, "EDM_RPR_RIBBONS", "emissive")
+electron_style = get(ENV, "EDM_RPR_ELECTRONS", "gold")
 rad_levels = parse.(Float32, split(get(ENV, "EDM_RPR_RAD_LEVELS", "0.85,0.65"), ","))
 # shells = emissive isosurfaces (works everywhere); volume = true emissive
 # participating medium (HybridPro or CPU only — Northstar-GPU segfaults)
@@ -405,8 +406,14 @@ function render_frame(t, outpath)
     # translucent (Uber transparency input — color alpha is a no-op in RPR) so
     # the electron disk reads through the pulse.
     function ribbon_material(c)
-        ribbon_style == "plastic" &&
-            return RPR.Plastic(matsys; color = to_color(c), transparency = Vec4f(0.35))
+        # the RPR.Plastic preset also fails on hybrid via its own defaults
+        # (UInt-wrapped mode enums + sss/bool inputs) — from-scratch Uber there
+        ribbon_style == "plastic" && return hybrid_rt ?
+            RPR.UberMaterial(matsys; color = to_color(c), diffuse_weight = Vec4f(1),
+                reflection_color = Vec4f(1), reflection_weight = Vec4f(1),
+                reflection_roughness = Vec4f(0.1), reflection_ior = Vec4f(1.5),
+                transparency = Vec4f(0.35)) :
+            RPR.Plastic(matsys; color = to_color(c), transparency = Vec4f(0.35))
         # thin-sheet tinted glass: the isosurfaces are open sheets, so
         # refraction_thin_surface is the physical model; tint both transmission
         # and reflection or the white reflections wash the lobes to neutral
@@ -429,6 +436,14 @@ function render_frame(t, outpath)
                 refraction_caustics = false,
             )
         ribbon_style == "glass" && return tinted_glass()
+        if ribbon_style == "coated"   # tinted glass under a sharp clear-coat
+            g = tinted_glass()
+            g.coating_color = Vec4f(1)
+            g.coating_weight = Vec4f(1)
+            g.coating_roughness = Vec4f(0.02)
+            g.coating_ior = Vec4f(1.5)
+            return g
+        end
         if ribbon_style == "glassglow"
             # stronger inner glow when the room is lit BY the pulse (dim mode)
             emc, emw = dim_room ? (3.0f0, 0.35f0) : (1.5f0, 0.25f0)
@@ -531,18 +546,44 @@ function render_frame(t, outpath)
         mesh!(ax, plate; color = :black, material = scr_mat)
     end
 
-    # Electrons: gold — diffuse base under a metallic specular lobe, so the
-    # disk reads gold under direct light instead of only mirroring the sky.
-    gold = RPR.UberMaterial(matsys;
-        color = to_color(:gold),
-        diffuse_weight = Vec4f(white_room ? 0.4 : 0.6),
-        reflection_color = Vec4f(1, 0.85, 0.45, 1),
-        reflection_weight = Vec4f(1),
-        reflection_roughness = Vec4f(0.25),
-        reflection_metalness = Vec4f(1),
-        reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS,
-    )
-    meshscatter!(ax, epos; markersize = r_electron, color = :gold, material = gold)
+    # Electrons (EDM_RPR_ELECTRONS): gold = diffuse base under a metallic
+    # specular lobe (reads gold under direct light instead of only mirroring
+    # the sky); the alternatives explore the rest of the Uber space.
+    emat = if electron_style == "mirror"          # chrome-gold, sharp
+        RPR.UberMaterial(matsys; color = to_color(:gold), diffuse_weight = Vec4f(0),
+            reflection_color = Vec4f(1, 0.85, 0.45, 1), reflection_weight = Vec4f(1),
+            reflection_roughness = Vec4f(0.05), reflection_metalness = Vec4f(1),
+            reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS)
+    elseif electron_style == "brushed"            # anisotropic metal
+        RPR.UberMaterial(matsys; color = to_color(:gold), diffuse_weight = Vec4f(0.2),
+            reflection_color = Vec4f(1, 0.85, 0.45, 1), reflection_weight = Vec4f(1),
+            reflection_roughness = Vec4f(0.3), reflection_anisotropy = Vec4f(0.8),
+            reflection_metalness = Vec4f(1),
+            reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS)
+    elseif electron_style == "copper"
+        RPR.UberMaterial(matsys; color = to_color(RGBf(0.85, 0.45, 0.25)),
+            diffuse_weight = Vec4f(0.35),
+            reflection_color = Vec4f(0.95, 0.55, 0.35, 1), reflection_weight = Vec4f(1),
+            reflection_roughness = Vec4f(0.2), reflection_metalness = Vec4f(1),
+            reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS)
+    elseif electron_style == "carpaint"           # deep red under clear lacquer
+        RPR.UberMaterial(matsys; color = to_color(RGBf(0.55, 0.05, 0.05)),
+            diffuse_weight = Vec4f(1), reflection_weight = Vec4f(0),
+            coating_color = Vec4f(1), coating_weight = Vec4f(1),
+            coating_roughness = Vec4f(0.02), coating_ior = Vec4f(1.5))
+    elseif electron_style == "matte"
+        flat_material(matsys, to_color(:gold))
+    else                                          # "gold" (default)
+        RPR.UberMaterial(matsys;
+            color = to_color(:gold),
+            diffuse_weight = Vec4f(white_room ? 0.4 : 0.6),
+            reflection_color = Vec4f(1, 0.85, 0.45, 1),
+            reflection_weight = Vec4f(1),
+            reflection_roughness = Vec4f(0.25),
+            reflection_metalness = Vec4f(1),
+            reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS)
+    end
+    meshscatter!(ax, epos; markersize = r_electron, color = :gold, material = emat)
 
     eye, lookat = camera_for(t)
     update_cam!(ax.scene, eye, lookat, Vec3f(0, 0, 1))
@@ -553,8 +594,12 @@ function render_frame(t, outpath)
 end
 
 # ── Entry: single still (EDM_RPR_T) or frame range (EDM_RPR_FRAMES) ──
+# EDM_RPR_ENTRY=0 skips this block so lookdev drivers can include the file as
+# a library (setup + data + render_frame) and loop over configs in-process.
 frames_spec = get(ENV, "EDM_RPR_FRAMES", "")
-if isempty(frames_spec)
+if get(ENV, "EDM_RPR_ENTRY", "1") == "0"
+    @info "EDM_RPR_ENTRY=0 — loaded as library, no render"
+elseif isempty(frames_spec)
     t_snap = parse(Float64, get(ENV, "EDM_RPR_T", "0.0")) * T0
     outfile = get(ENV, "EDM_RPR_OUT", joinpath(@__DIR__, "rpr_frame.png"))
     @info "rendering still at t = $(t_snap / T0) T0, $(iterations) iterations on $(gpu ? "GPU" : "CPU")"
