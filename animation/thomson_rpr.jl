@@ -191,7 +191,14 @@ end
 # ── Scene ──
 # max_recursion 20 (default 10): rays cross 10+ translucent ribbon layers, and
 # recursion truncation visibly darkens the pulse interior at the default.
-RPRMakie.activate!(; iterations, max_recursion = 20, plugin = RPR.Northstar, resource)
+# EDM_RPR_PLUGIN=northstar|hybridpro|hybrid — Northstar = ground-truth path
+# tracer (Linux GPU via OpenCL: AMD-only in practice, crashes on NVIDIA);
+# HybridPro = Vulkan hardware-RT (vendor-neutral incl. NVIDIA RTX, GPU-only,
+# reduced material feature set).
+plugin = let p = lowercase(get(ENV, "EDM_RPR_PLUGIN", "northstar"))
+    p == "hybridpro" ? RPR.HybridPro : p == "hybrid" ? RPR.Hybrid : RPR.Northstar
+end
+RPRMakie.activate!(; iterations, max_recursion = 20, plugin, resource)
 
 function render_frame(t, outpath)
     sample_pulse!(vol_buf, fe, xsr, ysr, zsr, t)
@@ -248,7 +255,7 @@ function render_frame(t, outpath)
             color = to_color(col), diffuse_weight = Vec4f(1),
             reflection_color = Vec4f(1), reflection_weight = Vec4f(1),
             reflection_roughness = Vec4f(0.45),
-            reflection_mode = UInt(RPR.RPR_UBER_MATERIAL_IOR_MODE_PBR),
+            reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_PBR,
             reflection_ior = Vec4f(1.5))
         for (slab, col) in (
                 (Rect3f(Point3f(C[1], ylo_w, C[3] - th), Vec3f(xlen, ylen, th)), RGBf(0.6, 0.6, 0.62)),   # floor
@@ -316,12 +323,16 @@ function render_frame(t, outpath)
         # enough that tone mapping doesn't bleach the stripe colors; 3× when
         # the room/studio provides the light
         mult = (laser_lit && !white_room) ? 5 : 3
+        # NB: mode enums must be passed RAW (not UInt(...)-wrapped): RPR.jl
+        # routes plain integers through the float setter (Vec4f coercion),
+        # which Northstar tolerates but HybridPro rejects with
+        # INVALID_PARAMETER_TYPE; enum values dispatch to the correct U setter.
         return RPR.UberMaterial(matsys;
             diffuse_weight = Vec4f(0),
             reflection_weight = Vec4f(0),
             emission_color = Vec4f(mult * c.r, mult * c.g, mult * c.b, 1),
             emission_weight = Vec4f(1),
-            emission_mode = UInt(RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED),
+            emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED,
             transparency = Vec4f(0.55),
         )
     end
@@ -349,7 +360,7 @@ function render_frame(t, outpath)
             shellmat = RPR.UberMaterial(matsys;
                 diffuse_weight = Vec4f(0), reflection_weight = Vec4f(0),
                 emission_color = emis, emission_weight = Vec4f(1),
-                emission_mode = UInt(RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED),
+                emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED,
                 transparency = Vec4f(transp))
             mesh!(ax, msh; color = RGBf(1, 0.85, 0.5), material = shellmat)
         end
@@ -377,7 +388,7 @@ function render_frame(t, outpath)
             color = Vec4f(0.02, 0.02, 0.03, 1), diffuse_weight = Vec4f(0.15),
             reflection_weight = Vec4f(0),
             emission_weight = Vec4f(1),
-            emission_mode = UInt(RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED))
+            emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED)
         scr_mat.emission_color = scr_tex
         mesh!(ax, plate; color = :black, material = scr_mat)
     end
@@ -391,7 +402,7 @@ function render_frame(t, outpath)
         reflection_weight = Vec4f(1),
         reflection_roughness = Vec4f(0.25),
         reflection_metalness = Vec4f(1),
-        reflection_mode = UInt(RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS),
+        reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS,
     )
     meshscatter!(ax, epos; markersize = r_electron, color = :gold, material = gold)
 
