@@ -10,7 +10,8 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 CHUNK=${CHUNK:-16}
 TOTAL=${TOTAL:-400}
-OUTDIR=${OUTDIR:-animation/rpr_frames_v2}
+OUTDIR=${OUTDIR:-animation/rpr_frames_v3}
+MP4=${MP4:-animation/thomson_rpr_v3.mp4}
 mkdir -p "$OUTDIR"
 
 # final look (memory: rpr-look-locked)
@@ -53,8 +54,8 @@ n=$(ls "$OUTDIR"/rpr_*.png 2>/dev/null | wc -l)
 echo "[$(date -u +%FT%TZ)] frames complete: $n/$TOTAL"
 if [ "$n" -eq "$TOTAL" ]; then
     ffmpeg -y -framerate 30 -i "$OUTDIR/rpr_%04d.png" -c:v libx264 \
-        -pix_fmt yuv420p -crf 18 animation/thomson_rpr_v2.mp4 &&
-        echo "[$(date -u +%FT%TZ)] encoded animation/thomson_rpr_v2.mp4"
+        -pix_fmt yuv420p -crf 18 "$MP4" &&
+        echo "[$(date -u +%FT%TZ)] encoded $MP4"
 else
     echo "[$(date -u +%FT%TZ)] INCOMPLETE — rerun this script to fill the gaps"
 fi
