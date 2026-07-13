@@ -771,20 +771,18 @@ uuid = "5ae413db-bbd1-5e63-b57d-d24a61df00f5"
 version = "2.2.4+0"
 
 [[deps.ElectronDynamicsModels]]
-deps = ["AcceleratedKernels", "Adapt", "DataInterpolations", "FFTW", "HypergeometricFunctions", "KernelAbstractions", "LinearAlgebra", "ModelingToolkit", "ModelingToolkitBase", "NonlinearSolveBase", "NonlinearSolveFirstOrder", "PhysicalConstants", "SciMLBase", "StaticArrays", "SymbolicIndexingInterface", "Symbolics", "Unitful", "UnitfulAtomic"]
+deps = ["AcceleratedKernels", "Adapt", "DataInterpolations", "FFTW", "HypergeometricFunctions", "KernelAbstractions", "LinearAlgebra", "ModelingToolkit", "ModelingToolkitBase", "NonlinearSolveBase", "NonlinearSolveFirstOrder", "PhysicalConstants", "SciMLBase", "Serialization", "StaticArrays", "SymbolicIndexingInterface", "Symbolics", "Unitful", "UnitfulAtomic"]
 path = ".."
 uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
 version = "0.1.0-DEV"
+weakdeps = ["AMDGPU", "CUDA", "GeometryBasics", "Makie", "MarchingCubes", "RPRMakie"]
 
     [deps.ElectronDynamicsModels.extensions]
     EDMAMDGPUExt = "AMDGPU"
     EDMCUDAExt = "CUDA"
-    EDMPlotsExt = "CairoMakie"
-
-    [deps.ElectronDynamicsModels.weakdeps]
-    AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
-    CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
-    CairoMakie = "13f3f980-e62b-5c42-98c6-ff1f3baf88f0"
+    EDMIsoMeshExt = ["MarchingCubes", "GeometryBasics"]
+    EDMPlotsExt = "Makie"
+    EDMRPRMakieExt = "RPRMakie"
 
 [[deps.EnumX]]
 git-tree-sha1 = "c49898e8438c828577f04b92fc9368c388ac783c"

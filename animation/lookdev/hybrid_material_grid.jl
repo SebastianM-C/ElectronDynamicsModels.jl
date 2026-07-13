@@ -12,15 +12,6 @@
 ENV["EDM_RPR_ENTRY"] = "0"
 include(joinpath(@__DIR__, "..", "thomson_rpr.jl"))
 
-# HybridPro segfaults in rprSceneClear when the previous context is RELEASED
-# (singleton Context creation frees the old one on each new Screen). Overwrite
-# the keyword Context constructor to non-singleton: contexts leak (~200 MB per
-# render, fine for a grid session) but never tear down.
-function RPR.Context(; plugin = RPR.Northstar,
-        resource = RPR.RPR_CREATION_FLAGS_ENABLE_GPU0, singleton = true)
-    return RPR.Context(plugin, resource, false)
-end
-
 outdir = joinpath(@__DIR__, "material_grid")
 mkpath(outdir)
 

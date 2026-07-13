@@ -9,21 +9,13 @@
 ENV["EDM_RPR_ENTRY"] = "0"
 include(joinpath(@__DIR__, "..", "thomson_rpr.jl"))
 
-# HybridPro segfaults in rprSceneClear when a previous context is released —
-# non-singleton contexts leak (~200 MB/render) but never tear down.
-function RPR.Context(; plugin = RPR.Northstar,
-        resource = RPR.RPR_CREATION_FLAGS_ENABLE_GPU0, singleton = true)
-    return RPR.Context(plugin, resource, false)
-end
-
 outdir = joinpath(@__DIR__, "radiation_grid")
 mkpath(outdir)
 
 #            tag              rad_style   rad_mat
 const VARIANTS = [("shells", "shells", "emissive"),
-    ("striped", "striped", "emissive"),
-    ("striped_glassglow", "striped", "glassglow"),
-    ("both", "both", "emissive")]
+    ("striped_emissive", "striped", "emissive"),
+    ("striped_glass", "striped", "glass")]
 
 for (tag, t) in (("flash", 4T0), ("travel", 10T0))
     for (name, style, mat) in VARIANTS

@@ -91,13 +91,16 @@ include(joinpath(@__DIR__, "setup.jl"))
 
 using RPRMakie
 using RPRMakie: RPR
-using MarchingCubes
-using MarchingCubes: MC, march
+using MarchingCubes   # triggers EDMIsoMeshExt (with GeometryBasics)
 import GeometryBasics
 using FileIO
 using Serialization
 using Printf
 import DataInterpolations
+# backend plumbing from the package extensions (EDMRPRMakieExt + EDMIsoMeshExt):
+# hybrid-aware capture/tonemap, context tuning, the multi-frame segfault
+# workaround, and marching-cubes isosurface meshes
+using ElectronDynamicsModels: iso_mesh, rpr_capture, rpr_tune!, rpr_enable_multiframe!
 
 # matte single-color material via Uber — RPR_MATERIAL_NODE_DIFFUSE is
 # UNSUPPORTED on the Hybrid plugins, and Uber-diffuse looks identical
@@ -118,16 +121,9 @@ function sample_pulse!(buf, fe, xs, ys, zs, t)
     return buf
 end
 
-# ── Isosurface extraction ──
-# vol is in SCENE order (dim1 = scene X = physics z grid, dim2 = scene Y =
-# physics x, dim3 = scene Z = physics y); MC maps dim1↔x, so the grids are
-# passed in that same order and the mesh comes out in scene coordinates.
-function iso_mesh(vol, Xs, Ys, Zs, level)
-    m = MC(vol; x = collect(Float32, Xs), y = collect(Float32, Ys), z = collect(Float32, Zs))
-    march(m, level)
-    isempty(m.triangles) && return nothing
-    return MarchingCubes.makemesh(GeometryBasics, m)
-end
+# NB volumes are in SCENE order everywhere below (dim1 = scene X = physics z
+# grid, dim2 = scene Y = physics x, dim3 = scene Z = physics y); iso_mesh maps
+# dim1↔Xs, so meshes come out in scene coordinates.
 
 # ── Parameters ──
 iterations = parse(Int, get(ENV, "EDM_RPR_ITER", "200"))
@@ -377,57 +373,22 @@ end
 # read the RAW framebuffer and normalize RGB by alpha (= accumulated sample
 # count), then gamma — see capture() below.
 hybrid_rt = plugin !== RPR.Northstar
-# HybridPro segfaults in rprSceneClear when the previous context is RELEASED
-# (the singleton Context constructor frees the old one on every new Screen —
-# i.e. on every render_frame). Non-singleton contexts leak instead — MEASURED
-# ~1.7 GB/frame with the striped-radiation scene (48 GB W7900 = ~25 frames):
-# render frame ranges in chunks of ~16 frames per process (EDM_RPR_FRAMES is
-# resumable, so a wrapper loop over subranges is all it takes).
-if hybrid_rt
-    function RPR.Context(; plugin = RPR.Northstar,
-            resource = RPR.RPR_CREATION_FLAGS_ENABLE_GPU0, singleton = true)
-        return RPR.Context(plugin, resource, false)
-    end
-end
+# HybridPro segfaults in rprSceneClear when the singleton Context frees the
+# previous context (i.e. on every render_frame). Non-singleton contexts leak
+# instead — MEASURED ~1.7 GB/frame with the striped scene (48 GB W7900 = ~25
+# frames): render long frame ranges in chunks of ~16 frames per process
+# (EDM_RPR_FRAMES is resumable, so a wrapper loop over subranges suffices).
+hybrid_rt && rpr_enable_multiframe!()
 RPRMakie.activate!(; iterations, max_recursion = 20, plugin, resource)
 
-function capture(screen)
-    hybrid_rt || return colorbuffer(screen)
-    colorbuffer(screen)   # drives the render loop; its resolved output is black on Hybrid
-    raw = RPR.get_data(screen.framebuffer1)
-    # calibration aid: dump the raw HDR buffer so exposure/tonemap variants can
-    # be regenerated offline (lookdev/tonemap_sweep.jl) without re-rendering
-    dump_raw = get(ENV, "EDM_RPR_DUMP_RAW", "")
-    isempty(dump_raw) || serialize(dump_raw, (; raw, fb_size = screen.fb_size))
-    # Hybrid also skips Northstar's tonemapping operator, so the HDR emission
-    # values blow out under a plain clamp. LUMINANCE-based Reinhard, not
-    # per-channel: per-channel compression drags saturated highlights to white
-    # (the amber radiation shells desaturate to cream). EDM_RPR_EXPOSURE ≈ 0.2
-    # lands near the Northstar photolinear look.
-    ex = parse(Float32, get(ENV, "EDM_RPR_EXPOSURE", "0.2"))
-    # EDM_RPR_SAT: post-tonemap saturation (gamma space). Northstar's own
-    # per-channel photolinear shoulder reads more vibrant than the hue-safe
-    # luminance Reinhard; ≈1.25 recovers that punch without the blow-to-white
-    # of true per-channel compression.
-    sat = parse(Float32, get(ENV, "EDM_RPR_SAT", "1.0"))
-    img = map(raw) do c
-        a = max(c.alpha, 1.0f-6)
-        r, g, b = ex * c.r / a, ex * c.g / a, ex * c.b / a
-        L = 0.2126f0 * r + 0.7152f0 * g + 0.0722f0 * b
-        s = L > 0 ? (L / (1 + L)) / L : 0.0f0
-        rr = clamp(s * r, 0, 1)^0.4545f0
-        gg = clamp(s * g, 0, 1)^0.4545f0
-        bb = clamp(s * b, 0, 1)^0.4545f0
-        if sat != 1
-            Lg = 0.2126f0 * rr + 0.7152f0 * gg + 0.0722f0 * bb
-            rr = clamp(Lg + sat * (rr - Lg), 0, 1)
-            gg = clamp(Lg + sat * (gg - Lg), 0, 1)
-            bb = clamp(Lg + sat * (bb - Lg), 0, 1)
-        end
-        Makie.RGBf(rr, gg, bb)
-    end
-    return permutedims(reshape(img, screen.fb_size))
-end
+# hybrid-aware capture (EDMRPRMakieExt): luminance-Reinhard tonemap at
+# EDM_RPR_EXPOSURE, post-tonemap EDM_RPR_SAT (≈1.25 recovers Northstar's
+# per-channel photolinear vibrancy), EDM_RPR_DUMP_RAW for offline regrading
+# (lookdev/tonemap_sweep.jl).
+capture(screen) = rpr_capture(screen; hybrid = hybrid_rt,
+    exposure = parse(Float32, get(ENV, "EDM_RPR_EXPOSURE", "0.2")),
+    sat = parse(Float32, get(ENV, "EDM_RPR_SAT", "1.0")),
+    dump_raw = get(ENV, "EDM_RPR_DUMP_RAW", ""))
 
 function render_frame(t, outpath)
     sample_pulse!(vol_buf, fe, xsr, ysr, zsr, t)
@@ -468,44 +429,17 @@ function render_frame(t, outpath)
     screen = RPRMakie.Screen(ax.scene)
     matsys = screen.matsys
 
-    # HybridPro exposes render-quality presets (RadeonProRender_Baikal.h:
-    # RPR_CONTEXT_RENDER_QUALITY = 0x1001, low=0 … ultra=3) that gate its
-    # algorithmic shortcuts — EDM_RPR_QUALITY=low|medium|high|ultra (hybrid only)
+    # HybridPro context tuning (EDMRPRMakieExt): quality preset, PT denoiser,
+    # and the ray-depth budget — nested glass stripes want depth 12-16 or
+    # depth-exhausted rays terminate black inside the stack.
     if hybrid_rt
         q = get(ENV, "EDM_RPR_QUALITY", "")
-        if !isempty(q)
-            qv = UInt32(findfirst(==(q), ["low", "medium", "high", "ultra"]) - 1)
-            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
-                reinterpret(RPR.rpr_context_info, Int32(0x1001)), qv)
-        end
-        # PT denoiser (RPR_CONTEXT_PT_DENOISER = 0x102D): lets low iteration
-        # counts pass for converged frames — the animation-speed multiplier
         dn = get(ENV, "EDM_RPR_DENOISER", "")
-        if !isempty(dn)
-            dv = UInt32(findfirst(==(dn), ["none", "svgf", "asvgf", "ml"]) - 1)
-            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
-                reinterpret(RPR.rpr_context_info, Int32(0x102D)), dv)
-        end
-        # Ray-depth budget (probed: HybridPro ACCEPTS max_recursion + the
-        # diffuse/glossy/refraction/glossy_refraction depths; rejects shadow/
-        # RR/sampler/adaptive). Nested translucent shells need this: a camera
-        # ray through k stacked glass stripes crosses 2k refracting interfaces,
-        # and rays that exhaust the preset depth terminate BLACK — the murky
-        # interiors in dim glass gradings. EDM_RPR_RAY_DEPTH=N sets recursion/
-        # refraction/glossy_refraction to N and glossy to min(N, 8); diffuse
-        # depth stays on the quality preset (raising it mostly buys GI noise).
         rd = get(ENV, "EDM_RPR_RAY_DEPTH", "")
-        if !isempty(rd)
-            n = parse(UInt, rd)
-            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
-                RPR.RPR_CONTEXT_MAX_RECURSION, n)
-            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
-                RPR.RPR_CONTEXT_MAX_DEPTH_REFRACTION, n)
-            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
-                RPR.RPR_CONTEXT_MAX_DEPTH_GLOSSY_REFRACTION, n)
-            RPR.rprContextSetParameterByKey1u(screen.context.pointer,
-                RPR.RPR_CONTEXT_MAX_DEPTH_GLOSSY, min(n, UInt(8)))
-        end
+        rpr_tune!(screen;
+            quality = isempty(q) ? nothing : q,
+            denoiser = isempty(dn) ? nothing : dn,
+            ray_depth = isempty(rd) ? nothing : parse(Int, rd))
     end
 
     if white_room
@@ -711,11 +645,8 @@ function render_frame(t, outpath)
         u = rad_slice(t)
         for (lvl, emis, transp) in ((rad_levels[1], Vec4f(6.0, 5.0, 3.2, 1), 0.4f0),
                                     (rad_levels[2], Vec4f(2.2, 1.4, 0.8, 1), 0.72f0))
-            m = MC(u; x = collect(Float32, RAD.slice_zs), y = collect(Float32, RAD.txs),
-                z = collect(Float32, RAD.tys))
-            march(m, lvl)
-            isempty(m.triangles) && continue
-            msh = MarchingCubes.makemesh(GeometryBasics, m)
+            msh = iso_mesh(u, RAD.slice_zs, RAD.txs, RAD.tys, lvl)
+            msh === nothing && continue
             shellmat = RPR.UberMaterial(matsys;
                 diffuse_weight = Vec4f(0), reflection_weight = Vec4f(0),
                 emission_color = emis, emission_weight = Vec4f(1),

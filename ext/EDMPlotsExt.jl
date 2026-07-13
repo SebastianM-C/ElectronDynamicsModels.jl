@@ -4,7 +4,7 @@ module EDMPlotsExt
 # automatically when both ElectronDynamicsModels and CairoMakie are in the session.
 
 using ElectronDynamicsModels
-using CairoMakie
+using Makie
 
 # Printf-free scientific-notation formatter (Printf isn't a dep of this extension). "2.65e-20".
 function _sci(x; digits = 2)
