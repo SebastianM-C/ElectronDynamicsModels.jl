@@ -28,6 +28,8 @@ export EDM_RPR_SCREEN_REFL=0.25 EDM_RPR_SCREEN_DEVELOP=live
 # fixed seed: without it the sampler state advances across a chunk's frames and
 # the per-frame grain boil reads as ±0.7 px camera judder (measured)
 export EDM_RPR_SEED=42
+# dissolve the laser as it reaches the detector (t = 14→18 T0, frames ~260-320)
+export EDM_RPR_PULSE_FADE=${EDM_RPR_PULSE_FADE:-14,4}
 export EDM_RPR_ELECTRON_ROUGH=0.45
 export EDM_RPR_OUTDIR="$OUTDIR"
 
