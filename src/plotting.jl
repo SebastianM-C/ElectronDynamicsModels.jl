@@ -1,5 +1,5 @@
 # Plotting API surface. The heavy CairoMakie implementations live in the package extension
-# `ext/EDMPlotsExt.jl`, loaded automatically once CairoMakie is. These stubs make the names
+# `ext/EDMMakieExt.jl`, loaded automatically once Makie is (any backend). These stubs make the names
 # exist + exported so the extension can add methods and callers can reference them; the
 # colorrange helpers are pure (no CairoMakie) so they're usable as plain functions too.
 

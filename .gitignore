@@ -25,3 +25,4 @@
 /scripts/hotaisle_campaign.sh
 /scripts/balance_monitor.sh
 /scripts/*.sbatch
+animation/rpr_frames/

@@ -15,7 +15,7 @@
 using TOML, Serialization, FFTW, Printf
 using ElectronDynamicsModels    # harmonic_bins, harmonic_maps, power_spectrum, plot_*, symmetric_colorrange
 using RunManifests              # check_schema_version, spp_from_manifest
-using CairoMakie                # activates EDMPlotsExt (the plot_* methods)
+using CairoMakie                # activates EDMMakieExt (the plot_* methods)
 
 const COMPLABELS = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
 const C_LIGHT = 137.03599908330932

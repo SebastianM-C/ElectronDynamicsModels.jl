@@ -17,8 +17,9 @@ BASE=(
   EDM_NSUBSTEPS=4
 )
 CELLS=(
-  # hero-res: 128² transverse × 160 slices × 480 frames ≈ 5 GB Float32.
-  # 160 slices (6.7/λ vs the local cube's 5.3/λ) keeps an H200 NVL run ≈ $8 —
-  # safely inside a tight balance where 192 would flirt with the kill-line.
-  "hero|EDM_RAD_NT=128 EDM_RAD_NSLICES=160"
+  # hero-v2: extends the slice stack to the detector plane (+16λ — the cube
+  # meets the screen with no gap) at the same ~6.7 slices/λ density, and stores
+  # the signed Ex_far alongside |E_far|² (phase-striped radiation shells).
+  # 480 frames × 192 slices × 128² × 2 arrays ≈ 12 GB Float32.
+  "hero_v2|EDM_RAD_NT=128 EDM_RAD_NSLICES=192 EDM_RAD_ZMAX_LAMBDA=16 EDM_RAD_BATCH=16"
 )
