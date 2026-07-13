@@ -320,11 +320,18 @@ if RAD !== nothing && haskey(RAD, :rad_s)
 end
 scr_striped_img(t) = begin
     f = clamp(searchsortedlast(RAD.frame_times, t), 1, length(RAD.frame_times))
-    pos, neg = rad_colors
+    # seamless handoff: the plate shows the SAME pale tint as the in-flight
+    # stripes (rad_tint), so color is continuous across the impact plane
+    pos = RGBf(1 - rad_tint * (1 - rad_colors[1].r), 1 - rad_tint * (1 - rad_colors[1].g),
+        1 - rad_tint * (1 - rad_colors[1].b))
+    neg = RGBf(1 - rad_tint * (1 - rad_colors[2].r), 1 - rad_tint * (1 - rad_colors[2].g),
+        1 - rad_tint * (1 - rad_colors[2].b))
+    # floor cut BEFORE the 0.45 gamma (the lift otherwise amplifies the
+    # numerical floor into a pre-arrival pattern); raising it toward the
+    # stripe isolevel keeps the plate dark until visible crests actually land
+    flo = parse(Float32, get(ENV, "EDM_RPR_SCREEN_FLOOR", "0.03"))
     map(@view RAD.rad_s[f, end, :, :]) do s
-        # floor cut BEFORE the 0.45 gamma: the lift otherwise amplifies the
-        # numerical floor into a visible pattern before any light arrives
-        w = clamp((abs(s) / scr_s_ceil - 0.03f0) / 0.97f0, 0.0f0, 1.0f0)^0.45f0
+        w = clamp((abs(s) / scr_s_ceil - flo) / (1 - flo), 0.0f0, 1.0f0)^0.45f0
         base = s >= 0 ? pos : neg
         hot = max(0.0f0, 2.5f0 * (w - 0.75f0))   # white-hot core near the peak
         RGBf(clamp(w * base.r + hot, 0, 1), clamp(w * base.g + hot, 0, 1),
@@ -794,9 +801,14 @@ function render_frame(t, outpath)
         nrm = [GeometryBasics.Vec3f(-1, 0, 0) for _ in 1:4]
         plate = GeometryBasics.Mesh(pts, fcs; uv = uvs, normal = nrm)
         scr_tex = RPR.Texture(matsys, scr_img')
+        # EDM_RPR_SCREEN_REFL > 0: slight low-roughness mirror on the plate —
+        # the incoming glass wavefronts REFLECT in the screen as they approach,
+        # visually welding the in-flight stripes to their landing pattern
+        srefl = parse(Float32, get(ENV, "EDM_RPR_SCREEN_REFL", "0"))
         scr_mat = RPR.UberMaterial(matsys;
             color = Vec4f(0.02, 0.02, 0.03, 1), diffuse_weight = Vec4f(0.15),
-            reflection_weight = Vec4f(0),
+            reflection_weight = Vec4f(srefl), reflection_color = Vec4f(1),
+            reflection_roughness = Vec4f(0.05),
             emission_weight = Vec4f(1),
             emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED)
         scr_mat.emission_color = scr_tex
