@@ -1,4 +1,4 @@
-module EDMPlotsExt
+module EDMMakieExt
 
 # CairoMakie implementations of the plotting stubs declared in src/plotting.jl. Loaded
 # automatically when both ElectronDynamicsModels and CairoMakie are in the session.
@@ -230,4 +230,4 @@ function ElectronDynamicsModels.plot_phase_polar(
     return fig
 end
 
-end # module EDMPlotsExt
+end # module EDMMakieExt

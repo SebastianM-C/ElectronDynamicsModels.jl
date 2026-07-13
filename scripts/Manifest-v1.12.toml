@@ -805,7 +805,7 @@ version = "0.1.0-DEV"
     EDMAMDGPUExt = "AMDGPU"
     EDMCUDAExt = "CUDA"
     EDMIsoMeshExt = ["MarchingCubes", "GeometryBasics"]
-    EDMPlotsExt = "Makie"
+    EDMMakieExt = "Makie"
     EDMRPRMakieExt = "RPRMakie"
 
     [deps.ElectronDynamicsModels.weakdeps]

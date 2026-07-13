@@ -199,7 +199,7 @@ hbins = harmonic_bins(N_samples, δt, ω, harmonics)
 fields = harmonic_maps(A_s, hbins)               # (length(harmonics), 4, Nx, Ny): A⁰ Aˣ Aʸ Aᶻ
 
 # One figure per harmonic — the unified 2×2 grid over the four potential components
-# (:seismic, symmetric range). Rendering lives in EDMPlotsExt (via `using CairoMakie`).
+# (:seismic, symmetric range). Rendering lives in EDMMakieExt (via any Makie backend).
 function plot_harmonic(k, n)
     title = @sprintf("Thomson scattering — %dω₁ (%.3f× fundamental)", n, freqs[hbins[k]] / (ω / 2π))
     out = joinpath(OUTDIR, @sprintf("thomson_scattering_h%d_%s.png", n, RUN_TAG))

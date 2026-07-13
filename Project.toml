@@ -39,7 +39,7 @@ RPRMakie = "22d9f318-5e34-4b44-b769-6e3734a732a6"
 EDMAMDGPUExt = "AMDGPU"
 EDMCUDAExt = "CUDA"
 EDMIsoMeshExt = ["MarchingCubes", "GeometryBasics"]
-EDMPlotsExt = "Makie"
+EDMMakieExt = "Makie"
 EDMRPRMakieExt = "RPRMakie"
 
 [compat]

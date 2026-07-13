@@ -781,7 +781,7 @@ weakdeps = ["AMDGPU", "CUDA", "GeometryBasics", "Makie", "MarchingCubes", "RPRMa
     EDMAMDGPUExt = "AMDGPU"
     EDMCUDAExt = "CUDA"
     EDMIsoMeshExt = ["MarchingCubes", "GeometryBasics"]
-    EDMPlotsExt = "Makie"
+    EDMMakieExt = "Makie"
     EDMRPRMakieExt = "RPRMakie"
 
 [[deps.EnumX]]
