@@ -178,6 +178,16 @@ nxr, nyr, nzr = round.(Int, oversample .* (nx, ny, nz))
 xsr = LinRange(first(xs), last(xs), nxr)
 ysr = LinRange(first(ys), last(ys), nyr)
 zsr = LinRange(first(zs), last(zs), nzr)
+
+# ── Scene units ──
+# HybridPro loses camera angular precision at large world coordinates (the
+# atomic-unit scene spans ~1e6): a slow camera pan SNAPS by whole pixels every
+# few frames (measured −8…−20 px steps; minimal reproducer at scale 6e4 vs 6).
+# Build the RPR scene in units of one waist — physics and the data cubes stay
+# in atomic units; only geometry handed to the renderer is scaled.
+const SCN = Float64(w₀)
+scn(x) = Float32(x / SCN)
+const sw = 1.0f0   # w₀ in scene units
 vol_buf = Array{Float32}(undef, nzr, nxr, nyr)
 
 # ── Stage C data: radiation cube + detector screen (loaded once; ceilings are
@@ -374,7 +384,7 @@ scr_striped_img(t) = begin
     end
 end
 # camera span for the zoomed-out box+screen framing (0 = hero framing)
-span_scr = SCR === nothing ? 0.0f0 : Float32(SCR.z_screen - first(zs))
+span_scr = SCR === nothing ? 0.0f0 : scn(SCR.z_screen - first(zs))
 
 # ── Camera path: hold the hero framing through approach/crossing/flash, then
 # pull back to hold box + detector together while the burst propagates out.
@@ -383,9 +393,9 @@ span_scr = SCR === nothing ? 0.0f0 : Float32(SCR.z_screen - first(zs))
 # vanishes); keep the eye short of z_screen so the display face reads obliquely.
 smoothstep(x) = x * x * (3 - 2x)
 function camera_for(t)
-    hero = (Vec3f(2.5w₀, -8w₀, 3w₀), Vec3f(0, 0, 0))
+    hero = (Vec3f(2.5sw, -8sw, 3sw), Vec3f(0, 0, 0))
     SCR === nothing && return hero
-    cx = Float32((first(zs) + SCR.z_screen) / 2)
+    cx = scn((first(zs) + SCR.z_screen) / 2)
     wide = (Vec3f(cx + 0.1span_scr, -1.2span_scr, 0.32span_scr), Vec3f(cx, 0, 0))
     s = Float32(smoothstep(clamp((t - 5T0) / 9T0, 0, 1)))
     return ((1 - s) .* hero[1] .+ s .* wide[1], (1 - s) .* hero[2] .+ s .* wide[2])
@@ -427,13 +437,13 @@ capture(screen) = rpr_capture(screen; hybrid = hybrid_rt,
 function render_frame(t, outpath)
     sample_pulse!(vol_buf, fe, xsr, ysr, zsr, t)
     cmax = maximum(abs, vol_buf)
-    epos = electron_positions(trajs, t)
+    epos = [Point3f(scn(p[1]), scn(p[2]), scn(p[3])) for p in electron_positions(trajs, t)]
 
     fig = Figure(size = (1280, 960), backgroundcolor = RGBf(0.055, 0.065, 0.09))
-    # The scene lives in atomic units (w₀ ≈ 6e4), and RPR point lights fall off
-    # physically as 1/r² — radiance must scale with the squared scene distance
-    # or the lights contribute nothing and only the ambient term is visible.
-    radiance = Float32((20w₀)^2)
+    # RPR point lights fall off physically as 1/r² — radiance must scale with
+    # the squared scene distance or the lights contribute nothing and only the
+    # ambient term is visible.
+    radiance = Float32((20sw)^2)
     lights = if white_room
         # ambient IS the environment dome in RPRMakie (an explicit
         # EnvironmentLight gets displaced by the ambient env light — upstream
@@ -448,17 +458,22 @@ function render_frame(t, outpath)
     elseif laser_lit
         # the pulse's own emission is the key light — the electrons are lit by
         # the laser; keep only a weak fill + ambient so the dark side isn't dead
-        [PointLight(RGBf(0.12radiance, 0.12radiance, 0.14radiance), Point3f(2w₀, -9w₀, 5w₀)),
+        [PointLight(RGBf(0.12radiance, 0.12radiance, 0.14radiance), Point3f(2sw, -9sw, 5sw)),
             AmbientLight(RGBf(0.08, 0.08, 0.09))]
     else
         [
             # key: camera side, so the disk face we see is the lit one
-            PointLight(RGBf(radiance, radiance, radiance), Point3f(2w₀, -9w₀, 5w₀)),
-            PointLight(RGBf(0.4radiance, 0.4radiance, 0.5radiance), Point3f(-6w₀, 4w₀, -3w₀)),
+            PointLight(RGBf(radiance, radiance, radiance), Point3f(2sw, -9sw, 5sw)),
+            PointLight(RGBf(0.4radiance, 0.4radiance, 0.5radiance), Point3f(-6sw, 4sw, -3sw)),
             AmbientLight(RGBf(0.3, 0.3, 0.32)),
         ]
     end
     ax = LScene(fig[1, 1]; show_axis = false, scenekw = (lights = lights,))
+    # Makie's display pipeline re-CENTERS the camera onto the scene bounding
+    # box after update_cam! — and the bbox steps discretely when a mesh lobe
+    # pops in/out of existence (isosurface topology), which zoomed the framing
+    # by whole percents between adjacent frames (the 196→197 jump). Pin it.
+    Makie.cameracontrols(ax.scene).settings.center[] = false
 
     screen = RPRMakie.Screen(ax.scene)
     matsys = screen.matsys
@@ -483,13 +498,13 @@ function render_frame(t, outpath)
         # backdrop). The three seams run along the scene axes: floor∩back =
         # propagation (X), back∩left = vertical (Z), floor∩left = Y; darker
         # strips mark them as explicit axis lines.
-        C = (-10w₀, 8w₀, -2w₀)
-        th = 0.05w₀
+        C = (-10sw, 8sw, -2sw)
+        th = 0.05sw
         # extents adapt to the zoomed-out box+screen framing so the pulled-back
         # camera stays inside the room
-        xhi = max(32w₀, (SCR === nothing ? 0.0f0 : Float32(SCR.z_screen)) + 0.45f0 * span_scr)
-        ylo_w = min(-16w₀, -1.2f0 * span_scr - 3w₀)
-        zhi = max(18w₀, C[3] + 0.65f0 * span_scr)
+        xhi = max(32sw, (SCR === nothing ? 0.0f0 : scn(SCR.z_screen)) + 0.45f0 * span_scr)
+        ylo_w = min(-16sw, -1.2f0 * span_scr - 3sw)
+        zhi = max(18sw, C[3] + 0.65f0 * span_scr)
         xlen, ylen, zlen = xhi - C[1], C[2] - ylo_w, zhi - C[3]
         # satin finish: diffuse base + broad rough sheen → bright high-key
         # walls. NB reflection_weight=1 is load-bearing — lower values shift
@@ -514,7 +529,7 @@ function render_frame(t, outpath)
         # Value = emission multiplier (≈3 reads well at ambient 5).
         sbox = parse(Float32, get(ENV, "EDM_RPR_SOFTBOX", "0"))
         if sbox > 0
-            panel = Rect3f(Point3f(-4w₀, -8w₀, 12w₀), Vec3f(16w₀, 12w₀, 0.05w₀))
+            panel = Rect3f(Point3f(-4sw, -8sw, 12sw), Vec3f(16sw, 12sw, 0.05sw))
             sbmat = RPR.UberMaterial(matsys;
                 diffuse_weight = Vec4f(0), reflection_weight = Vec4f(0),
                 emission_color = Vec4f(sbox, sbox, 1.03f0 * sbox, 1),
@@ -522,7 +537,7 @@ function render_frame(t, outpath)
                 emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED)
             mesh!(ax, panel; color = RGBf(1, 1, 1), material = sbmat)
         end
-        s = 0.09w₀
+        s = 0.09sw
         axis_gray = RGBf(0.32, 0.33, 0.36)
         for a in (
                 Rect3f(Point3f(C[1], C[2] - s, C[3]), Vec3f(xlen, s, s)),   # X: propagation
@@ -533,10 +548,10 @@ function render_frame(t, outpath)
         end
         # thin square grid, spacing 2w₀, registered to the origin: reads as
         # calibrated space and keeps the walls visually uniform
-        g = 0.02w₀
+        g = 0.02sw
         grid_gray = RGBf(0.5, 0.5, 0.53)
         gmat = flat_material(matsys, grid_gray)
-        gridmults(lo, hi) = (2 * ceil(Int, lo / 2w₀):2:2 * floor(Int, hi / 2w₀)) .* w₀
+        gridmults(lo, hi) = (2 * ceil(Int, lo / 2sw):2:2 * floor(Int, hi / 2sw)) .* sw
         strips = Rect3f[]
         for xg in gridmults(C[1], xhi)      # floor (∥Y) and back wall (∥Z)
             push!(strips, Rect3f(Point3f(xg - g / 2, ylo_w, C[3]), Vec3f(g, ylen, g)))
@@ -629,7 +644,7 @@ function render_frame(t, outpath)
 
     for (level, c) in ((+0.5f0 * cmax, RGBf(0.85, 0.25, 0.15)),
                        (-0.5f0 * cmax, RGBf(0.2, 0.4, 0.95)))
-        msh = iso_mesh(vol_buf, zsr, xsr, ysr, level)
+        msh = iso_mesh(vol_buf, scn.(zsr), scn.(xsr), scn.(ysr), level)
         msh === nothing && continue
         mesh!(ax, msh; color = c, material = ribbon_material(c))
     end
@@ -649,7 +664,7 @@ function render_frame(t, outpath)
                           (-rad_slevel, rad_colors[2]))
             c = RGBf(1 - rad_tint * (1 - c0.r), 1 - rad_tint * (1 - c0.g),
                 1 - rad_tint * (1 - c0.b))
-            msh = iso_mesh(s, rad_s_grid(), RAD.txs, RAD.tys, lvl)
+            msh = iso_mesh(s, scn.(rad_s_grid()), scn.(RAD.txs), scn.(RAD.tys), lvl)
             msh === nothing && continue
             stripe_glass() = hybrid_rt ?   # BLEND/Glass preset unsupported on hybrid
                 RPR.UberMaterial(matsys;
@@ -681,7 +696,7 @@ function render_frame(t, outpath)
         u = rad_slice(t)
         for (lvl, emis, transp) in ((rad_levels[1], Vec4f(6.0, 5.0, 3.2, 1), 0.4f0),
                                     (rad_levels[2], Vec4f(2.2, 1.4, 0.8, 1), 0.72f0))
-            msh = iso_mesh(u, RAD.slice_zs, RAD.txs, RAD.tys, lvl)
+            msh = iso_mesh(u, scn.(RAD.slice_zs), scn.(RAD.txs), scn.(RAD.tys), lvl)
             msh === nothing && continue
             shellmat = RPR.UberMaterial(matsys;
                 diffuse_weight = Vec4f(0), reflection_weight = Vec4f(0),
@@ -697,9 +712,9 @@ function render_frame(t, outpath)
     # under Makie 0.24). Instead: colormap the image on the CPU and put it on a
     # manual quad as an emissive texture — a glowing detector display.
     if SCR !== nothing
-        Xs_scr = Float32(SCR.z_screen)
-        ylo, yhi = Float32(first(SCR.txs)), Float32(last(SCR.txs))
-        zlo, zhi = Float32(first(SCR.tys)), Float32(last(SCR.tys))
+        Xs_scr = scn(SCR.z_screen)
+        ylo, yhi = scn(first(SCR.txs)), scn(last(SCR.txs))
+        zlo, zhi = scn(first(SCR.tys)), scn(last(SCR.tys))
         scr_img = if screen_style == "striped" && RAD !== nothing &&
                      haskey(RAD, :rad_s) && scr_s_ceil > 0
             scr_striped_img(t)
@@ -762,11 +777,16 @@ function render_frame(t, outpath)
             reflection_metalness = Vec4f(1),
             reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS)
     end
-    meshscatter!(ax, epos; markersize = r_electron, color = :gold, material = emat)
+    meshscatter!(ax, epos; markersize = scn(r_electron), color = :gold, material = emat)
 
-    eye, lookat = camera_for(t)
+    t_cam = parse(Float64, get(ENV, "EDM_RPR_CAM_T", "NaN"))   # debug: freeze camera
+    eye, lookat = camera_for(isnan(t_cam) ? t : t_cam * T0)
     update_cam!(ax.scene, eye, lookat, Vec3f(0, 0, 1))
 
+    if get(ENV, "EDM_RPR_DEBUG_CAM", "") == "1"
+        cc = Makie.cameracontrols(ax.scene)
+        @info "cam" t / T0 cc.fov[] screen.fb_size Tuple(ax.scene.camera.resolution[]) Tuple(cc.eyeposition[]) Tuple(cc.lookat[])
+    end
     t_render = @elapsed img = capture(screen)
     save(outpath, img)
     return t_render
