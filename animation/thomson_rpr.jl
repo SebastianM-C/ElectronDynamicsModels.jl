@@ -312,11 +312,49 @@ end
 # land (EDM_RPR_SCREEN_STYLE=striped; default magma = |E_far|² heat display).
 screen_style = get(ENV, "EDM_RPR_SCREEN_STYLE", "magma")
 scr_s_ceil = 0.0f0
+scr_flu = nothing
+scr_flu_ceil = 0.0f0
 if RAD !== nothing && haskey(RAD, :rad_s)
     _sv = filter(!iszero, vec(@view RAD.rad_s[1:2:end, end, 1:3:end, 1:3:end]))
     map!(abs, _sv, _sv)
     isempty(_sv) ||
         (scr_s_ceil = partialsort!(_sv, max(1, round(Int, 0.002 * length(_sv))); rev = true))
+    # cumulative fluence Σ Ex² on the detector plane, per frame — the physical
+    # RECORD the screen develops once the burst has been absorbed
+    scr_flu = cumsum(abs2.(@view RAD.rad_s[:, end, :, :]); dims = 1)
+    _fv = filter(>(0.0f0), vec(@view scr_flu[end, 1:2:end, 1:2:end]))
+    isempty(_fv) ||
+        (scr_flu_ceil = partialsort!(_fv, max(1, round(Int, 0.005 * length(_fv))); rev = true))
+end
+# Develop transition: during impact the plate shows the instantaneous signed
+# field (seamless with the arriving stripes); after the burst passes it fades
+# to the accumulated-fluence record at full contrast — dark→violet→gold→white
+# in the radiation palette, mirror faded — "the detector develops the shot".
+# EDM_RPR_SCREEN_DEVELOP=t0,span (T0 units; empty/off disables).
+scr_develop = let s = get(ENV, "EDM_RPR_SCREEN_DEVELOP", "24,3")
+    isempty(s) || s == "off" ? nothing : Tuple(parse.(Float64, split(s, ",")))
+end
+dev_w(t) = scr_develop === nothing ? 0.0f0 :
+    Float32(clamp((t / T0 - scr_develop[1]) / scr_develop[2], 0, 1)^2 *
+            (3 - 2 * clamp((t / T0 - scr_develop[1]) / scr_develop[2], 0, 1)))
+scr_developed_img(f) = begin
+    flo = scr_flu_ceil / exp10(2.5f0)
+    pos, neg = rad_colors
+    map(@view scr_flu[f, :, :]) do v
+        u = clamp(log10(max(v, flo) / flo) / 2.5f0, 0.0f0, 1.0f0)
+        if u < 0.5f0        # dark → violet(neg color)
+            k = 2u
+            RGBf(k * neg.r, k * neg.g, k * neg.b)
+        elseif u < 0.85f0   # violet → gold(pos color)
+            k = (u - 0.5f0) / 0.35f0
+            RGBf(neg.r + k * (pos.r - neg.r), neg.g + k * (pos.g - neg.g),
+                neg.b + k * (pos.b - neg.b))
+        else                # gold → white-hot
+            k = (u - 0.85f0) / 0.15f0
+            RGBf(pos.r + k * (1 - pos.r), pos.g + k * (1 - pos.g),
+                pos.b + k * (1 - pos.b))
+        end
+    end
 end
 scr_striped_img(t) = begin
     f = clamp(searchsortedlast(RAD.frame_times, t), 1, length(RAD.frame_times))
@@ -330,12 +368,18 @@ scr_striped_img(t) = begin
     # numerical floor into a pre-arrival pattern); raising it toward the
     # stripe isolevel keeps the plate dark until visible crests actually land
     flo = parse(Float32, get(ENV, "EDM_RPR_SCREEN_FLOOR", "0.03"))
-    map(@view RAD.rad_s[f, end, :, :]) do s
+    inst = map(@view RAD.rad_s[f, end, :, :]) do s
         w = clamp((abs(s) / scr_s_ceil - flo) / (1 - flo), 0.0f0, 1.0f0)^0.45f0
         base = s >= 0 ? pos : neg
         hot = max(0.0f0, 2.5f0 * (w - 0.75f0))   # white-hot core near the peak
         RGBf(clamp(w * base.r + hot, 0, 1), clamp(w * base.g + hot, 0, 1),
             clamp(w * base.b + hot, 0, 1))
+    end
+    wd = dev_w(t)
+    (wd > 0 && scr_flu !== nothing) || return inst
+    dev = scr_developed_img(f)
+    map(inst, dev) do a, b
+        RGBf(a.r + wd * (b.r - a.r), a.g + wd * (b.g - a.g), a.b + wd * (b.b - a.b))
     end
 end
 # camera span for the zoomed-out box+screen framing (0 = hero framing)
@@ -804,7 +848,9 @@ function render_frame(t, outpath)
         # EDM_RPR_SCREEN_REFL > 0: slight low-roughness mirror on the plate —
         # the incoming glass wavefronts REFLECT in the screen as they approach,
         # visually welding the in-flight stripes to their landing pattern
-        srefl = parse(Float32, get(ENV, "EDM_RPR_SCREEN_REFL", "0"))
+        # mirror fades as the record develops — the finished image reads clean
+        srefl = parse(Float32, get(ENV, "EDM_RPR_SCREEN_REFL", "0")) *
+                (1 - 0.8f0 * dev_w(t))
         scr_mat = RPR.UberMaterial(matsys;
             color = Vec4f(0.02, 0.02, 0.03, 1), diffuse_weight = Vec4f(0.15),
             reflection_weight = Vec4f(srefl), reflection_color = Vec4f(1),
