@@ -76,12 +76,15 @@
 #   EDM_RPR_SOFTBOX=0         room mode: emissive ceiling panel strength —
 #                             shaped highlights on glossy surfaces (vs the flat
 #                             sheen of the uniform dome); ≈3 at ambient 5
-#   EDM_RPR_SEED              hybrid only: sampling seed. NB HybridPro is
-#                             already deterministic per frame (verified: same
-#                             frame renders byte-identical) — set a PER-FRAME
-#                             seed only to decorrelate the grain for temporal
-#                             post-denoising (ffmpeg hqdn3d=0:0:8:8 targets
-#                             the grain crawl on camera moves at zero render cost)
+#   EDM_RPR_SEED=42           hybrid only: fixed sampling seed — SET THIS FOR
+#                             ANIMATIONS. Fresh processes start from the same
+#                             RNG state (single frames reproduce byte-identical)
+#                             but within a multi-frame process the sampler state
+#                             advances per frame: each frame gets different grain,
+#                             and the boil reads as ±0.7 px camera judder
+#                             (measured on the wall grid; fixed seed → ±0.15 px).
+#                             Residual static-grain crawl on camera moves can be
+#                             post-cleaned with ffmpeg hqdn3d=0:0:8:8.
 #   EDM_RPR_ELECTRON_ROUGH=0.25  gold reflection roughness; ~0.45 calms the
 #                             specular flicker while the pulse sweeps past
 #   EDM_RPR_SCREEN_STYLE=magma|striped  detector display: magma |E_far|² heat

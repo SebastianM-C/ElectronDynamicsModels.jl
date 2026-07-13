@@ -23,7 +23,11 @@ export EDM_RPR_RAD_COLORS="1.0,0.75,0.2;0.55,0.3,0.9"
 export EDM_RPR_AMBIENT=7.0 EDM_RPR_EXPOSURE=0.3 EDM_RPR_SAT=1.45
 export EDM_RPR_SOFTBOX=6 EDM_RPR_RAY_DEPTH=16
 export EDM_RPR_SCREEN_STYLE=striped EDM_RPR_SCREEN_FLOOR=0.12
-export EDM_RPR_SCREEN_REFL=0.25 EDM_RPR_SCREEN_DEVELOP=24,3
+export EDM_RPR_SCREEN_REFL=0.25 EDM_RPR_SCREEN_DEVELOP=live
+# fixed seed: without it the sampler state advances across a chunk's frames and
+# the per-frame grain boil reads as ±0.7 px camera judder (measured)
+export EDM_RPR_SEED=42
+export EDM_RPR_ELECTRON_ROUGH=0.45
 export EDM_RPR_OUTDIR="$OUTDIR"
 
 chunk_missing() {  # any frame of chunk $1..$2 absent?
