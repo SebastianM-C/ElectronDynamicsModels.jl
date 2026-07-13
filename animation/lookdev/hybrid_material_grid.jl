@@ -24,7 +24,7 @@ end
 outdir = joinpath(@__DIR__, "material_grid")
 mkpath(outdir)
 
-const RIBBON_VARIANTS = ["glassglow", "glass", "coated", "emissive", "plastic"]
+const RIBBON_VARIANTS = ["glassglow", "glass", "coated", "emissive"]
 const ELECTRON_VARIANTS = ["gold", "mirror", "brushed", "copper"]
 
 for (tag, t) in (("approach", -5T0), ("flash", 4T0))

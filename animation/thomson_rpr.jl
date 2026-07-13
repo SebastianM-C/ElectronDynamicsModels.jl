@@ -35,18 +35,15 @@
 #                             suppresses the composited backdrop (missed rays
 #                             turn opaque black), so a light background needs
 #                             real geometry.
-#   EDM_RPR_RIBBONS=emissive|plastic|glass|glassglow|coated|coatedglow
-#                             wavefront material. coatedglow = coated's clear-
-#                             coat + half of glassglow's glow (deep Fresnel
-#                             blues AND a laser that reads inside the radiation
-#                             shell); EDM_RPR_EMIS_COOL scales the cool lobe's
-#                             emission only (blue glow flattens glass depth).
+#   EDM_RPR_RIBBONS=emissive|glass|glassglow|coated  wavefront material.
 #                             emissive glows (and in room mode lantern-projects
-#                             its pattern on the walls); plastic = matte model;
-#                             glass = tinted thin-sheet glass; glassglow = glass
-#                             blended with 25% emission — translucent shells
-#                             that read as made of light (recommended for room
-#                             mode). plastic/glass/glassglow are room-mode
+#                             its pattern on the walls); glass = tinted thin-
+#                             sheet glass; coated adds a sharp clear-coat;
+#                             glassglow = glass + 25% folded emission — the
+#                             production laser look. EDM_RPR_EMIS_COOL scales
+#                             the cool lobe's emission only (a full blue glow
+#                             flattens the Fresnel depth cues; 0.25 in the
+#                             final look). glass/glassglow are room-mode
 #                             materials — near-invisible unlit in dark mode.
 #   EDM_RPR_OVERSAMPLE=2      isosurface grid densification factor. setup.jl's
 #                             shared grid is only ~8 pts/λ transverse — visible
@@ -60,20 +57,19 @@
 #                             outer faint/translucent). t ≈ 2–6 T0 is the flash.
 #   EDM_RPR_RAD_LEVELS=0.85,0.65  shell isolevels in the log transfer
 #                             (0.85 ≈ 35%, 0.65 ≈ 9% of peak intensity)
-#   EDM_RPR_RAD_STYLE=shells|striped|both|volume
-#                             striped: ± isosurfaces of the SIGNED Ex_far
-#                             (v2 cube's rad_s) — λ-period wavefront stripes in
-#                             the pulse ribbons' red/blue language, cubic-
-#                             upsampled 4× along the slice axis (validated:
-#                             median relL2 1.4% vs 32/λ ground truth). both:
-#                             stripes inside the outer intensity shell. Old
-#                             cubes without rad_s fall back to shells.
+#   EDM_RPR_RAD_STYLE=striped|shells
+#                             striped (production): ± isosurfaces of the SIGNED
+#                             Ex_far (v2 cube's rad_s) — λ-period wavefront
+#                             stripes, cubic-upsampled 4× along the slice axis
+#                             (validated: median relL2 1.4% vs 32/λ ground
+#                             truth). Old cubes without rad_s fall back to the
+#                             nested intensity shells.
 #   EDM_RPR_RAD_SLEVEL=0.3    stripe isolevel as a fraction of the |Ex_far|
 #                             ceiling (99.5th pct)
-#   EDM_RPR_RAD_MAT=emissive|glassglow|glass  stripe material (emissive
-#                             translucent like the pulse ribbons, tinted glass
-#                             + glow, or pure glass — no emission at all)
-#   EDM_RPR_RAD_UPSAMPLE=4    slice-axis upsample factor for striped/both
+#   EDM_RPR_RAD_MAT=glass|emissive  stripe material: pure translucent glass
+#                             (production — needs a bright dome + pale
+#                             EDM_RPR_RAD_TINT) or emissive translucent
+#   EDM_RPR_RAD_UPSAMPLE=4    slice-axis upsample factor for striped
 #   EDM_RPR_RAY_DEPTH         hybrid only: max_recursion + refraction/glossy
 #                             ray depths (unset = quality preset). Nested glass
 #                             stripes want 12-16 — depth-exhausted rays go black
@@ -107,40 +103,6 @@ import DataInterpolations
 # UNSUPPORTED on the Hybrid plugins, and Uber-diffuse looks identical
 flat_material(matsys, c) = RPR.UberMaterial(matsys;
     color = to_color(c), diffuse_weight = Vec4f(1), reflection_weight = Vec4f(0))
-
-# ── Emission-aware Volume conversion (method overwrite of RPRMakie's) ──
-# RPR's VolumeMaterial has an `emission` input RPRMakie never wires — with it a
-# volume GLOWS proportionally to its density grid, which is exactly what the
-# radiated field needs. RAD_VOL_EMISSION[] carries the emission color into the
-# conversion (volume! rejects unknown attributes). Identical to RPRMakie's
-# version otherwise. Volumes only render on HybridPro/CPU (Northstar-GPU
-# segfaults on volume grids).
-const RAD_VOL_EMISSION = Ref(Makie.Vec4f(0, 0, 0, 0))
-function RPRMakie.to_rpr_object(context, matsys, scene, plot::Makie.Volume)
-    volume = plot.volume[]
-    cube = RPR.VolumeCube(context)
-    mi = (minimum(plot.x[]), minimum(plot.y[]), minimum(plot.z[]))
-    w = (maximum(plot.x[]) - mi[1], maximum(plot.y[]) - mi[2], maximum(plot.z[]) - mi[3])
-    m2 = Makie.Mat4f(w[1], 0, 0, 0, 0, w[2], 0, 0, 0, 0, w[3], 0, mi[1], mi[2], mi[3], 1)
-    RPR.transform!(cube, convert(Makie.Mat4f, plot.model[]) * m2)
-    lo, hi = extrema(volume)
-    grid = RPR.VoxelGrid(context, (volume .- lo) ./ max(hi - lo, eps(Float32)))
-    gridsampler = RPR.GridSamplerMaterial(matsys)
-    gridsampler.data = grid
-    color_sampler = RPR.ImageTextureMaterial(matsys)
-    color_sampler.data = RPR.Image(context, reverse(to_colormap(plot.colormap[])))
-    color_sampler.uv = gridsampler
-    volmat = RPR.VolumeMaterial(matsys)
-    volmat.density = Vec4f(plot.absorption[], 0, 0, 0)
-    volmat.densitygrid = gridsampler
-    volmat.color = color_sampler
-    if RAD_VOL_EMISSION[][4] > 0
-        volmat.emission = Vec4f(RAD_VOL_EMISSION[][1], RAD_VOL_EMISSION[][2],
-            RAD_VOL_EMISSION[][3], 0)
-    end
-    RPR.set!(cube, volmat)
-    return [cube]
-end
 
 # ── Pulse scalar + sampler (same as thomson_animation.jl) ──
 pulse_scalar(E, B) = E[1]
@@ -184,9 +146,8 @@ electron_style = get(ENV, "EDM_RPR_ELECTRONS", "gold")
 ambient_room = parse(Float32, get(ENV, "EDM_RPR_AMBIENT", dim_room ? "0.15" : "0.9"))
 emis_scale = parse(Float32, get(ENV, "EDM_RPR_EMIS", "1.0"))
 rad_levels = parse.(Float32, split(get(ENV, "EDM_RPR_RAD_LEVELS", "0.85,0.65"), ","))
-# shells = emissive isosurfaces (works everywhere); striped/both = ± signed
-# Ex_far wavefronts (needs a rad_s cube); volume = true emissive participating
-# medium (HybridPro or CPU only — Northstar-GPU segfaults)
+# striped = ± signed Ex_far wavefronts (production; needs a rad_s cube);
+# shells = emissive intensity isosurfaces (fallback for pre-v2 cubes)
 rad_style = get(ENV, "EDM_RPR_RAD_STYLE", "shells")
 rad_slevel = parse(Float32, get(ENV, "EDM_RPR_RAD_SLEVEL", "0.3"))
 rad_mat = get(ENV, "EDM_RPR_RAD_MAT", "emissive")
@@ -630,14 +591,6 @@ function render_frame(t, outpath)
     # translucent (Uber transparency input — color alpha is a no-op in RPR) so
     # the electron disk reads through the pulse.
     function ribbon_material(c)
-        # the RPR.Plastic preset also fails on hybrid via its own defaults
-        # (UInt-wrapped mode enums + sss/bool inputs) — from-scratch Uber there
-        ribbon_style == "plastic" && return hybrid_rt ?
-            RPR.UberMaterial(matsys; color = to_color(c), diffuse_weight = Vec4f(1),
-                reflection_color = Vec4f(1), reflection_weight = Vec4f(1),
-                reflection_roughness = Vec4f(0.1), reflection_ior = Vec4f(1.5),
-                transparency = Vec4f(0.35)) :
-            RPR.Plastic(matsys; color = to_color(c), transparency = Vec4f(0.35))
         # thin-sheet tinted glass: the isosurfaces are open sheets, so
         # refraction_thin_surface is the physical model; tint both transmission
         # and reflection or the white reflections wash the lobes to neutral
@@ -668,23 +621,14 @@ function render_frame(t, outpath)
             g.coating_ior = Vec4f(1.5)
             return g
         end
-        if ribbon_style == "glassglow" || ribbon_style == "coatedglow"
-            # stronger inner glow when the room is lit BY the pulse (dim mode);
-            # coatedglow = coated's clear-coat + a much weaker whisper of glow
-            # (emission floods the Fresnel shading that makes glass blues read
-            # deep — the coat + low weight preserves it)
+        if ribbon_style == "glassglow"
+            # stronger inner glow when the room is lit BY the pulse (dim mode)
             emc, emw = dim_room ? (3.0f0 * emis_scale, 0.35f0) : (1.5f0 * emis_scale, 0.25f0)
-            ribbon_style == "coatedglow" && (emw *= 0.5f0)
             # EDM_RPR_EMIS_COOL: extra emission scale for the cool (blue) lobe
-            # only — the blue glow is what flattens the glass depth cues
+            # only — emission floods the Fresnel shading that makes glass blues
+            # read deep, and the blue lobe suffers where the red one doesn't
             c.b > c.r && (emw *= parse(Float32, get(ENV, "EDM_RPR_EMIS_COOL", "1.0")))
             g = tinted_glass()
-            if ribbon_style == "coatedglow"
-                g.coating_color = Vec4f(1)
-                g.coating_weight = Vec4f(1)
-                g.coating_roughness = Vec4f(0.02)
-                g.coating_ior = Vec4f(1.5)
-            end
             # BLEND nodes are unsupported on the Hybrid plugins — fold the
             # emissive layer into the glass Uber itself (same node carries
             # refraction + emission); Northstar keeps the LayerMaterial blend
@@ -720,29 +664,14 @@ function render_frame(t, outpath)
         mesh!(ax, msh; color = c, material = ribbon_material(c))
     end
 
-    # Stage C: radiated far-field shells — nested emissive isosurfaces of the
-    # log-compressed |E_far|² (RPR volumes segfault the GPU). Levels live in the
-    # [0,1] transfer: 0.85 ≈ 35% and 0.65 ≈ 9% of peak intensity — much lower
-    # levels wrap the whole box in faint wisps and bury the scene.
-    # volume style is Northstar-CPU ONLY: Northstar-GPU segfaults on volume
-    # grids and HybridPro SILENTLY IGNORES them (verified against a CPU control
-    # — identical scene renders the volume on CPU, background-only on hybrid).
-    # The emission input also showed no effect on CPU; shells remain the
-    # production radiation representation.
-    use_rad_volume = rad_style == "volume" && !hybrid_rt && !gpu
-    rad_style == "volume" && !use_rad_volume &&
-        @warn "EDM_RPR_RAD_STYLE=volume requires EDM_RPR_RESOURCE=cpu with Northstar — rendering shells instead"
-    (rad_style == "striped" || rad_style == "both") && RAD !== nothing &&
-        !haskey(RAD, :rad_s) &&
+    # Stage C: radiated far field. striped (production) = ± signed-Ex_far
+    # wavefront isosurfaces; shells = nested emissive intensity isosurfaces in
+    # the log transfer (0.85 ≈ 35%, 0.65 ≈ 9% of peak — lower levels wrap the
+    # whole box in faint wisps). RPR volume grids are a dead end: Northstar-GPU
+    # segfaults, HybridPro silently ignores them, CPU needs hours per frame.
+    rad_style == "striped" && RAD !== nothing && !haskey(RAD, :rad_s) &&
         @warn "cube has no rad_s (pre-v2) — rendering shells instead" maxlog = 1
-    if RAD !== nothing && use_rad_volume
-        u = rad_slice(t)
-        RAD_VOL_EMISSION[] = Makie.Vec4f(2.4, 1.7, 0.9, 1)
-        volume!(ax, (first(RAD.slice_zs), last(RAD.slice_zs)),
-            (first(RAD.txs), last(RAD.txs)), (first(RAD.tys), last(RAD.tys)), u;
-            algorithm = :absorption, absorption = 6.0f0, colormap = :afmhot)
-    elseif RAD !== nothing && (rad_style == "striped" || rad_style == "both") &&
-           haskey(RAD, :rad_s)
+    if RAD !== nothing && rad_style == "striped" && haskey(RAD, :rad_s)
         # ± wavefronts of the signed Ex_far in the pulse ribbons' red/blue
         # language — the flash visibly echoes the laser's stripe pattern.
         s = rad_s_slice(t)
@@ -767,20 +696,6 @@ function render_frame(t, outpath)
                     refraction_thin_surface = true, refraction_caustics = false)
             mat = if rad_mat == "glass"   # pure translucent wavefronts, no glow
                 stripe_glass()
-            elseif rad_mat == "glassglow"
-                emc, emw = dim_room ? (3.0f0 * emis_scale, 0.35f0) :
-                           (1.5f0 * emis_scale, 0.25f0)
-                if hybrid_rt   # fold emission into the glass Uber
-                    g = stripe_glass()
-                    g.emission_color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1)
-                    g.emission_weight = Vec4f(emw)
-                    g
-                else
-                    RPR.LayerMaterial(stripe_glass(),
-                        RPR.EmissiveMaterial(matsys;
-                            color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1));
-                        weight = Vec4f(emw))
-                end
             else
                 mult = emis_scale * (((laser_lit && !white_room) || dim_room) ? 5 : 2.5f0)
                 RPR.UberMaterial(matsys;
@@ -791,18 +706,6 @@ function render_frame(t, outpath)
                     transparency = Vec4f(0.55))
             end
             mesh!(ax, msh; color = c, material = mat)
-        end
-        if rad_style == "both"   # one faint intensity envelope around the stripes
-            u = rad_slice(t)
-            msh = iso_mesh(u, RAD.slice_zs, RAD.txs, RAD.tys, rad_levels[2])
-            if msh !== nothing
-                shellmat = RPR.UberMaterial(matsys;
-                    diffuse_weight = Vec4f(0), reflection_weight = Vec4f(0),
-                    emission_color = Vec4f(2.2, 1.4, 0.8, 1), emission_weight = Vec4f(1),
-                    emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED,
-                    transparency = Vec4f(0.85))
-                mesh!(ax, msh; color = RGBf(1, 0.85, 0.5), material = shellmat)
-            end
         end
     elseif RAD !== nothing
         u = rad_slice(t)
@@ -881,13 +784,6 @@ function render_frame(t, outpath)
             reflection_color = Vec4f(0.95, 0.55, 0.35, 1), reflection_weight = Vec4f(1),
             reflection_roughness = Vec4f(0.2), reflection_metalness = Vec4f(1),
             reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS)
-    elseif electron_style == "carpaint"           # deep red under clear lacquer
-        RPR.UberMaterial(matsys; color = to_color(RGBf(0.55, 0.05, 0.05)),
-            diffuse_weight = Vec4f(1), reflection_weight = Vec4f(0),
-            coating_color = Vec4f(1), coating_weight = Vec4f(1),
-            coating_roughness = Vec4f(0.02), coating_ior = Vec4f(1.5))
-    elseif electron_style == "matte"
-        flat_material(matsys, to_color(:gold))
     else                                          # "gold" (default)
         RPR.UberMaterial(matsys;
             color = to_color(:gold),
