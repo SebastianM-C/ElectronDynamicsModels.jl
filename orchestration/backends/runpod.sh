@@ -26,7 +26,11 @@
 # auth as — e.g. your YubiKey pubkey; ControlMaster ⇒ one touch/run).
 set -Eeuo pipefail
 ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."; ORCH="$(cd "$ORCH" && pwd)"
+# Caller-env overrides must survive config.env (sourced via run_cell.sh below, where a plain
+# RUNPOD_BRANCH=... assignment would clobber them) — capture before, prefer after.
+_CALLER_BRANCH="${RUNPOD_BRANCH-}"
 . "$ORCH/run_cell.sh"        # config.env + notify() (notifications fire from THIS driving machine)
+[ -n "$_CALLER_BRANCH" ] && RUNPOD_BRANCH="$_CALLER_BRANCH"
 
 MODE="${1:?usage: runpod.sh run <campaign.sh> | attach <campaign.sh> | teardown}"
 TOK=$(cat "${RUNPOD_TOKEN_FILE:-$HOME/.config/runpod/token}")
@@ -76,8 +80,16 @@ gpu_profile() {
 # poll round; the first that schedules in EU-RO-1 wins (and its gpu_profile sets image+backend+depot).
 # This encodes your "use whatever's available in EU-RO-1" strategy.
 gpu_candidates() {
-    echo "AMD Instinct MI300X OAM"   # primary
-    echo "NVIDIA B200"               # in-region fallback
+    # RUNPOD_GPU_CANDIDATES (comma-separated gpuTypeIds) overrides the ladder —
+    # e.g. pin MI300X-only when the budget can't absorb a pricey fallback.
+    if [ -n "${RUNPOD_GPU_CANDIDATES:-}" ]; then
+        echo "$RUNPOD_GPU_CANDIDATES" | tr ',' '\n' | sed 's/^ *//; s/ *$//' | grep -v '^$'
+        return
+    fi
+    echo "AMD Instinct MI300X OAM"   # primary (best FP64/$ for the LW kernel)
+    echo "NVIDIA H200 NVL"           # CUDA fallbacks, cheapest first ($3.79 vs $4.39/hr secure)
+    echo "NVIDIA H200"
+    echo "NVIDIA B200"               # last resort — Blackwell FP64 is weak (measured 67 s/slice, ~2× MI300X cost-time)
 }
 
 ensure_volume() {   # opt-in: only called when RUNPOD_VOLUME_GB > 0; must match OUR datacenter
@@ -231,7 +243,10 @@ run_campaign() {
     local cf="${1:?usage: runpod.sh run <campaign.sh>}" cname; cname=$(basename "$cf")
     . "$cf"   # CAMPAIGN + KEEP_CUBE (names product paths + sets cube download policy); re-read on the pod
     if pod_reachable; then
-        log "reusing kept pod $POD ($IP:$PORT) from $STATE (no grab/warm)"
+        log "reusing kept pod $POD ($IP:$PORT) from $STATE (no grab/warm) — syncing repo to $BRANCH"
+        # A kept pod carries whatever branch it was warmed with; sync so a re-run
+        # with a different RUNPOD_BRANCH doesn't silently execute stale code.
+        ssh_vm "cd EDM && git fetch --quiet origin '$BRANCH' && git checkout --quiet -f '$BRANCH' && git reset --quiet --hard 'origin/$BRANCH' && echo '[sync] now at' \$(git rev-parse --short HEAD) 'on' \$(git branch --show-current)"
     else
         if [ -f "$STATE" ]; then   # unreachable but maybe still billing — never silently orphan it
             read -r POD _ < "$STATE"
