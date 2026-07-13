@@ -91,6 +91,10 @@
 #                             map, or the v2 cube's signed Ex_far edge slice in
 #                             the wavefronts' red/blue (screen shows the same
 #                             colors as the stripes hitting it)
+#   EDM_RPR_PULSE_FADE=t0,span  fade the pulse ribbons out over [t0, t0+span]
+#                             (T0 units; default off). The pulse exits the
+#                             sampled domain (+12λ) before the detector (16λ) —
+#                             without a fade its tail clips at the box face.
 #   EDM_RPR_SCREEN=1          detector plate at z_screen textured with the LW
 #                             far-field time series (screen_timeseries.jls, or
 #                             the cube's +X edge as fallback). The camera path
@@ -172,12 +176,18 @@ rad_colors = let s = get(ENV, "EDM_RPR_RAD_COLORS", "0.85,0.25,0.15;0.2,0.4,0.95
 end
 
 # Densified grids for the isosurface only — setup.jl's grids stay canonical for
-# the GLMakie animation and the radiation precompute.
+# the GLMakie animation and the radiation precompute. The pulse box matches the
+# RADIATION domain (+16λ, the detector plane), not setup.jl's ±12λ: the pulse
+# field is analytic (sampled per frame), and with the shorter box the laser
+# visibly CLIPPED at the +z face 4λ short of the screen while the radiation
+# stripes rode on — now both melt into the detector at the same plane.
 oversample = parse(Float64, get(ENV, "EDM_RPR_OVERSAMPLE", "2"))
-nxr, nyr, nzr = round.(Int, oversample .* (nx, ny, nz))
+z_pulse_hi = 16λ   # = detector plane = radiation cube edge (v2)
+nxr, nyr = round.(Int, oversample .* (nx, ny))
+nzr = round(Int, oversample * nz * (z_pulse_hi - first(zs)) / (last(zs) - first(zs)))
 xsr = LinRange(first(xs), last(xs), nxr)
 ysr = LinRange(first(ys), last(ys), nyr)
-zsr = LinRange(first(zs), last(zs), nzr)
+zsr = LinRange(first(zs), z_pulse_hi, nzr)
 
 # ── Scene units ──
 # HybridPro loses camera angular precision at large world coordinates (the
@@ -570,6 +580,20 @@ function render_frame(t, outpath)
         end
     end
 
+    # EDM_RPR_PULSE_FADE=t0,span (T0 units): fade the pulse ribbons out over
+    # [t0, t0+span] — the pulse exits the sampled domain (+12λ) well before the
+    # detector (16λ), and without a fade its tail visibly CLIPS at the box face.
+    # Fading via Uber transparency + emission scale; ribbons skip entirely once
+    # fully faded.
+    pf = let s = get(ENV, "EDM_RPR_PULSE_FADE", "")
+        if isempty(s) || s == "off"
+            0.0f0
+        else
+            f0, fspan = parse.(Float64, split(s, ","))
+            Float32(smoothstep(clamp((t / T0 - f0) / fspan, 0, 1)))
+        end
+    end
+
     # Wavefront ribbons: translucent double-sided emissive glow in the :balance
     # endpoints' red/blue. Double-sided because marching-cubes normals follow
     # the field gradient, so the −lobe surface faces away from the camera;
@@ -597,18 +621,20 @@ function render_frame(t, outpath)
                 refraction_thin_surface = true,
                 refraction_caustics = false,
             )
-        ribbon_style == "glass" && return tinted_glass()
+        fade!(g) = (pf > 0 && hybrid_rt && (g.transparency = Vec4f(pf)); g)
+        ribbon_style == "glass" && return fade!(tinted_glass())
         if ribbon_style == "coated"   # tinted glass under a sharp clear-coat
             g = tinted_glass()
             g.coating_color = Vec4f(1)
             g.coating_weight = Vec4f(1)
             g.coating_roughness = Vec4f(0.02)
             g.coating_ior = Vec4f(1.5)
-            return g
+            return fade!(g)
         end
         if ribbon_style == "glassglow"
             # stronger inner glow when the room is lit BY the pulse (dim mode)
             emc, emw = dim_room ? (3.0f0 * emis_scale, 0.35f0) : (1.5f0 * emis_scale, 0.25f0)
+            emc *= (1 - pf)
             # EDM_RPR_EMIS_COOL: extra emission scale for the cool (blue) lobe
             # only — emission floods the Fresnel shading that makes glass blues
             # read deep, and the blue lobe suffers where the red one doesn't
@@ -622,12 +648,12 @@ function render_frame(t, outpath)
                 weight = Vec4f(emw))
             g.emission_color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1)
             g.emission_weight = Vec4f(emw)
-            return g
+            return fade!(g)
         end
         # 5× emission in laser mode: bright enough to light the electrons, low
         # enough that tone mapping doesn't bleach the stripe colors; 3× when
         # the room/studio provides the light
-        mult = emis_scale * (((laser_lit && !white_room) || dim_room) ? 5 : 2.5f0)
+        mult = emis_scale * (((laser_lit && !white_room) || dim_room) ? 5 : 2.5f0) * (1 - pf)
         # NB: mode enums must be passed RAW (not UInt(...)-wrapped): RPR.jl
         # routes plain integers through the float setter (Vec4f coercion),
         # which Northstar tolerates but HybridPro rejects with
@@ -638,15 +664,17 @@ function render_frame(t, outpath)
             emission_color = Vec4f(mult * c.r, mult * c.g, mult * c.b, 1),
             emission_weight = Vec4f(1),
             emission_mode = RPR.RPR_UBER_MATERIAL_EMISSION_MODE_DOUBLESIDED,
-            transparency = Vec4f(0.55),
+            transparency = Vec4f(0.55f0 + 0.45f0 * pf),
         )
     end
 
-    for (level, c) in ((+0.5f0 * cmax, RGBf(0.85, 0.25, 0.15)),
-                       (-0.5f0 * cmax, RGBf(0.2, 0.4, 0.95)))
-        msh = iso_mesh(vol_buf, scn.(zsr), scn.(xsr), scn.(ysr), level)
-        msh === nothing && continue
-        mesh!(ax, msh; color = c, material = ribbon_material(c))
+    if pf < 0.995f0   # fully faded pulse: skip the meshes entirely
+        for (level, c) in ((+0.5f0 * cmax, RGBf(0.85, 0.25, 0.15)),
+                           (-0.5f0 * cmax, RGBf(0.2, 0.4, 0.95)))
+            msh = iso_mesh(vol_buf, scn.(zsr), scn.(xsr), scn.(ysr), level)
+            msh === nothing && continue
+            mesh!(ax, msh; color = c, material = ribbon_material(c))
+        end
     end
 
     # Stage C: radiated far field. striped (production) = ± signed-Ex_far
