@@ -36,8 +36,13 @@ function EDM.rpr_capture(screen::RPRMakie.Screen; hybrid::Bool,
 end
 
 function EDM.rpr_tune!(screen::RPRMakie.Screen; quality = nothing,
-        denoiser = nothing, ray_depth = nothing)
+        denoiser = nothing, ray_depth = nothing, seed = nothing)
     ctx = screen.context.pointer
+    # fixed seed: identical sampling pattern every frame — residual grain
+    # becomes a STATIC texture instead of frame-to-frame boil (far less
+    # visible in animation; probed: HybridPro accepts it)
+    seed === nothing ||
+        RPR.rprContextSetParameterByKey1u(ctx, RPR.RPR_CONTEXT_RANDOM_SEED, UInt(seed))
     if quality !== nothing
         qv = UInt32(findfirst(==(quality), ["low", "medium", "high", "ultra"]) - 1)
         RPR.rprContextSetParameterByKey1u(ctx,

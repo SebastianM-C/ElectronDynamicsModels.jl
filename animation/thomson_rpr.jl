@@ -76,6 +76,14 @@
 #   EDM_RPR_SOFTBOX=0         room mode: emissive ceiling panel strength —
 #                             shaped highlights on glossy surfaces (vs the flat
 #                             sheen of the uniform dome); ≈3 at ambient 5
+#   EDM_RPR_SEED              hybrid only: sampling seed. NB HybridPro is
+#                             already deterministic per frame (verified: same
+#                             frame renders byte-identical) — set a PER-FRAME
+#                             seed only to decorrelate the grain for temporal
+#                             post-denoising (ffmpeg hqdn3d=0:0:8:8 targets
+#                             the grain crawl on camera moves at zero render cost)
+#   EDM_RPR_ELECTRON_ROUGH=0.25  gold reflection roughness; ~0.45 calms the
+#                             specular flicker while the pulse sweeps past
 #   EDM_RPR_SCREEN_STYLE=magma|striped  detector display: magma |E_far|² heat
 #                             map, or the v2 cube's signed Ex_far edge slice in
 #                             the wavefronts' red/blue (screen shows the same
@@ -283,15 +291,27 @@ if RAD !== nothing && haskey(RAD, :rad_s)
     isempty(_fv) ||
         (scr_flu_ceil = partialsort!(_fv, max(1, round(Int, 0.005 * length(_fv))); rev = true))
 end
-# Develop transition: during impact the plate shows the instantaneous signed
-# field (seamless with the arriving stripes); after the burst passes it fades
-# to the accumulated-fluence record at full contrast — dark→violet→gold→white
-# in the radiation palette, mirror faded — "the detector develops the shot".
-# EDM_RPR_SCREEN_DEVELOP=t0,span (T0 units; empty/off disables).
+# fraction of the total fluence deposited by frame f — the exposure "maturity"
+# that drives the live develop mode and the mirror fade
+scr_flu_frac = scr_flu === nothing ? nothing :
+    (fs = [sum(@view scr_flu[f, :, :]) for f in axes(scr_flu, 1)]; fs ./ max(fs[end], eps()))
+# Develop: the plate's transition from the instantaneous signed field (seamless
+# with the arriving stripes) to the accumulated-fluence record at full contrast
+# — dark→violet→gold→white in the radiation palette, mirror faded — "the
+# detector develops the shot". EDM_RPR_SCREEN_DEVELOP=
+#   t0,span   timed fade (T0 units) after the burst is absorbed
+#   live      the record grows DURING impact (normalized to the final fluence),
+#             the instantaneous spiral shimmering on top — a live exposure
+#   off       instantaneous only
 scr_develop = let s = get(ENV, "EDM_RPR_SCREEN_DEVELOP", "24,3")
-    isempty(s) || s == "off" ? nothing : Tuple(parse.(Float64, split(s, ",")))
+    isempty(s) || s == "off" ? nothing :
+    s == "live" ? :live : Tuple(parse.(Float64, split(s, ",")))
 end
 dev_w(t) = scr_develop === nothing ? 0.0f0 :
+    scr_develop === :live ?
+    (scr_flu_frac === nothing ? 0.0f0 :
+     Float32(scr_flu_frac[clamp(searchsortedlast(RAD.frame_times, t), 1,
+        length(RAD.frame_times))])) :
     Float32(clamp((t / T0 - scr_develop[1]) / scr_develop[2], 0, 1)^2 *
             (3 - 2 * clamp((t / T0 - scr_develop[1]) / scr_develop[2], 0, 1)))
 scr_developed_img(f) = begin
@@ -332,8 +352,19 @@ scr_striped_img(t) = begin
         RGBf(clamp(w * base.r + hot, 0, 1), clamp(w * base.g + hot, 0, 1),
             clamp(w * base.b + hot, 0, 1))
     end
+    (scr_flu !== nothing && scr_develop !== nothing) || return inst
+    if scr_develop === :live
+        # live exposure: the record (normalized to the FINAL fluence, so it
+        # grows as energy lands) screen-blended under the transient spiral —
+        # the spiral fades by itself once the burst is absorbed
+        dev = scr_developed_img(f)
+        return map(inst, dev) do a, b
+            RGBf(1 - (1 - a.r) * (1 - b.r), 1 - (1 - a.g) * (1 - b.g),
+                1 - (1 - a.b) * (1 - b.b))
+        end
+    end
     wd = dev_w(t)
-    (wd > 0 && scr_flu !== nothing) || return inst
+    wd > 0 || return inst
     dev = scr_developed_img(f)
     map(inst, dev) do a, b
         RGBf(a.r + wd * (b.r - a.r), a.g + wd * (b.g - a.g), a.b + wd * (b.b - a.b))
@@ -436,10 +467,12 @@ function render_frame(t, outpath)
         q = get(ENV, "EDM_RPR_QUALITY", "")
         dn = get(ENV, "EDM_RPR_DENOISER", "")
         rd = get(ENV, "EDM_RPR_RAY_DEPTH", "")
+        sd = get(ENV, "EDM_RPR_SEED", "")
         rpr_tune!(screen;
             quality = isempty(q) ? nothing : q,
             denoiser = isempty(dn) ? nothing : dn,
-            ray_depth = isempty(rd) ? nothing : parse(Int, rd))
+            ray_depth = isempty(rd) ? nothing : parse(Int, rd),
+            seed = isempty(sd) ? nothing : parse(Int, sd))
     end
 
     if white_room
@@ -721,7 +754,8 @@ function render_frame(t, outpath)
             diffuse_weight = Vec4f(white_room ? 0.4 : 0.6),
             reflection_color = Vec4f(1, 0.85, 0.45, 1),
             reflection_weight = Vec4f(1),
-            reflection_roughness = Vec4f(0.25),
+            reflection_roughness = Vec4f(parse(Float32,
+                get(ENV, "EDM_RPR_ELECTRON_ROUGH", "0.25"))),
             reflection_metalness = Vec4f(1),
             reflection_mode = RPR.RPR_UBER_MATERIAL_IOR_MODE_METALNESS)
     end
