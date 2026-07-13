@@ -35,7 +35,12 @@
 #                             suppresses the composited backdrop (missed rays
 #                             turn opaque black), so a light background needs
 #                             real geometry.
-#   EDM_RPR_RIBBONS=emissive|plastic|glass|glassglow  wavefront material.
+#   EDM_RPR_RIBBONS=emissive|plastic|glass|glassglow|coated|coatedglow
+#                             wavefront material. coatedglow = coated's clear-
+#                             coat + half of glassglow's glow (deep Fresnel
+#                             blues AND a laser that reads inside the radiation
+#                             shell); EDM_RPR_EMIS_COOL scales the cool lobe's
+#                             emission only (blue glow flattens glass depth).
 #                             emissive glows (and in room mode lantern-projects
 #                             its pattern on the walls); plastic = matte model;
 #                             glass = tinted thin-sheet glass; glassglow = glass
@@ -189,6 +194,14 @@ rad_upsample = parse(Int, get(ENV, "EDM_RPR_RAD_UPSAMPLE", "4"))
 # stripe tint saturation: 1 = full red/blue, 0.5 = pale (glass absorbs less —
 # translucent stripes need this in dim gradings or they go near-black)
 rad_tint = parse(Float32, get(ENV, "EDM_RPR_RAD_TINT", "1.0"))
+# ± palette for the radiation stripes AND the striped screen ("r,g,b;r,g,b").
+# Default = the laser's red/blue — physically honest (Thomson is elastic, the
+# radiation IS the laser's ω), but a separate hue pair (e.g. amber/teal
+# "1.0,0.62,0.15;0.1,0.65,0.6") visually distinguishes radiation from laser.
+rad_colors = let s = get(ENV, "EDM_RPR_RAD_COLORS", "0.85,0.25,0.15;0.2,0.4,0.95")
+    a, b = split(s, ";")
+    (RGBf(parse.(Float32, split(a, ","))...), RGBf(parse.(Float32, split(b, ","))...))
+end
 
 # Densified grids for the isosurface only — setup.jl's grids stay canonical for
 # the GLMakie animation and the radiation precompute.
@@ -307,7 +320,7 @@ if RAD !== nothing && haskey(RAD, :rad_s)
 end
 scr_striped_img(t) = begin
     f = clamp(searchsortedlast(RAD.frame_times, t), 1, length(RAD.frame_times))
-    pos, neg = RGBf(0.85, 0.25, 0.15), RGBf(0.2, 0.4, 0.95)
+    pos, neg = rad_colors
     map(@view RAD.rad_s[f, end, :, :]) do s
         # floor cut BEFORE the 0.45 gamma: the lift otherwise amplifies the
         # numerical floor into a visible pattern before any light arrives
@@ -604,16 +617,29 @@ function render_frame(t, outpath)
             g.coating_ior = Vec4f(1.5)
             return g
         end
-        if ribbon_style == "glassglow"
-            # stronger inner glow when the room is lit BY the pulse (dim mode)
+        if ribbon_style == "glassglow" || ribbon_style == "coatedglow"
+            # stronger inner glow when the room is lit BY the pulse (dim mode);
+            # coatedglow = coated's clear-coat + a much weaker whisper of glow
+            # (emission floods the Fresnel shading that makes glass blues read
+            # deep — the coat + low weight preserves it)
             emc, emw = dim_room ? (3.0f0 * emis_scale, 0.35f0) : (1.5f0 * emis_scale, 0.25f0)
+            ribbon_style == "coatedglow" && (emw *= 0.5f0)
+            # EDM_RPR_EMIS_COOL: extra emission scale for the cool (blue) lobe
+            # only — the blue glow is what flattens the glass depth cues
+            c.b > c.r && (emw *= parse(Float32, get(ENV, "EDM_RPR_EMIS_COOL", "1.0")))
+            g = tinted_glass()
+            if ribbon_style == "coatedglow"
+                g.coating_color = Vec4f(1)
+                g.coating_weight = Vec4f(1)
+                g.coating_roughness = Vec4f(0.02)
+                g.coating_ior = Vec4f(1.5)
+            end
             # BLEND nodes are unsupported on the Hybrid plugins — fold the
             # emissive layer into the glass Uber itself (same node carries
             # refraction + emission); Northstar keeps the LayerMaterial blend
-            hybrid_rt || return RPR.LayerMaterial(tinted_glass(),
+            hybrid_rt || return RPR.LayerMaterial(g,
                 RPR.EmissiveMaterial(matsys; color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1));
                 weight = Vec4f(emw))
-            g = tinted_glass()
             g.emission_color = Vec4f(emc * c.r, emc * c.g, emc * c.b, 1)
             g.emission_weight = Vec4f(emw)
             return g
@@ -669,8 +695,8 @@ function render_frame(t, outpath)
         # ± wavefronts of the signed Ex_far in the pulse ribbons' red/blue
         # language — the flash visibly echoes the laser's stripe pattern.
         s = rad_s_slice(t)
-        for (lvl, c0) in ((+rad_slevel, RGBf(0.85, 0.25, 0.15)),
-                          (-rad_slevel, RGBf(0.2, 0.4, 0.95)))
+        for (lvl, c0) in ((+rad_slevel, rad_colors[1]),
+                          (-rad_slevel, rad_colors[2]))
             c = RGBf(1 - rad_tint * (1 - c0.r), 1 - rad_tint * (1 - c0.g),
                 1 - rad_tint * (1 - c0.b))
             msh = iso_mesh(s, rad_s_grid(), RAD.txs, RAD.tys, lvl)
