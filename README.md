@@ -10,3 +10,11 @@
 This package aims to provide several models for electron dynamics such that they can be used within the ModelingToolkit
 modeling framework in a composable way, such that one can better understand the impact of various physical phenomena
 such as radiation reaction or photon emmision.
+
+![Ray-traced Thomson-scattering animation: a vortex laser pulse rings a disk of electrons, the radiated
+wavefronts propagate to a detector, and the recorded fluence develops into the OAM annulus](animation/thomson_rpr.gif)
+
+*Thomson scattering, exactly as computed: an OAM laser pulse (red/blue wavefronts) crosses a disk of electrons;
+their radiated field (gold/violet, signed Liénard–Wiechert far field) propagates to the detector, which records
+the fluence — the dark spot at the center of the developed ring is the optical-vortex singularity.
+Ray-traced with [RPRMakie](https://docs.makie.org/stable/documentation/backends/rprmakie/); see `animation/`.*
