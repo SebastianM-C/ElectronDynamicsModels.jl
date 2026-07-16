@@ -122,10 +122,21 @@ emissive_mat(c; scale = 1.0f0, two_sided = true) =
     Hikari.MediumInterface(Hikari.Emissive(; Le = (c.r, c.g, c.b), scale, two_sided))
 
 # tinted glass: transmission carries the lobe color, reflections lightly tinted
-# (the RPR recipe: reflection_color = 0.3 + 0.7c)
-tinted_glass(c) = Hikari.Dielectric(
-    Kr = spec(RGBf(0.3f0 + 0.7f0 * c.r, 0.3f0 + 0.7f0 * c.g, 0.3f0 + 0.7f0 * c.b)),
-    Kt = spec(c), roughness = 0.0f0, index = 1.5f0)
+# (the RPR recipe: reflection_color = 0.3 + 0.7c). The iso-surface sheets are
+# OPEN surfaces — a full Dielectric tracks inside/outside and can TIR-loop to
+# the depth budget on every path, so EDM_RAY_GLASS picks the interface model:
+#   dielectric  index-1.5 glass (Fresnel + refraction; slowest, deepest look)
+#   thin        ThinDielectric — pbrt's thin-surface model, RPR's
+#               refraction_thin_surface=true equivalent (untinted)
+#   interface   index-1.0 tinted pass-through (no bend, no TIR; fastest)
+glass_kind = get(ENV, "EDM_RAY_GLASS", "dielectric")
+tinted_glass(c) =
+    glass_kind == "thin" ? Hikari.ThinDielectric(eta = 1.5f0) :
+    glass_kind == "interface" ? Hikari.Dielectric(
+        Kr = Hikari.RGBSpectrum(0.0f0), Kt = spec(c), roughness = 0.0f0, index = 1.0f0) :
+    Hikari.Dielectric(
+        Kr = spec(RGBf(0.3f0 + 0.7f0 * c.r, 0.3f0 + 0.7f0 * c.g, 0.3f0 + 0.7f0 * c.b)),
+        Kt = spec(c), roughness = 0.0f0, index = 1.5f0)
 
 # glassglow: ONE node — glass BSDF + folded area-light emission
 function glassglow(c; emis = 1.0f0, glow = glow_w, fade = 0.0f0)
