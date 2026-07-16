@@ -6,6 +6,7 @@
 #
 # ENV knobs (defaults = full production): EDM_GPU_BACKEND (rocm|cuda), EDM_A0,
 # EDM_INITIAL_PHASE, EDM_NX, EDM_N, EDM_NSAMPLES, EDM_SPP, EDM_NSUBSTEPS,
+# EDM_GPU_SOLVER (rk4|newton) + EDM_NEWTON_ITERS,
 # EDM_POL (linear|circular[_plus]|circular_minus),
 # EDM_SYNC_PER_ELECTRON, EDM_OUTDIR. Writes the field .jls + per-harmonic PNGs +
 # run_<uuid>.toml manifest.
@@ -52,6 +53,10 @@ const NELEC = parse(Int, get(ENV, "EDM_N", "10000"))
 const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "8000"))
 const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
+const GPU_SOLVER = lowercase(get(ENV, "EDM_GPU_SOLVER", "rk4"))  # retarded-time kernel: rk4 (ODE march, EDM_NSUBSTEPS) | newton (light-cone root solve, EDM_NEWTON_ITERS)
+GPU_SOLVER in ("rk4", "newton") ||
+    error("EDM_GPU_SOLVER must be \"rk4\" or \"newton\", got $(repr(GPU_SOLVER))")
+const NEWTON_ITERS = parse(Int, get(ENV, "EDM_NEWTON_ITERS", "2"))  # ≥3 for strongly-relativistic forward scattering
 const RELTOL = parse(Float64, get(ENV, "EDM_RELTOL", "1e-12"))   # ODE-solve rel tolerance (Vern9)
 const ABSTOL_ENV = get(ENV, "EDM_ABSTOL", "")                    # "" ⇒ abserr(a0); else this Float64
 const INTERP_SAVEAT = get(ENV, "EDM_INTERP_SAVEAT", "")          # trajectory-spline knots/laser-period;
@@ -64,7 +69,7 @@ FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"t
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
-@info "Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
+@info "Thomson (field) run config" RUN_TAG GPU_BACKEND GPU_SOLVER ϕ₀ A0 SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS NEWTON_ITERS
 const T_START = time()   # wall-clock start → [timing].total in the manifest
 
 # Laser parameters
@@ -200,6 +205,10 @@ screen = ObserverScreen(
 # Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
 # them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
 ndev = gpu_device_count(gpu_backend)
+# Retarded-time solver: sentinel alg + its accuracy kwarg (rk4 marches between slots with
+# n_substeps; newton root-solves each slot with n_iters warm-started corrections).
+solver_alg = GPU_SOLVER == "newton" ? GPUKernelNewton() : GPUKernelRK4()
+solver_kw = GPU_SOLVER == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = NSUBSTEPS)
 # Sample GPU power/util/VRAM across the accumulate_field window on all sharded devices
 # (→ manifest [gpu] stats + the gputrace TSV time series; see gpu_telemetry.jl).
 gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
@@ -209,13 +218,13 @@ t_field = @elapsed begin
         if ndev > 1
             @info "sharding electrons across $ndev devices"
             accumulate_field_sharded(
-                trajs, screen, GPUKernelRK4(), gpu_backend;
-                n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+                trajs, screen, solver_alg, gpu_backend;
+                solver_kw..., mode = Val(FIELD_MODE), sync_per_electron = SYNC
             )
         else
             accumulate_field(
-                trajs, screen, GPUKernelRK4(), gpu_backend;
-                n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+                trajs, screen, solver_alg, gpu_backend;
+                solver_kw..., mode = Val(FIELD_MODE), sync_per_electron = SYNC
             )
         end
     end
@@ -264,6 +273,10 @@ config = Dict{String, Any}(
     "N_samples" => N_samples,
     "samples_per_period" => samples_per_period,
     "n_substeps" => NSUBSTEPS,
+    # dashboard-canonical kernel name (the builder's accumulation_alg param; defaults to
+    # GPUKernelRK4 for manifests that predate the knob)
+    "accumulation_alg" => GPU_SOLVER == "newton" ? "GPUKernelNewton" : "GPUKernelRK4",
+    "newton_iters" => NEWTON_ITERS,    # Newton corrections/slot (active when the Newton kernel is selected)
     "reltol" => RELTOL,                # ODE-solve tolerances (replay + small-a0 floor study)
     "abstol" => ABSTOL,
     "interp_saveat" => isempty(INTERP_SAVEAT) ? "adaptive" : INTERP_SAVEAT,  # trajectory-spline knots/period

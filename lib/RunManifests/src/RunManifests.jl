@@ -189,6 +189,12 @@ function run_spec_from_manifest(manifest::AbstractDict)
     haskey(cfg, "harmonics") && (env["EDM_HARMONICS"] = join(cfg["harmonics"], ","))
     haskey(cfg, "reltol") && (env["EDM_RELTOL"] = string(cfg["reltol"]))
     haskey(cfg, "abstol") && (env["EDM_ABSTOL"] = string(cfg["abstol"]))
+    # Retarded-time GPU solver — guarded: absent in pre-Newton manifests (⇒ rk4 default).
+    # The manifest records the dashboard-canonical kernel name; map it to the env value.
+    solver_env = Dict("GPUKernelRK4" => "rk4", "GPUKernelNewton" => "newton")
+    alg = get(cfg, "accumulation_alg", nothing)
+    haskey(solver_env, alg) && (env["EDM_GPU_SOLVER"] = solver_env[alg])
+    haskey(cfg, "newton_iters") && (env["EDM_NEWTON_ITERS"] = string(cfg["newton_iters"]))
     sv = get(cfg, "interp_saveat", "adaptive")
     sv != "adaptive" && (env["EDM_INTERP_SAVEAT"] = string(sv))
     return (; commit, env)
