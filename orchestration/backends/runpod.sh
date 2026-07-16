@@ -126,7 +126,10 @@ grab_pod() {
                       dockerEntrypoint:["/bin/bash","-c"],dockerStartCmd:[$start]}
                      + (if $vol != "" then {networkVolumeId:$vol,volumeMountPath:"/workspace"} else {} end)')" 2>/dev/null)" || resp=""
             pid="$(echo "$resp" | jq -r '.id // empty' 2>/dev/null)"
-            [ -n "$pid" ] && { POD="$pid"; log "grabbed $gpu → pod $POD ($BACKEND / $IMAGE)"; return 0; }
+            # Camping can run unattended for hours and billing starts HERE, before warm —
+            # ping as soon as a pod is secured, not only at campaign launch.
+            [ -n "$pid" ] && { POD="$pid"; log "grabbed $gpu → pod $POD ($BACKEND / $IMAGE)"; \
+                notify satellite default "EDM runpod grabbed" "$gpu → pod $POD (try $try/$MAXTRIES, billing started)"; return 0; }
         done
         [ $(( (try-1) % 10 )) -eq 0 ] && log "  no capacity yet (try $try/$MAXTRIES)…"
         sleep "$POLL"
