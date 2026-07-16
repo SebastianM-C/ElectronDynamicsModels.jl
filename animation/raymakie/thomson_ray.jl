@@ -73,8 +73,14 @@ rad_colors = let s = get(ENV, "EDM_RAY_RAD_COLORS", "1.0,0.75,0.2;0.55,0.3,0.9")
     a, b = split(s, ";")
     (RGBf(parse.(Float32, split(a, ","))...), RGBf(parse.(Float32, split(b, ","))...))
 end
-vol_le = parse(Float32, get(ENV, "EDM_RAY_VOL_LE", "4.0"))
-vol_sigma = parse(Float32, get(ENV, "EDM_RAY_VOL_SIGMA", "8.0"))
+vol_le = parse(Float32, get(ENV, "EDM_RAY_VOL_LE", "2.0"))
+vol_sigma = parse(Float32, get(ENV, "EDM_RAY_VOL_SIGMA", "6.0"))
+vol_floor = parse(Float32, get(ENV, "EDM_RAY_VOL_FLOOR", "0.2"))
+vol_gamma = parse(Float32, get(ENV, "EDM_RAY_VOL_GAMMA", "1.5"))
+# the pulse envelope core sits at |s|≈1 over a large volume (unlike the thin
+# radiation crests) — cut it at the mesh look's ±0.5 isolevel or it saturates
+pulse_vol_floor = parse(Float32, get(ENV, "EDM_RAY_PULSE_VOL_FLOOR", "0.45"))
+pulse_vol_le = parse(Float32, get(ENV, "EDM_RAY_PULSE_VOL_LE", "1.0"))
 exposure = parse(Float32, get(ENV, "EDM_RAY_EXPOSURE", "1.0"))
 tonemap = Symbol(get(ENV, "EDM_RAY_TONEMAP", "aces"))
 gamma = parse(Float32, get(ENV, "EDM_RAY_GAMMA", "2.2"))
@@ -149,25 +155,34 @@ end
 gold_electron() = Hikari.Gold(roughness = electron_rough)
 flat_mat(c) = Hikari.Diffuse(Kd = spec(c))
 satin_mat(c) = Hikari.CoatedDiffuse(reflectance = spec(c), roughness = 0.45f0)
-transparent_boundary() = Hikari.Dielectric(
-    Kr = Hikari.RGBSpectrum(0.0f0), Kt = Hikari.RGBSpectrum(1.0f0), index = 1.0f0)
+# pbrt "interface" semantics — a Dielectric boundary (even Kr=0/Kt=1/index=1)
+# makes SHADOW rays treat the cube as opaque and paints it as a shadowed block
+# (see RayMakie plots/volume.jl); NullMaterial only fires the medium swap
+transparent_boundary() = Hikari.NullMaterial()
 
-# signed volume → emissive RGBGridMedium: ± lobes in the given palette,
-# emission and absorption ∝ |s| (pbrt: volumetric Le contributes as σ_a·Le)
-function signed_medium(s, bounds; le_scale = vol_le, sigma = vol_sigma, colors = rad_colors)
+# signed volume → emissive RGBGridMedium: ± wavefront crests in the given
+# palette. Only |s| above vol_floor participates — pbrt's volumetric emission
+# contributes as σ_a·Le, and without the cut the box-filling numerical floor
+# goes optically thick over the ~30 sw domain (renders as a white fog block).
+function signed_medium(s, bounds; le_scale = vol_le, sigma = vol_sigma,
+        colors = rad_colors, floor = vol_floor, gamma = vol_gamma)
     dims = size(s)
     σ_a = Array{Hikari.RGBSpectrum, 3}(undef, dims)
     Le = Array{Hikari.RGBSpectrum, 3}(undef, dims)
+    # σ_s_grid=nothing is mishandled upstream (whole box renders as uniform
+    # fog — see mwe_medium.jl); an explicit zero grid restores emission-only
+    σ_s = fill(Hikari.RGBSpectrum(0.0f0), dims)
     pos, neg = colors
     @inbounds for i in eachindex(s)
         v = s[i]
         a = abs(v)
+        w = a <= floor ? 0.0f0 : ((a - floor) / (1 - floor))^gamma
         c = v ≥ 0 ? pos : neg
-        σ_a[i] = Hikari.RGBSpectrum(a)
-        Le[i] = Hikari.RGBSpectrum(a * c.r, a * c.g, a * c.b)
+        σ_a[i] = Hikari.RGBSpectrum(w)
+        Le[i] = Hikari.RGBSpectrum(w * c.r, w * c.g, w * c.b)
     end
     bmin, bmax = bounds
-    Hikari.RGBGridMedium(; σ_a_grid = σ_a, Le_grid = Le,
+    Hikari.RGBGridMedium(; σ_a_grid = σ_a, σ_s_grid = σ_s, Le_grid = Le,
         sigma_scale = sigma, Le_scale = le_scale, g = 0.0f0,
         bounds = Hikari.Bounds3(GeometryBasics.Point3f(bmin...), GeometryBasics.Point3f(bmax...)))
 end
@@ -270,15 +285,18 @@ function build_scene(fc)
     # volume variants: emissive media inside transparent boxes
     pulse_vol_plot = if pulse_style3d == "volume" && fc.pulse_vol !== nothing
         bmin, bmax = ST.pulse_vol_bounds
-        mesh!(scene, Rect3f(Point3f(bmin...), Vec3f((bmax .- bmin)...));
+        mesh!(scene,
+            GeometryBasics.normal_mesh(Rect3f(Point3f(bmin...), Vec3f((bmax .- bmin)...)));
             material = vol_boundary_mat(fc.pulse_vol, ST.pulse_vol_bounds;
-                le_scale = vol_le * emis_scale * (1 - fc.pf), colors = pulse_colors))
+                le_scale = pulse_vol_le * emis_scale * (1 - fc.pf), colors = pulse_colors,
+                floor = pulse_vol_floor, gamma = 2.0f0))
     else
         nothing
     end
     rad_vol_plot = if rad_style3d == "volume" && fc.rad_vol !== nothing
         bmin, bmax = ST.rad_vol_bounds
-        mesh!(scene, Rect3f(Point3f(bmin...), Vec3f((bmax .- bmin)...));
+        mesh!(scene,
+            GeometryBasics.normal_mesh(Rect3f(Point3f(bmin...), Vec3f((bmax .- bmin)...)));
             material = vol_boundary_mat(fc.rad_vol, ST.rad_vol_bounds))
     else
         nothing
@@ -326,7 +344,8 @@ function update_scene!(S, fc)
     end
     S.pulse_vol_plot !== nothing && fc.pulse_vol !== nothing &&
         (S.pulse_vol_plot.material[] = vol_boundary_mat(fc.pulse_vol, ST.pulse_vol_bounds;
-            le_scale = vol_le * emis_scale * (1 - fc.pf), colors = pulse_colors))
+            le_scale = pulse_vol_le * emis_scale * (1 - fc.pf), colors = pulse_colors,
+                floor = pulse_vol_floor, gamma = 2.0f0))
     S.rad_vol_plot !== nothing && fc.rad_vol !== nothing &&
         (S.rad_vol_plot.material[] = vol_boundary_mat(fc.rad_vol, ST.rad_vol_bounds))
     S.screen_plot !== nothing && fc.scr_img !== nothing &&
