@@ -3,7 +3,7 @@
 # Split mode (production default). Physics identical to benchmark_newton_gpu.jl.
 #
 # Run from the worktree root:
-#   julia --project=scripts --threads=auto scripts/benchmark_newton_field_gpu.jl
+#   julia --project=benchmarks --threads=auto benchmarks/newton_field_gpu.jl
 
 using ElectronDynamicsModels
 using ModelingToolkit
