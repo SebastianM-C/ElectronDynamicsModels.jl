@@ -391,18 +391,22 @@ else
     outdir = get(ENV, "EDM_RAY_OUTDIR", joinpath(@__DIR__, "ray_frames"))
     mkpath(outdir)
     @info "rendering frames $(first(rng))..$(last(rng)) into $outdir"
-    total = 0.0
-    done = 0
-    for i in rng
-        outpath = joinpath(outdir, @sprintf("ray_%04d.png", i))
-        isfile(outpath) && continue   # resumable
-        fc = load_payload(joinpath(cache_dir, @sprintf("frame_%04d.jls", i)))
-        tr = render_frame(fc, outpath)
-        done += 1
-        total += tr
-        eta = (length(rng) - (i - first(rng) + 1)) * total / done
-        @info @sprintf("frame %d/%d  t = %+.2f T0  %.1f s  (mean %.1f s, ETA %.0f min)",
-            i, last(rng), fc.t / ST.T0, tr, total / done, eta / 60)
+    function render_range(rng, outdir)
+        total = 0.0
+        n_done = 0
+        for i in rng
+            outpath = joinpath(outdir, @sprintf("ray_%04d.png", i))
+            isfile(outpath) && continue   # resumable
+            fc = load_payload(joinpath(cache_dir, @sprintf("frame_%04d.jls", i)))
+            tr = render_frame(fc, outpath)
+            n_done += 1
+            total += tr
+            eta = (length(rng) - (i - first(rng) + 1)) * total / n_done
+            @info @sprintf("frame %d/%d  t = %+.2f T0  %.1f s  (mean %.1f s, ETA %.0f min)",
+                i, last(rng), fc.t / ST.T0, tr, total / n_done, eta / 60)
+        end
+        return n_done
     end
-    @info "done: $done frames rendered"
+    n = render_range(rng, outdir)
+    @info "done: $n frames rendered"
 end

@@ -1,90 +1,96 @@
-# RayMakie/Hikari vs RPRMakie/HybridPro — experiment notes
+# RayMakie/Hikari vs RPRMakie/HybridPro — experiment notes & verdict
 
 Evaluating `../RayDemo`'s stack (Makie `sd/lava`, Hikari `sd/vk-hw-accel`,
 Lava `sd/nvidia` — Julia-native spectral path tracing over Vulkan) as a
 replacement for the RPRMakie/HybridPro production pipeline
 (`animation/thomson_rpr.jl` + `render_production.sh`).
 
-## Bring-up (W7900, headless)
+## Verdict: adopt for the volume look — with a lookdev pass first
 
-- GLFW.jl **hardcodes X11 on Linux**; with no X session everything fails at
-  precompile. Recipe: `kwin_wayland --virtual --no-global-shortcuts
-  --socket=wayland-edm &` then `WAYLAND_DISPLAY=wayland-edm
-  JULIA_GLFW_PLATFORM=wayland` (no sudo needed). xkbcommon Compose errors in
-  logs are harmless.
-- Lava sees the W7900 via RADV, `rt_pipeline_properties` present (HW RT
-  available). RayDemo Materials demo: **1.45 s warm** at 600×450×8 spp
-  (~220 s one-time kernel compile per process).
-- **Env split forced**: Hikari pins StructArrays 0.6; SciMLBase 3 needs
-  RecursiveArrayTools 4 → StructArrays 0.7. Physics (setup.jl, MTK + Vern9)
-  cannot share an env with the ray stack. Solution:
-  `precompute_frames.jl` (animation env) → plain-array payloads →
-  `thomson_ray.jl` (this env). Payloads: 13–81 MB/frame, 0.5–9 s/frame to
-  produce.
+**RayMakie volume mode renders the animation at 3.5 s/frame in one process —
+3–4× faster than RPR HybridPro (10–15 s/frame), with no VRAM-leak chunking,
+no manual tonemap, and a genuinely volumetric look RPR cannot produce at
+all.** The mesh (striped-glass) look, however, is currently blocked by
+upstream performance bugs, so an exact like-for-like port of the locked RPR
+style is not viable today. Recommended path: keep `rpr_frames_v3` as the
+shipped mesh-style render, develop the next animation (and the planned
+inverse-scattering one) on RayMakie volume mode after a proper lookdev
+session, and file the upstream issues below.
 
-## First light (3 stills, 1280×960, 64 spp, SW BVH)
+## Measured numbers (W7900, RADV; 1280×960 unless noted)
 
-Look is close to the RPR reference out of the box — same composition,
-tile room + grid, gold electrons, gold/violet stripes, striped screen.
-Grading differences (walls darker at ambient 1.0/aces; laser ribbons more
-prominent) are lookdev-level. Images: `ray_t-5.00.png`, `ray_t+3.00.png`,
-`ray_t+26.00.png` vs `animation/rpr_frames_v3/rpr_{0071,0151,0380}.png`.
-
-## Performance findings (640×480, 32 spp, flash frame t=+3)
-
-| measurement | mesh style | volume style |
+| configuration | per frame | notes |
 |---|---|---|
-| `build_scene` | 7.6 s | 0.8 s |
-| first `colorbuffer` (upload + BLAS + trace) | 209 s | 34 s |
-| steady-state `colorbuffer` (nothing changed) | **0.5 s** | **0.6 s** |
-| `colorbuffer` after observable update | **2282 s** (!) | **2.5 s** |
+| RPR HybridPro production (700 iter, ultra) | 10–15 s | + 1.7 GB/frame leak → 16-frame chunks, 2 passes |
+| RayMakie **volume style, SW BVH, 64 spp** | **3.5 s** | 61-frame clip, single process, scene reuse |
+| RayMakie volume style, HW RT, 64 spp | 6.3 s | works (small BLAS), but slower — volume cost dominates |
+| RayMakie mesh style, fresh scene | 209 s | SW BLAS build over ~1.6 M stripe triangles |
+| RayMakie mesh style, observable mesh swap | 2282 s | pathological upstream path (see issues) |
+| RayMakie mesh style, steady state (nothing changed) | 0.5 s (640×480×32) | tracing itself is fast |
+| physics payloads (`precompute_frames.jl`, animation env) | 0.3 s/frame (volume) / ~6–9 s (mesh+volume stills) | CPU, runs in parallel with the GPU |
 
-- Tracing itself is *fast* — the scene steady-states at half a second.
-- Mesh style is dominated by SW-BVH build over the ~1.6 M-triangle stripe
-  stacks (209 s), and RayMakie's **observable mesh-swap path is
-  pathological** (2282 s — worse than a full rebuild; this is what the
-  "39-minute frame" actually was). Interface model and path depth are
-  secondary (glass sweep: dielectric d16 175 s → thin/interface d8 ~103 s,
-  all dominated by the same floor).
-- **HW RT `DEVICE_LOST`s** (`rt_indirect`) on the mesh-style scene; fine on
-  the small Materials demo. Untested against the volume-style scene (few
-  triangles) — TODO.
-- Volume style (radiation + pulse as emissive `RGBGridMedium`, the thing RPR
-  cannot do at all): per-frame grid re-upload costs ~2.5 s at test res.
-  First mapping attempt (σ_a = |s| everywhere) rendered as an optically
-  thick fog block — needs a floor cut so only wavefront crests participate
-  (fixed; sweep over floor/sigma/Le in `sweep_volume.jl`).
+One-time costs per render process: ~100 s kernel compile (SW) / ~120 s (HW).
+Clip evidence: `thomson_ray_clip.mp4` (frames 120–180, t = 0→6 T0, flash).
 
-## Cost model for a 400-frame production render (preliminary)
+## What worked well
 
-- RPR HybridPro reference: ~10–15 s/frame + 1.7 GB/frame leak → chunked
-  16-frame processes, two passes (`render_production.sh`).
-- RayMakie mesh style: not viable (≥209 s/frame via rebuild; observable path
-  worse).
-- RayMakie volume style: build once + ~2.5 s/frame updates at test res
-  (full-res × spp scaling TBD) in ONE process — no leak, no chunking.
-  Electron meshscatter updates are cheap (included in the 2.5 s).
+- **First-try look parity was close** for the static port: same room/grid,
+  gold electrons, striped screen, camera path (`ray_t-5.00.png`,
+  `ray_t+3.00.png`, `ray_t+26.00.png` vs `rpr_frames_v3/rpr_{0071,0151,0380}.png`).
+  Materials are typed structs; glassglow is ONE node
+  (`MediumInterface(Dielectric; emission=…)`), `Emissive(two_sided=true)`
+  replaces RPR's DOUBLESIDED mode, capture is just
+  `colorbuffer(...; exposure, tonemap=:aces, gamma)`.
+- **Emissive volumes from raw Julia arrays** (`RGBGridMedium` with per-voxel
+  σ_a/Le): the radiation cube and the analytic pulse render as true glowing
+  media that light the room (floor caustic patterns in the clip) — the
+  original "the flash lights the room" idea, impossible in RPR.
+- **Scene reuse across frames actually works** for volumes + meshscatter:
+  grid re-upload ~2 s, electron position updates cheap, camera via
+  observables. 61 frames, one process, no leak.
 
-## Upstream findings (candidates for issues on Hikari/RayMakie)
+## Bring-up recipe (headless W7900)
+
+- GLFW.jl hardcodes X11 on Linux → run under a virtual compositor:
+  `kwin_wayland --virtual --no-global-shortcuts --socket=wayland-edm &`,
+  then `WAYLAND_DISPLAY=wayland-edm JULIA_GLFW_PLATFORM=wayland`.
+  xkbcommon Compose errors are harmless.
+- **Env split forced**: Hikari pins StructArrays 0.6; SciMLBase 3 needs
+  RecursiveArrayTools 4 → StructArrays 0.7. Physics (setup.jl) runs in
+  `--project=animation` via `precompute_frames.jl` → plain-array payloads
+  (13–81 MB/frame) → `thomson_ray.jl` renders from `--project=animation/raymakie`.
+
+## Upstream findings (file as issues on Hikari/RayMakie)
 
 1. **`RGBGridMedium(σ_s_grid = nothing)` renders as uniform fog** filling the
-   whole bounding box, drowning the actual grid contents. An explicit
-   zero-valued σ_s grid restores correct emission-only behavior.
-   Minimal reproducer: `mwe_medium.jl` (emitting ball in a box — fog block
-   without the zero grid, clean glowing ball with it).
-2. **A Dielectric volume boundary shadows the box** — shadow rays treat the
-   cube as opaque (documented in RayMakie `plots/volume.jl`); use
-   `MediumInterface(NullMaterial(); inside=medium)`.
-3. **Observable mesh swap is ~10× slower than a full scene rebuild**
-   (2282 s vs 209 s for the same 1.6 M-triangle content, SW BVH) — looks like
-   each updated plot triggers its own full accel rebuild.
-4. **HW RT (`hw_accel=true`) DEVICE_LOSTs** (`rt_indirect`) on the
-   ~1.6 M-triangle mesh scene; fine on the small Materials demo.
+   whole bounding box. Explicit zero σ_s grid restores emission-only
+   behavior. Minimal reproducer: `mwe_medium.jl`.
+2. **Observable mesh swap is ~10× slower than a full scene rebuild**
+   (2282 s vs 209 s for the same ~1.6 M-triangle content, SW BVH).
+3. **HW RT (`hw_accel=true`) DEVICE_LOSTs** (`rt_indirect` batch) on the
+   ~1.6 M-triangle mesh scene; fine on small scenes and the volume-style
+   scene (~100 k triangles).
+4. (Documented, not a bug: a Dielectric volume boundary shadows the box —
+   use `MediumInterface(NullMaterial(); inside=medium)`, per RayMakie
+   `plots/volume.jl`.)
 
-## Open items
+## Remaining work before production adoption
 
-- [ ] Volume-mode look sweep (floor/sigma/le) → pick production mapping
-- [ ] Full-res volume-mode still + timing
-- [ ] HW RT retry on volume-style scene
-- [ ] Short animation clip (scene reuse) + VRAM stability
-- [ ] Grading pass (ambient/softbox/exposure) to match the locked RPR look
+- [ ] Volume lookdev with a human eye: current mapping
+  (`EDM_RAY_VOL_FLOOR/GAMMA/LE/SIGMA`, pulse floor 0.45 ≙ the mesh ±0.5
+  isolevel) shows structure but cores still trend white; grading
+  (ambient/softbox/exposure) not yet matched to the locked RPR level.
+- [ ] Screen `develop` sequence + camera pull-back check over the full
+  400-frame window.
+- [ ] spp / denoiser trade (64 spp is grainy; `DenoiseConfig` untested).
+- [ ] Optional: report + track the upstream issues; mesh style becomes
+  viable if the BLAS-rebuild and mesh-update paths are fixed.
+
+## Files
+
+- `Project.toml` — render env (ray stack only, GeometryBasics =0.5.10 pin)
+- `precompute_frames.jl` — physics side (animation env): payloads per frame
+- `thomson_ray.jl` — renderer: EDM_RAY_* knobs, mesh|volume styles, reuse
+- `sweep_glass.jl`, `sweep_buildtrace.jl`, `sweep_volume.jl` — measurements
+- `mwe_medium.jl` — σ_s_grid=nothing reproducer
+- `frame_cache/`, `ray_frames/`, `*.png`, `thomson_ray_clip.mp4` — outputs (untracked)
