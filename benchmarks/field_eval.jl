@@ -39,12 +39,15 @@ pos = SVector(x, y, z)
 result_fe = fe([t_val, x, y, z])
 lt_E = LaserTypes.E(pos, t_val, lt_laser)
 lt_B = LaserTypes.B(pos, t_val, lt_laser)
+lt_EB = LaserTypes.EB(pos, t_val, lt_laser)   # E and B in one call
 
 println("=== Sanity check ===")
 println("FieldEvaluator E: ", result_fe.E)
 println("LaserTypes     E: ", lt_E)
+println("LaserTypes EB[1]: ", lt_EB[1])
 println("FieldEvaluator B: ", result_fe.B)
 println("LaserTypes     B: ", lt_B)
+println("LaserTypes EB[2]: ", lt_EB[2])
 println()
 
 # --- Benchmarks ---
@@ -62,11 +65,15 @@ println("=== LaserTypes B only ===")
 display(@benchmark LaserTypes.B($pos, $t_val, $lt_laser))
 println()
 
-println("=== LaserTypes E + B ===")
+println("=== LaserTypes E + B (two calls) ===")
 display(
     @benchmark begin
         LaserTypes.E($pos, $t_val, $lt_laser)
         LaserTypes.B($pos, $t_val, $lt_laser)
     end
 )
+println()
+
+println("=== LaserTypes EB (E + B in one call) ===")
+display(@benchmark LaserTypes.EB($pos, $t_val, $lt_laser))
 println()

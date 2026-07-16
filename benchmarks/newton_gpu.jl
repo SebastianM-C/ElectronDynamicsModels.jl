@@ -9,7 +9,7 @@
 # at the same speed, the rung is upload/write-bound and eval savings can't show.
 #
 # Run from the worktree root:
-#   julia --project=scripts --threads=auto scripts/benchmark_newton_gpu.jl
+#   julia --project=benchmarks --threads=auto benchmarks/newton_gpu.jl
 
 using ElectronDynamicsModels
 using ModelingToolkit
