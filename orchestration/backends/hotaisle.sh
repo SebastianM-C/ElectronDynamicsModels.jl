@@ -33,7 +33,10 @@ BRANCH="${HOTAISLE_BRANCH:-main}"
 STATE="${HOTAISLE_STATE:-$HOME/.config/hotaisle/campaign_vm}"
 OUT="${HOTAISLE_OUT:-$HOME/campaign_out}"
 DEPOT_CACHE="${DEPOT_CACHE:-}"; DEPOT_CACHE_KEY="${DEPOT_CACHE_KEY:-$HOME/.config/runpod/depot_key}"   # shared cache (see depot_cache.sh)
-CM="$HOME/.ssh/cm-hotaisle.sock"
+# %C = per-destination hash — parallel invocations (2 VMs, distinct HOTAISLE_STATE) MUST NOT
+# share a master socket: ssh multiplexes on ControlPath alone, so a fixed path sends the second
+# VM's commands to the first VM (its warm's `rm -rf EDM` then kills that VM's running campaign).
+CM="$HOME/.ssh/cm-hotaisle-%C.sock"
 SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600"
 
 api()       { curl -fsS -X "$1" -H "Authorization: Token $TOK" "${@:3}" "$API$2"; }
