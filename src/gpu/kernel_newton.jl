@@ -4,7 +4,7 @@
 #
 # Alternative to the GPUKernelRK4 march (kernel_rk4.jl): instead of
 # integrating dτ_r/dx⁰ = 1/(u⁰ − u⃗·n̂) between saveat slots, solve the light-cone
-# condition (FFT_v2.pdf eq. 1.2)
+# condition
 #     f(τ) = x⁰_target − x⁰(τ) − |r_obs − x⃗(τ)|  =  0
 # at each slot with warm-started Newton corrections.  f is strictly monotone
 # decreasing — f′(τ) = −(u⁰ − u⃗·n̂) < 0 since u⁰ ≥ |u⃗| on a timelike worldline —
@@ -19,9 +19,6 @@
 # to ~1.3× faster on the field path.  Strongly-relativistic forward-scattering
 # geometries need n_iters = 3 (the analog of RK4 needing n_substeps = 8 there).
 
-# Shared deps: experimental.jl (included first in this module) already imports
-# Adapt, AK, KernelAbstractions, Backend, StaticArrays, TrajectoryInterpolant,
-# ObserverScreen, and accumulate_potential.  This file additionally needs:
 using ..ElectronDynamicsModels: to_gpu, lienard_wiechert_F_split, extract_EB
 import ..ElectronDynamicsModels: accumulate_field
 
@@ -43,17 +40,20 @@ struct GPUKernelNewton end
 # [xμ; uμ] state and K/xr_dot_u = K·rhs/r_norm.
 @inline function _lightcone_eval(τ, gpu_traj, r_obs, x⁰_target)
     v = gpu_traj.itp(τ)
-    x⁰ = v[gpu_traj.x_idxs[1]]
+    x⁰ = v[gpu_traj.x_idxs[1]] # x⁰(τ)
     d¹ = r_obs[1] - v[gpu_traj.x_idxs[2]]
     d² = r_obs[2] - v[gpu_traj.x_idxs[3]]
     d³ = r_obs[3] - v[gpu_traj.x_idxs[4]]
     r_norm = sqrt(d¹ * d¹ + d² * d² + d³ * d³)
+    # x⁰_target - x⁰(τ) = ||r_obs - x(τ)|| = ||R||
     u⁰ = v[gpu_traj.u_idxs[1]]
     u¹ = v[gpu_traj.u_idxs[2]]
     u² = v[gpu_traj.u_idxs[3]]
     u³ = v[gpu_traj.u_idxs[4]]
+    # X^μ = x^μ - x^μ(τ) = (x⁰_target - x⁰(τ), R)
     # m_dot(xr, uμ) with xr = (r_norm, d¹, d², d³)
     xr_dot_u = r_norm * u⁰ - (d¹ * u¹ + d² * u² + d³ * u³)
+    # n̂ = R/||R|| => X ⋅ u = r_norm * (u⁰ - n̂ ⋅ u⃗)
     rhs = r_norm / xr_dot_u
     f = x⁰_target - x⁰ - r_norm
     return v, f, rhs, r_norm, d¹, d², d³
