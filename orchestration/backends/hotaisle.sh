@@ -45,13 +45,29 @@ log()       { echo "[$(date -u +%FT%TZ)] $*"; }
 balance()   { api GET /balance/ | jq -r '.available_balance/100'; }
 min_resv()  { api GET /virtual_machines/available/ | jq -r --argjson g "$GPUS" \
               '[.[]|select(.Specs.gpus[0].model=="MI300X" and .Specs.gpus[0].count==$g)|.MinimumReservationMinutes][0]//1'; }
+price()     { api GET /virtual_machines/available/ | jq -r --argjson g "$GPUS" \
+              '[.[]|select(.Specs.gpus[0].model=="MI300X" and .Specs.gpus[0].count==$g)|.OnDemandPrice*$g][0]//empty'; }
+
+# Persistent cost ledger (shared with runpod.sh; reported by orchestration/cost_report.sh).
+# Append-only TSV; rate_cents_h = the VM's $/h in CENTS captured at provision (list prices drift —
+# and Hot Aisle re-rates RUNNING VMs on a rise, so cost_report.sh also honours rate_change rows).
+# A ledger write must NEVER break a campaign ⇒ every append is best-effort.
+LEDGER="${EDM_CLOUD_LEDGER:-$HOME/.config/edm-cloud-ledger.tsv}"
+ledger()    {   # ledger <vm> <event> <detail> [rate_cents_h] [balance_usd]
+    { mkdir -p "$(dirname "$LEDGER")"
+      [ -f "$LEDGER" ] || printf 'ts_utc\tprovider\tvm\tevent\tdetail\trate_cents_h\tbalance_usd\n' > "$LEDGER"
+      printf '%s\thotaisle\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" "${4:-}" "${5:-}" >> "$LEDGER"
+    } 2>/dev/null || true
+}
 
 provision() {
-    log "provisioning ${GPUS}×MI300X (balance \$$(balance))…"
+    local bal rate; bal=$(balance 2>/dev/null) || bal=""; rate=$(price 2>/dev/null) || rate=""
+    log "provisioning ${GPUS}×MI300X (balance \$${bal:-?}, list ${rate:-?}¢/h)…"
     local vm; vm=$(api POST /virtual_machines/ -H "Content-Type: application/json" \
         --data-binary "{\"gpus\":[{\"model\":\"MI300X\",\"count\":$GPUS}]}")
     NAME=$(echo "$vm"|jq -r .name); IP=$(echo "$vm"|jq -r .ssh_access.ip_address); PROV_TS=$(date +%s)
     log "provisioned $NAME ($IP)"
+    ledger "$NAME" provision "gpus=$GPUS" "$rate" "$bal"
 }
 wait_ssh() { log "waiting for ssh…"; local i; for i in $(seq 1 40); do ssh_vm true 2>/dev/null && return 0; sleep 15; done; return 1; }
 warm() {
@@ -130,6 +146,7 @@ run_campaign() {
     fi
     push_orchestration   # VM runs the driver's framework + this campaign file (works pre-merge too)
     notify hourglass_flowing_sand default "EDM hotaisle started" "$CAMPAIGN on $NAME (${GPUS}×MI300X)"
+    ledger "$NAME" campaign_start "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"
     log "launching $CAMPAIGN on the VM via the local backend (rocm), detached…"
     # nohup + a pidfile (not setsid): keeps the driver's PID so we can tell "still running" from "crashed".
     # juliaup's PATH lives in .bashrc/.profile, which a non-interactive ssh shell never sources — export
@@ -140,6 +157,7 @@ run_campaign() {
     until ssh_vm "grep -q '\\] ${CAMPAIGN} DONE' EDM/runs/${CAMPAIGN}.out 2>/dev/null"; do
         if ! ssh_vm "kill -0 \$(cat EDM/runs/${CAMPAIGN}.pid 2>/dev/null) 2>/dev/null"; then
             notify rotating_light urgent "EDM hotaisle CRASH" "$CAMPAIGN driver died with no DONE on $NAME — VM KEPT for inspection; teardown when done (verify in TUI)."
+            ledger "$NAME" campaign_crash "campaign=$CAMPAIGN driver died, no DONE"
             log "[ERROR] driver process gone, no DONE marker — likely crashed. VM $NAME KEPT. tail:"; ssh_vm "tail -n 20 EDM/runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[vm] /'
             return 1
         fi
@@ -151,6 +169,7 @@ run_campaign() {
         hotaisle@"$IP":"EDM/runs/$CAMPAIGN/" "$OUT/$CAMPAIGN/"
     download_verify "$OUT/$CAMPAIGN" || log "[verify] integrity problems — products also remain on VM:EDM/runs/$CAMPAIGN"
     notify white_check_mark default "EDM hotaisle done" "$CAMPAIGN → $OUT/$CAMPAIGN ; VM $NAME KEPT WARM — run teardown."
+    ledger "$NAME" campaign_done "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"
     log "products → $OUT/$CAMPAIGN ; VM $NAME KEPT WARM (state $STATE). Add more: $0 run <campaign>. Finish: $0 teardown"
 }
 
@@ -165,8 +184,10 @@ teardown() {
     /usr/bin/ssh -O exit -o ControlPath="$CM" hotaisle@"$IP" 2>/dev/null || true
     if api DELETE "/virtual_machines/$NAME/" >/dev/null 2>&1; then
         rm -f "$STATE"
-        log "API delete of $NAME accepted; balance \$$(balance). VERIFY it's gone in the TUI (ssh admin.hotaisle.app) — billing stops on TUI destroy."
-        notify checkered_flag default "EDM hotaisle torn down" "$NAME deleted; balance \$$(balance). Verify in TUI."
+        local bal; bal=$(balance 2>/dev/null) || bal=""
+        ledger "$NAME" teardown "" "" "$bal"
+        log "API delete of $NAME accepted; balance \$${bal:-?}. VERIFY it's gone in the TUI (ssh admin.hotaisle.app) — billing stops on TUI destroy."
+        notify checkered_flag default "EDM hotaisle torn down" "$NAME deleted; balance \$${bal:-?}. Verify in TUI."
     else
         notify rotating_light urgent "EDM teardown FAILED" "API DELETE of $NAME errored — VM likely STILL UP + billing. Destroy it in the TUI now (ssh admin.hotaisle.app)."
         log "[ERROR] API DELETE of $NAME FAILED — VM likely STILL UP + billing. DESTROY IN THE TUI. state kept at $STATE."
