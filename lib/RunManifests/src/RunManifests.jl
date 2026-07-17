@@ -192,6 +192,11 @@ function run_spec_from_manifest(manifest::AbstractDict)
     haskey(cfg, "window_tail") && (env["EDM_WINDOW_TAIL"] = string(cfg["window_tail"]))
     haskey(cfg, "bunch_nb") && (env["EDM_BUNCH_NB"] = string(cfg["bunch_nb"]))
     haskey(cfg, "bunch_l") && (env["EDM_BUNCH_L"] = string(cfg["bunch_l"]))
+    # Retarded-time kernel: manifest stores the dashboard-canonical type name; replay re-emits the knob.
+    if get(cfg, "accumulation_alg", "") == "GPUKernelNewton"
+        env["EDM_ACCUM_ALG"] = "newton"
+        haskey(cfg, "newton_iters") && (env["EDM_NEWTON_ITERS"] = string(cfg["newton_iters"]))
+    end
     haskey(cfg, "reltol") && (env["EDM_RELTOL"] = string(cfg["reltol"]))
     haskey(cfg, "abstol") && (env["EDM_ABSTOL"] = string(cfg["abstol"]))
     sv = get(cfg, "interp_saveat", "adaptive")

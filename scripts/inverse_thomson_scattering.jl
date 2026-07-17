@@ -124,6 +124,11 @@ const WINDOW_TAIL = parse(Float64, get(ENV, "EDM_WINDOW_TAIL", "0.5"))   # :narr
 #   toward ~0.15 there. Defaults 0.5/0.5 = the legacy hard-coded margins.
 (WINDOW_LEAD > 0 && WINDOW_TAIL > 0) ||
     error("EDM_WINDOW_LEAD/EDM_WINDOW_TAIL must be > 0, got $WINDOW_LEAD/$WINDOW_TAIL")
+const ACCUM_ALG = lowercase(get(ENV, "EDM_ACCUM_ALG", "rk4"))   # retarded-time kernel: rk4 (marching, the
+#   PR-29-validated default) | newton (per-slot light-cone root solve, PR #31 — equal-or-better accuracy
+#   at neutral-to-1.3× field cost; the better default once cross-validated on an inverse cell).
+ACCUM_ALG in ("rk4", "newton") || error("EDM_ACCUM_ALG must be \"rk4\" or \"newton\", got \"$ACCUM_ALG\"")
+const NEWTON_ITERS = parse(Int, get(ENV, "EDM_NEWTON_ITERS", "2"))   # newton only: warm-started corrections/slot
 const BUNCH_NB = parse(Int, get(ENV, "EDM_BUNCH_NB", "0"))   # phased-array prebunching: target harmonic n_b (0 = off)
 const BUNCH_L = parse(Int, get(ENV, "EDM_BUNCH_L", "0"))     # extra helical winding ℓ on top of the focusing term
 BUNCH_NB >= 0 || error("EDM_BUNCH_NB must be ≥ 0, got $BUNCH_NB")
@@ -381,16 +386,18 @@ gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
 t_field = @elapsed begin
     fld, gpu_telem = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT;
             devices = 1:ndev, tracefile = gputracefile) do
+        accum_alg = ACCUM_ALG == "newton" ? GPUKernelNewton() : GPUKernelRK4()
+        accum_kw = ACCUM_ALG == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = NSUBSTEPS)
         if ndev > 1
             @info "sharding electrons across $ndev devices"
             accumulate_field_sharded(
-                trajs, screen, GPUKernelRK4(), gpu_backend;
-                n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+                trajs, screen, accum_alg, gpu_backend;
+                accum_kw..., mode = Val(FIELD_MODE), sync_per_electron = SYNC
             )
         else
             accumulate_field(
-                trajs, screen, GPUKernelRK4(), gpu_backend;
-                n_substeps = NSUBSTEPS, mode = Val(FIELD_MODE), sync_per_electron = SYNC
+                trajs, screen, accum_alg, gpu_backend;
+                accum_kw..., mode = Val(FIELD_MODE), sync_per_electron = SYNC
             )
         end
     end
@@ -460,7 +467,9 @@ config = Dict{String, Any}(
     "bunch_l" => BUNCH_L,
     "harmonics" => collect(HARMONICS), # harmonic bins the maps extract (≈4γ²ω for :narrow)
     "backscatter_n0" => N0,            # on-axis backscatter fundamental ω_s/ω = (1+β)/(1−β) ≈ 4γ²
+    "accumulation_alg" => (ACCUM_ALG == "newton" ? "GPUKernelNewton" : "GPUKernelRK4"),   # dashboard canonical name
 )
+ACCUM_ALG == "newton" && (config["newton_iters"] = NEWTON_ITERS)
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
