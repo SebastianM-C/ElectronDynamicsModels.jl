@@ -25,9 +25,21 @@
 #     never stored in run metadata — a rate correction heals everything by regeneration.
 # Rate for a VM missing a provision rate: live Hot Aisle API lookup (token file), else
 # --rate-cents, else 0 + warning. Plain bash + GNU awk/date; jq/curl only for the API fallback.
+#
+# MULTI-MACHINE: each campaign-driving machine appends to its own local ledger. The reporter
+# merges the main ledger with every *.tsv under ~/.config/edm-cloud-ledgers/ (drop other
+# machines' ledgers there — the dashboard publish hook rsyncs them in), or takes explicit
+# --ledger FILE (repeatable; replaces the defaults). Byte-identical rows are deduped, so a
+# ledger accidentally present twice is harmless. Convention: account-scoped rows (topup,
+# balance) live ONLY in the publish hub's own ledger or provider lifetime sums double-count;
+# machine-scoped rows (provision/campaign/teardown) live where the campaign was driven.
+# Campaign→VM attribution matches dir=… first (machine-local paths), then falls back to the
+# campaign=<name> token when exactly one VM claims that name (ambiguous names never match).
 set -euo pipefail
 
 LEDGER="${EDM_CLOUD_LEDGER:-$HOME/.config/edm-cloud-ledger.tsv}"
+LEDGER_DIR="${EDM_CLOUD_LEDGER_DIR:-$HOME/.config/edm-cloud-ledgers}"
+LEDGERS=()
 SINCE="1970-01-01T00:00:00Z"
 UNTIL="$(date -u +%FT%TZ)"
 RATE_FALLBACK=""
@@ -37,27 +49,35 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --since)      SINCE=${2:?}; shift 2 ;;
         --until)      UNTIL=${2:?}; shift 2 ;;
-        --ledger)     LEDGER=${2:?}; shift 2 ;;
+        --ledger)     LEDGERS+=("${2:?}"); shift 2 ;;
         --rate-cents) RATE_FALLBACK=${2:?}; shift 2 ;;
         --html)       HTML_FILE=${2:?}; shift 2 ;;
         -h|--help)    sed -n '2,28p' "$0"; exit 0 ;;
         *)            DIRS+=("$1"); shift ;;
     esac
 done
-[ -f "$LEDGER" ] || { echo "no ledger at $LEDGER (nothing recorded yet?)" >&2; exit 1; }
+if [ ${#LEDGERS[@]} -eq 0 ]; then   # defaults: the machine ledger + any synced-in remote ledgers
+    [ -f "$LEDGER" ] && LEDGERS+=("$LEDGER")
+    if [ -d "$LEDGER_DIR" ]; then
+        for f in "$LEDGER_DIR"/*.tsv; do [ -f "$f" ] && LEDGERS+=("$f"); done
+    fi
+fi
+[ ${#LEDGERS[@]} -gt 0 ] || { echo "no ledger at $LEDGER or $LEDGER_DIR/*.tsv (nothing recorded yet?)" >&2; exit 1; }
 SINCE_E=$(date -u -d "$SINCE" +%s)
 UNTIL_E=$(date -u -d "$UNTIL" +%s)
 
 # Current Hot Aisle list price (cents/GPU-h) — fetched ONLY if a provision row lacks a rate.
+# Team handle stays out of git: HOTAISLE_TEAM (config.env) or ~/.config/hotaisle/team.
 hotaisle_list_rate() {
     local tokf="${HOTAISLE_TOKEN_FILE:-$HOME/.config/hotaisle/token}"
-    [ -f "$tokf" ] || return 1
+    local team="${HOTAISLE_TEAM:-$(cat "$HOME/.config/hotaisle/team" 2>/dev/null)}"
+    [ -f "$tokf" ] && [ -n "$team" ] || return 1
     curl -fsS --max-time 10 -H "Authorization: Token $(cat "$tokf")" \
-        "https://admin.hotaisle.app/api/teams/${HOTAISLE_TEAM:-REDACTED}/virtual_machines/available/" \
+        "https://admin.hotaisle.app/api/teams/${team}/virtual_machines/available/" \
       | jq -r '[.[]|select(.Specs.gpus[0].model=="MI300X" and .Specs.gpus[0].count==1)|.OnDemandPrice][0] // empty'
 }
 API_RATE=""
-if tail -n +2 "$LEDGER" | awk -F'\t' '$4=="provision" && $2=="hotaisle" && $6==""{ex=1} END{exit !ex}'; then
+if awk -F'\t' 'FNR>1 && $4=="provision" && $2=="hotaisle" && $6==""{ex=1} END{exit !ex}' "${LEDGERS[@]}"; then
     API_RATE=$(hotaisle_list_rate 2>/dev/null || true)
 fi
 
@@ -78,7 +98,9 @@ digest_manifests() {   # M \t realdir \t name \t cells \t gpu_seconds
 
 tag_ledger() {   # L \t ts \t provider \t vm \t event \t detail \t rate \t balance
     # NOT a bash read loop: with IFS=$'\t' consecutive tabs collapse and empty fields shift.
-    tail -n +2 "$LEDGER" | awk -F'\t' -v OFS='\t' 'NF { print "L", $0 }'
+    # Merge every ledger (header-stripped); sort -u dedupes byte-identical rows (a ledger
+    # synced twice is harmless) and ISO timestamps sort lexicographically = chronologically.
+    awk 'FNR > 1' "${LEDGERS[@]}" | sort -u | awk -F'\t' -v OFS='\t' 'NF { print "L", $0 }'
 }
 
 run_report() {
@@ -117,6 +139,10 @@ $1 == "L" {
                                     if (e >= since && e <= until) notes[++nn] = iso(e) "  " prov " rate_change → " rate "¢/h  (" det ")" }
     else if (ev == "campaign_start" || ev == "campaign_done") {
         if (match(det, /dir=[^\t ]+/)) dirvm[substr(det, RSTART + 4, RLENGTH - 4)] = vm
+        if (match(det, /campaign=[^\t ]+/)) {   # name fallback for cross-machine dirs
+            cn = substr(det, RSTART + 9, RLENGTH - 9)
+            if ((cn in namevm) && namevm[cn] != vm) nameamb[cn] = 1; else namevm[cn] = vm
+        }
     }
     else if (ev == "campaign_crash" && e >= since && e <= until) { notes[++nn] = iso(e) "  " vm "  " det }
     else if (ev == "incident"       && e >= since && e <= until) { notes[++nn] = iso(e) "  " det }
@@ -150,7 +176,8 @@ END {
     }
     # ── per-campaign compute (unattributed dirs = non-cloud/pre-ledger → $0) ──
     for (i = 1; i <= nm; i++) {
-        cvm[i] = (mdir[i] in dirvm) ? dirvm[mdir[i]] : "-"
+        cvm[i] = (mdir[i] in dirvm) ? dirvm[mdir[i]] : \
+                 ((mname[i] in namevm) && !(mname[i] in nameamb) ? namevm[mname[i]] : "-")
         cusd[i] = (cvm[i] != "-") ? msec[i] / 3600.0 * vavg[cvm[i]] : 0
         if (cvm[i] != "-") { csum[cvm[i]] += cusd[i]; tot_compute += cusd[i] }
     }
