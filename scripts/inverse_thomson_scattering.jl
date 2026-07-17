@@ -131,9 +131,14 @@ ACCUM_ALG in ("rk4", "newton") || error("EDM_ACCUM_ALG must be \"rk4\" or \"newt
 const NEWTON_ITERS = parse(Int, get(ENV, "EDM_NEWTON_ITERS", "2"))   # newton only: warm-started corrections/slot
 const BUNCH_NB = parse(Int, get(ENV, "EDM_BUNCH_NB", "0"))   # phased-array prebunching: target harmonic n_b (0 = off)
 const BUNCH_L = parse(Int, get(ENV, "EDM_BUNCH_L", "0"))     # extra helical winding ℓ on top of the focusing term
+const BUNCH_CHIRP = parse(Float64, get(ENV, "EDM_BUNCH_CHIRP", "0"))   # ponderomotive chirp pre-compensation
+#   scale s (sign included; 0 = off). A static offset can null the chirp phase at ONE stationary point
+#   of the envelope: s=1 targets the full accumulated (trailing-wing) phase, s=0.5 the pulse centre.
 BUNCH_NB >= 0 || error("EDM_BUNCH_NB must be ≥ 0, got $BUNCH_NB")
 (BUNCH_NB == 0 && BUNCH_L != 0) &&
     error("EDM_BUNCH_L requires EDM_BUNCH_NB > 0 (the helical term's length scale is λ/n_b)")
+(BUNCH_NB == 0 && BUNCH_CHIRP != 0) &&
+    error("EDM_BUNCH_CHIRP requires EDM_BUNCH_NB > 0 (it is part of the array phasing)")
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
@@ -322,8 +327,21 @@ R₀ = Rmax * sunflower(N, 2)
 # The ℓ term imprints a helix at bin n_b: with the drive's OAM m, the coherently observed winding
 # at n_b is m∓ℓ (sign fixed empirically by the smoke's phase maps). Offsets are ≤ 0.15λ, so the
 # envelope overlap, meet-at-origin timing, and window margins are unaffected.
+# Ponderomotive chirp pre-compensation (EDM_BUNCH_CHIRP = s): each electron accumulates an
+# intensity-dependent observed carrier phase ΔΦ = 2ω·a₀²·|u_rel(r)|²·I₂ (I₂ = √(π/2)·τ/(1+β)),
+# ~30·a₀²·|u|² cycles at γ=10 — the a₀=1 array decoherer (see the bunching relay notes). A static
+# Δz can null it at one stationary point only; converted through the Δz→phase leverage ω(N₀+1)/c
+# the (1+β) factors cancel: Δz_chirp = −s·a₀²·|u_rel|²·√(π/2)·cτ/(N₀+1). |u_rel| is the closed-form
+# LG amplitude at focus, HARD-CODED for p=2, |m|=2 (N_pm=√12, ₁F₁(−2,3,x)=1−2x/3+x²/12) — guarded.
+(BUNCH_CHIRP != 0 && (p_radial != 2 || abs(m_azimuthal) != 2)) &&
+    error("EDM_BUNCH_CHIRP's |u_rel| is hard-coded for the p=2, |m|=2 LG mode")
+u_rel2(r) = begin
+    σ = (r[1]^2 + r[2]^2) / w₀^2
+    (√12 * 2σ * (1 - 4σ / 3 + σ^2 / 3) * exp(-σ))^2
+end
 bunch_dz(r) = BUNCH_NB == 0 ? 0.0 :
-    ((1 + β) / 2) * ((r[1]^2 + r[2]^2) / (2Z) + BUNCH_L * atan(r[2], r[1]) / (2π) * λ / BUNCH_NB)
+    ((1 + β) / 2) * ((r[1]^2 + r[2]^2) / (2Z) + BUNCH_L * atan(r[2], r[1]) / (2π) * λ / BUNCH_NB) -
+    BUNCH_CHIRP * A0^2 * u_rel2(r) * sqrt(π / 2) * c * τ / (N0 + 1)
 xμ = [[u⁰_t * τi, r..., u³_z * τi + bunch_dz(r)] for r in R₀]
 
 set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
@@ -465,6 +483,7 @@ config = Dict{String, Any}(
     "window_tail" => WINDOW_TAIL,
     "bunch_nb" => BUNCH_NB,            # EDM_BUNCH_NB / EDM_BUNCH_L knobs (phased-array prebunching; 0 = off)
     "bunch_l" => BUNCH_L,
+    "bunch_chirp" => BUNCH_CHIRP,      # EDM_BUNCH_CHIRP knob (ponderomotive pre-compensation scale)
     "harmonics" => collect(HARMONICS), # harmonic bins the maps extract (≈4γ²ω for :narrow)
     "backscatter_n0" => N0,            # on-axis backscatter fundamental ω_s/ω = (1+β)/(1−β) ≈ 4γ²
     "accumulation_alg" => (ACCUM_ALG == "newton" ? "GPUKernelNewton" : "GPUKernelRK4"),   # dashboard canonical name
