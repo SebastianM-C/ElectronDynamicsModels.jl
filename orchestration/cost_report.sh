@@ -211,7 +211,16 @@ END {
     if (used_def) print "[warn] some VMs lacked a recorded rate and no fallback was available (priced at $0)"
     for (i = 1; i <= nn; i++) { if (i == 1) print "\nnotes:"; print "  " notes[i] }
 }
-function html_out(   i, p, vm) {
+function rbar(x, y, w, h, r, fill, title,   p) {   # horizontal bar, 4px rounded data-end, square baseline end
+    if (w < r + 1)
+        p = sprintf("<rect x=\"%.1f\" y=\"%.1f\" width=\"%.2f\" height=\"%d\" fill=\"%s\"/>", x, y, (w < 0.75 ? 0.75 : w), h, fill)
+    else
+        p = sprintf("<path d=\"M%.1f %.1f h%.2f a%d %d 0 0 1 %d %d v%d a%d %d 0 0 1 -%d %d h-%.2f z\" fill=\"%s\"/>", \
+                    x, y, w - r, r, r, r, r, h - 2*r, r, r, r, r, w - r, fill)
+    if (title != "") p = "<g><title>" title "</title>" p "</g>"
+    return p
+}
+function html_out(   i, j, k, p, vm, m, ord, mx, GUT, PW, BH, PITCH, y, w, wc, wo, fh, lab) {
     print "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">"
     print "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
     print "<title>EDM cloud costs</title><style>"
@@ -229,15 +238,71 @@ function html_out(   i, p, vm) {
     print "tr.total td{border-top:1px solid var(--border-2);font-weight:600}"
     print ".note{color:var(--muted);font-size:12px;margin-top:6px}"
     print ".run{color:var(--accent);font-weight:600}"
+    print ":root{--s1:#2a78d6;--s2:#008300}"   # validated 2-slot categorical palette (light mode, white surface)
+    print ".viz{margin:6px 0 10px} .viz svg{width:100%;height:auto;display:block;max-width:760px}"
+    print ".viz text{font-family:var(--ui);font-size:12px}"
+    print ".viz .lab{fill:#6a7284} .viz .val{fill:var(--ink)} .viz .inlab{fill:#fff}"
+    print ".legend{font-size:12px;color:#6a7284;margin:2px 0 4px}"
+    print ".legend span{margin-right:16px}"
+    print ".sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}"
     print "</style></head><body><main>"
     print "<h1>EDM cloud campaign costs</h1>"
     printf "<p class=\"meta\">updated %s &middot; window %s → %s &middot; derived from the cost ledger + run-manifest [timing] (never stored in run metadata)</p>\n", iso(systime()), iso(since), iso(until)
+    # ── figure: cost per campaign (single series → no legend; magnitude, sorted desc) ──
+    GUT = 210; PW = 440; BH = 16; PITCH = 26
+    m = 0
+    for (i = 1; i <= nm; i++) if (cusd[i] > 0) ord[++m] = i
+    for (j = 2; j <= m; j++) {   # insertion sort desc by USD
+        k = ord[j]; i = j - 1
+        while (i > 0 && cusd[ord[i]] < cusd[k]) { ord[i+1] = ord[i]; i-- }
+        ord[i+1] = k
+    }
+    if (m > 0) {
+        mx = cusd[ord[1]]
+        fh = m * PITCH + 12
+        printf "<h2>Cost per campaign</h2><div class=\"viz\"><svg viewBox=\"0 0 720 %d\" role=\"img\" aria-label=\"Cost per campaign, USD\">\n", fh
+        printf "<line x1=\"%d\" y1=\"4\" x2=\"%d\" y2=\"%d\" stroke=\"#c3c2b7\" stroke-width=\"1\"/>\n", GUT, GUT, fh - 4
+        for (j = 1; j <= m; j++) {
+            i = ord[j]; y = 6 + (j - 1) * PITCH; w = cusd[i] / mx * PW
+            printf "<text x=\"%d\" y=\"%d\" text-anchor=\"end\" class=\"lab\">%s</text>\n", GUT - 8, y + 12, esc(mname[i])
+            print rbar(GUT + 1, y, w, BH, 4, "var(--s1)", \
+                       esc(mname[i]) " — " esc(cvm[i]) " — " sprintf("%.2f GPU-h — $%.2f", msec[i] / 3600.0, cusd[i]))
+            printf "<text x=\"%.1f\" y=\"%d\" class=\"val\">$%.2f</text>\n", GUT + 1 + w + 6, y + 12, cusd[i]
+        }
+        print "</svg></div>"
+    }
     if (nm > 0) {
         print "<h2>Per campaign</h2><table><tr><th>campaign</th><th>provider</th><th>vm</th><th class=\"n\">cells</th><th class=\"n\">GPU-h</th><th class=\"n\">USD</th></tr>"
         for (i = 1; i <= nm; i++)
             printf "<tr><td>%s</td><td>%s</td><td>%s</td><td class=\"n\">%d</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td></tr>\n", esc(mname[i]), (cvm[i] == "-") ? "&mdash;" : esc(vprovider[cvm[i]]), (cvm[i] == "-") ? "&mdash;" : esc(cvm[i]), mcells[i], msec[i] / 3600.0, cusd[i]
         print "</table>"
         print "<p class=\"note\">campaigns marked &mdash; have no cloud-ledger attribution (local / SLURM / pre-ledger) and are shown at $0.</p>"
+    }
+    # ── figure: per-VM compute vs overhead (2 series → legend; stacked, 2px surface gaps) ──
+    m = 0; mx = 0
+    for (i = 1; i <= nv; i++) {
+        vm = vlist[i]; if (vm in vskip) continue
+        ord[++m] = i; if (vusd[vm] > mx) mx = vusd[vm]
+    }
+    if (m > 0 && mx > 0) {
+        fh = m * PITCH + 12
+        print "<h2>Per VM: compute vs overhead</h2>"
+        print "<p class=\"legend\"><span><span class=\"sw\" style=\"background:var(--s1)\"></span>compute (manifest-backed)</span><span><span class=\"sw\" style=\"background:var(--s2)\"></span>overhead + in-flight</span></p>"
+        printf "<div class=\"viz\"><svg viewBox=\"0 0 720 %d\" role=\"img\" aria-label=\"Per-VM wall-clock cost split into compute and overhead, USD\">\n", fh
+        printf "<line x1=\"%d\" y1=\"4\" x2=\"%d\" y2=\"%d\" stroke=\"#c3c2b7\" stroke-width=\"1\"/>\n", GUT, GUT, fh - 4
+        for (j = 1; j <= m; j++) {
+            vm = vlist[ord[j]]; y = 6 + (j - 1) * PITCH
+            wc = (csum[vm] > 0 ? csum[vm] : 0) / mx * PW
+            wo = (vusd[vm] - csum[vm] > 0 ? vusd[vm] - csum[vm] : 0) / mx * PW
+            printf "<text x=\"%d\" y=\"%d\" text-anchor=\"end\" class=\"lab\">%s</text>\n", GUT - 8, y + 12, esc(vm)
+            if (wc > 0.1) printf "<g><title>%s — compute $%.2f</title><rect x=\"%d\" y=\"%d\" width=\"%.2f\" height=\"%d\" fill=\"var(--s1)\"/></g>\n", esc(vm), csum[vm], GUT + 1, y, wc, BH
+            if (wo > 0.1) print rbar(GUT + 1 + wc + (wc > 0.1 ? 2 : 0), y, wo, BH, 4, "var(--s2)", \
+                                     esc(vm) " — overhead $" sprintf("%.2f", vusd[vm] - csum[vm]) ((vm in vdown) ? "" : " — still running"))
+            lab = sprintf("$%.2f", csum[vm] + 0)
+            if (wc > length(lab) * 6.8 + 14) printf "<text x=\"%d\" y=\"%d\" class=\"inlab\">%s</text>\n", GUT + 8, y + 12, lab
+            printf "<text x=\"%.1f\" y=\"%d\" class=\"val\">$%.2f</text>\n", GUT + 1 + wc + 2 + wo + 6, y + 12, vusd[vm]
+        }
+        print "</svg></div>"
     }
     print "<h2>Per VM</h2><table><tr><th>vm</th><th>provider</th><th class=\"n\">wall-h</th><th class=\"n\">wall USD</th><th class=\"n\">compute USD</th><th class=\"n\">overhead USD</th><th></th></tr>"
     for (i = 1; i <= nv; i++) {
