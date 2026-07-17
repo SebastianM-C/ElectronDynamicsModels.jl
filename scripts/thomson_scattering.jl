@@ -53,9 +53,13 @@ const NELEC = parse(Int, get(ENV, "EDM_N", "10000"))
 const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "8000"))
 const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
-const GPU_SOLVER = lowercase(get(ENV, "EDM_GPU_SOLVER", "rk4"))  # retarded-time kernel: rk4 (ODE march, EDM_NSUBSTEPS) | newton (light-cone root solve, EDM_NEWTON_ITERS)
+# Retarded-time kernel: rk4 (ODE march, EDM_NSUBSTEPS) | newton (light-cone root solve,
+# EDM_NEWTON_ITERS). EDM_ACCUM_ALG is the canonical knob (matches the manifest/dashboard
+# accumulation_alg key + inverse_thomson_scattering.jl); EDM_GPU_SOLVER is the legacy alias
+# from the first newton campaigns' manifests — kept so their replay keeps working.
+const GPU_SOLVER = lowercase(get(ENV, "EDM_ACCUM_ALG", get(ENV, "EDM_GPU_SOLVER", "rk4")))
 GPU_SOLVER in ("rk4", "newton") ||
-    error("EDM_GPU_SOLVER must be \"rk4\" or \"newton\", got $(repr(GPU_SOLVER))")
+    error("EDM_ACCUM_ALG must be \"rk4\" or \"newton\", got $(repr(GPU_SOLVER))")
 const NEWTON_ITERS = parse(Int, get(ENV, "EDM_NEWTON_ITERS", "2"))  # ≥3 for strongly-relativistic forward scattering
 const RELTOL = parse(Float64, get(ENV, "EDM_RELTOL", "1e-12"))   # ODE-solve rel tolerance (Vern9)
 const ABSTOL_ENV = get(ENV, "EDM_ABSTOL", "")                    # "" ⇒ abserr(a0); else this Float64

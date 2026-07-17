@@ -12,7 +12,7 @@ BASE=(
   EDM_N=10000 EDM_RELTOL=1e-12
   EDM_INTERP_SAVEAT=16                 # uniform trajectory output (the floor fix)
   EDM_INITIAL_PHASE=-1.5707963267948966   # φ0 = -π/2 (published convention)
-  EDM_GPU_SOLVER=newton EDM_NEWTON_ITERS=2
+  EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2
 )
 CELLS=(
   "circ_a1em3|EDM_POL=circular_minus EDM_A0=1e-3"
@@ -23,6 +23,6 @@ CELLS=(
   # RK4 controls — the same-hardware solver A/B baseline at both a0 decades (the 1e-3 one
   # doubles as a Newton-vs-RK4 check in the spline-floor regime). No _it1 twins for rk4:
   # n_iters doesn't exist there, they'd be duplicate runs.
-  "circ_a1e1_rk4|EDM_POL=circular_minus EDM_A0=0.1 EDM_GPU_SOLVER=rk4 EDM_NSUBSTEPS=1"
-  "circ_a1em3_rk4|EDM_POL=circular_minus EDM_A0=1e-3 EDM_GPU_SOLVER=rk4 EDM_NSUBSTEPS=1"
+  "circ_a1e1_rk4|EDM_POL=circular_minus EDM_A0=0.1 EDM_ACCUM_ALG=rk4 EDM_NSUBSTEPS=1"
+  "circ_a1em3_rk4|EDM_POL=circular_minus EDM_A0=1e-3 EDM_ACCUM_ALG=rk4 EDM_NSUBSTEPS=1"
 )
