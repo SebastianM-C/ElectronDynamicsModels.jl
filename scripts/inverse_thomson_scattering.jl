@@ -468,8 +468,10 @@ config = Dict{String, Any}(
     "harmonics" => collect(HARMONICS), # harmonic bins the maps extract (≈4γ²ω for :narrow)
     "backscatter_n0" => N0,            # on-axis backscatter fundamental ω_s/ω = (1+β)/(1−β) ≈ 4γ²
     "accumulation_alg" => (ACCUM_ALG == "newton" ? "GPUKernelNewton" : "GPUKernelRK4"),   # dashboard canonical name
+    "newton_iters" => NEWTON_ITERS,    # recorded UNCONDITIONALLY (rk4 runs too): a mixed rk4/newton
+    #   pool otherwise turns newton_iters into a sweep axis whose rk4 members lack the key, and the
+    #   dashboard builder's _build_sweep KeyErrors on it (found by the Hot Aisle kernel-A/B session).
 )
-ACCUM_ALG == "newton" && (config["newton_iters"] = NEWTON_ITERS)
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
