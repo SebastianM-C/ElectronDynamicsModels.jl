@@ -25,6 +25,10 @@ while :; do
         [ -e "$dir/$uuid.reduced" ] || continue      # cube not yet proven complete
         [ -e "$dir/.drained_$base" ] && continue
         log "$camp/$base → store ($(du -h "$cube" | cut -f1))"
+        # plain rsync's implicit mkdir is not -p: push a local skeleton first so every
+        # parent of cubes/<camp>/<uuid>/ exists (harmless no-op when it already does)
+        skel=$(mktemp -d); mkdir -p "$skel/cubes/$camp/$uuid"
+        RS -r "$skel/cubes" "$STORE:"; rm -rf "$skel"
         if RS -t --partial "$cube" "$STORE:cubes/$camp/$uuid/"; then
             # checksum dry-run: -i itemizes ONLY files that would re-transfer ⇒ any mention = mismatch
             if RS -nci -t "$cube" "$STORE:cubes/$camp/$uuid/" | grep -q "$base"; then
