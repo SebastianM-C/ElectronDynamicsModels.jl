@@ -124,10 +124,15 @@ const WINDOW_TAIL = parse(Float64, get(ENV, "EDM_WINDOW_TAIL", "0.5"))   # :narr
 #   toward ~0.15 there. Defaults 0.5/0.5 = the legacy hard-coded margins.
 (WINDOW_LEAD > 0 && WINDOW_TAIL > 0) ||
     error("EDM_WINDOW_LEAD/EDM_WINDOW_TAIL must be > 0, got $WINDOW_LEAD/$WINDOW_TAIL")
+const BUNCH_NB = parse(Int, get(ENV, "EDM_BUNCH_NB", "0"))   # phased-array prebunching: target harmonic n_b (0 = off)
+const BUNCH_L = parse(Int, get(ENV, "EDM_BUNCH_L", "0"))     # extra helical winding ℓ on top of the focusing term
+BUNCH_NB >= 0 || error("EDM_BUNCH_NB must be ≥ 0, got $BUNCH_NB")
+(BUNCH_NB == 0 && BUNCH_L != 0) &&
+    error("EDM_BUNCH_L requires EDM_BUNCH_NB > 0 (the helical term's length scale is λ/n_b)")
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
-@info "Inverse-Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 GAMMA TSPAN_TAU WINDOW SCREEN_HW WINDOW_LEAD WINDOW_TAIL SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
+@info "Inverse-Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 GAMMA TSPAN_TAU WINDOW SCREEN_HW WINDOW_LEAD WINDOW_TAIL BUNCH_NB BUNCH_L SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
 const T_START = time()   # wall-clock start → [timing].total in the manifest
 
 # Laser parameters
@@ -304,7 +309,17 @@ end
 # offset, at the waist) at t=0.
 N = NELEC
 R₀ = Rmax * sunflower(N, 2)
-xμ = [[u⁰_t * τi, r..., u³_z * τi] for r in R₀]
+# Optional phased-array prebunching (EDM_BUNCH_NB > 0): per-electron longitudinal start offset
+#     Δz = (1+β)/2 · [ ρ²/2Z  +  ℓ·θ/2π · λ/n_b ].
+# The ρ² term curves the start pancake into the paraboloid that cancels the flat-screen transverse
+# path spread at the on-axis pixel — ACHROMATIC array focusing of the backscatter; this removes the
+# speckle (the transverse path spread IS its source — see the inverse-speckle-tomography report).
+# The ℓ term imprints a helix at bin n_b: with the drive's OAM m, the coherently observed winding
+# at n_b is m∓ℓ (sign fixed empirically by the smoke's phase maps). Offsets are ≤ 0.15λ, so the
+# envelope overlap, meet-at-origin timing, and window margins are unaffected.
+bunch_dz(r) = BUNCH_NB == 0 ? 0.0 :
+    ((1 + β) / 2) * ((r[1]^2 + r[2]^2) / (2Z) + BUNCH_L * atan(r[2], r[1]) / (2π) * λ / BUNCH_NB)
+xμ = [[u⁰_t * τi, r..., u³_z * τi + bunch_dz(r)] for r in R₀]
 
 set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
 
@@ -441,6 +456,8 @@ config = Dict{String, Any}(
     "tspan_tau" => TSPAN_TAU,          # EDM_TSPAN_TAU knob (proper-time span per side, τ units; [setup].τi/τf are derived)
     "window_lead" => WINDOW_LEAD,      # EDM_WINDOW_LEAD / EDM_WINDOW_TAIL knobs (:narrow margins, λ units)
     "window_tail" => WINDOW_TAIL,
+    "bunch_nb" => BUNCH_NB,            # EDM_BUNCH_NB / EDM_BUNCH_L knobs (phased-array prebunching; 0 = off)
+    "bunch_l" => BUNCH_L,
     "harmonics" => collect(HARMONICS), # harmonic bins the maps extract (≈4γ²ω for :narrow)
     "backscatter_n0" => N0,            # on-axis backscatter fundamental ω_s/ω = (1+β)/(1−β) ≈ 4γ²
 )
