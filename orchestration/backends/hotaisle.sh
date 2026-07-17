@@ -49,8 +49,8 @@ price()     { api GET /virtual_machines/available/ | jq -r --argjson g "$GPUS" \
               '[.[]|select(.Specs.gpus[0].model=="MI300X" and .Specs.gpus[0].count==$g)|.OnDemandPrice*$g][0]//empty'; }
 
 # Persistent cost ledger (shared with runpod.sh; reported by orchestration/cost_report.sh).
-# Append-only TSV; rate_cents_h = the VM's $/h in CENTS captured at provision (list prices drift —
-# and Hot Aisle re-rates RUNNING VMs on a rise, so cost_report.sh also honours rate_change rows).
+# Append-only TSV; rate_cents_h = the VM's $/h in CENTS captured at provision (list prices drift;
+# top-up reconciliation 2026-07-17 confirmed a VM bills its provision-time list price for life).
 # A ledger write must NEVER break a campaign ⇒ every append is best-effort.
 LEDGER="${EDM_CLOUD_LEDGER:-$HOME/.config/edm-cloud-ledger.tsv}"
 ledger()    {   # ledger <vm> <event> <detail> [rate_cents_h] [balance_usd]
