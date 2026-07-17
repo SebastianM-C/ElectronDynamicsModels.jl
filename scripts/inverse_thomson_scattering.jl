@@ -101,9 +101,10 @@ const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const GAMMA = parse(Float64, get(ENV, "EDM_GAMMA", "10.0"))      # electron Lorentz factor (counter-propagating, +z)
 GAMMA >= 1.0 || error("EDM_GAMMA must be ≥ 1, got $GAMMA")
 const TSPAN_TAU = parse(Float64, get(ENV, "EDM_TSPAN_TAU", "8")) # proper-time span per side, in units of τ.
-#   The interaction occupies only ~τ/γ of PROPER time around τ=0 (lab window = ±TSPAN_TAU·γ·τ), and the
-#   uniform-saveat knot count scales ∝ γ·span — so γ-ladder campaigns scale this ∝ 1/γ (8, 1.6, 0.8 at
-#   γ = 10, 50, 100 keeps the validated ±80τ lab window and a γ-free knot count). Default 8 = legacy ±8τ.
+#   The interaction occupies only ~τ/γ of PROPER time around τ=0 (lab window = ±TSPAN_TAU·γ·τ; the
+#   1%-envelope overlap is |t| ≲ 1.1τ), and the uniform-saveat knot count scales ∝ γ·span — so γ-ladder
+#   campaigns scale this ∝ 1/γ (1.6, 0.32, 0.16 at γ = 10, 50, 100 = a constant ±16τ lab window and a
+#   γ-free knot count; the trimmed force-free coast is measured inert). Default 8 = legacy ±8τ.
 TSPAN_TAU > 0 || error("EDM_TSPAN_TAU must be > 0, got $TSPAN_TAU")
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
@@ -328,7 +329,7 @@ const ABSTOL = isempty(ABSTOL_ENV) ? 1.0e-11 : parse(Float64, ABSTOL_ENV)
 # RAM: knots/trajectory = 2·TSPAN_TAU·τ·γ(1+β)·knots / T (≈ 31k at γ=10, TSPAN_TAU=8, knots=4)
 # → ~6 MB of splines per trajectory, ~60 GB at N=10⁴ — fine on the cluster nodes, tight on 123 GB
 # boxes; lower EDM_INTERP_SAVEAT (or EDM_N) if host RAM binds. With the campaign convention
-# TSPAN_TAU ∝ 1/γ the count is γ-free (~61k at knots=8).
+# TSPAN_TAU·γ = 16 the count is γ-free (~24k at knots=16 → ~47 GB at N=10⁴).
 saveat = collect(τi:((2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)):τf)
 ensemble = EnsembleProblem(prob; prob_func, safetycopy = false)
 t_trajectories = @elapsed solution = solve(
