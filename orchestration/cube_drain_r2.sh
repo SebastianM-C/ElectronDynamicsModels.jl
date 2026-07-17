@@ -36,7 +36,7 @@ ENVF="${CUBE_R2_ENV:-$HOME/.config/edm-r2.env}"
 [ -f "$ENVF" ] || { echo "[drain-r2] $ENVF missing — refusing to start (fall back to cube_drain.sh)"; exit 1; }
 . "$ENVF"
 BUCKET="${R2_BUCKET:-simulation-storage}"
-RC() { rclone --s3-upload-concurrency "${R2_CONCURRENCY:-16}" --s3-chunk-size "${R2_CHUNK:-128M}" "$@"; }
+RC() { rclone --s3-no-check-bucket --s3-upload-concurrency "${R2_CONCURRENCY:-16}" --s3-chunk-size "${R2_CHUNK:-128M}" "$@"; }
 log() { echo "[drain-r2 $(date -u +%FT%TZ)] $*"; }
 
 log "watching $HOME/EDM/runs (bucket: $BUCKET)"
@@ -52,7 +52,7 @@ while :; do
         # local hash first (~3 min for 86 GB) — becomes the end-to-end reference the puller checks
         sha=$(sha256sum "$cube" | cut -d' ' -f1) || continue
         if RC copyto "$cube" "r2:$BUCKET/cubes/$camp/$uuid/$base" &&
-           echo "$sha  $base" | rclone rcat "r2:$BUCKET/cubes/$camp/$uuid/$base.sha256"; then
+           echo "$sha  $base" | rclone rcat --s3-no-check-bucket "r2:$BUCKET/cubes/$camp/$uuid/$base.sha256"; then
             touch "$dir/.drained_$base"; log "uploaded $base (sha256 $sha)"
         else
             log "upload failed for $base — retrying next sweep"
