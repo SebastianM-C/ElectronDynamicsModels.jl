@@ -131,9 +131,11 @@ ACCUM_ALG in ("rk4", "newton") || error("EDM_ACCUM_ALG must be \"rk4\" or \"newt
 const NEWTON_ITERS = parse(Int, get(ENV, "EDM_NEWTON_ITERS", "2"))   # newton only: warm-started corrections/slot
 const BUNCH_NB = parse(Int, get(ENV, "EDM_BUNCH_NB", "0"))   # phased-array prebunching: target harmonic n_b (0 = off)
 const BUNCH_L = parse(Int, get(ENV, "EDM_BUNCH_L", "0"))     # extra helical winding ℓ on top of the focusing term
-const BUNCH_CHIRP = parse(Float64, get(ENV, "EDM_BUNCH_CHIRP", "0"))   # ponderomotive chirp pre-compensation
-#   scale s (sign included; 0 = off). A static offset can null the chirp phase at ONE stationary point
-#   of the envelope: s=1 targets the full accumulated (trailing-wing) phase, s=0.5 the pulse centre.
+const BUNCH_CHIRP = parse(Float64, get(ENV, "EDM_BUNCH_CHIRP", "0"))   # EXPERIMENTAL — measured
+#   ineffective AND harmful (both signs, a₀=0.3 spot-config scan 2026-07-17): the ponderomotive
+#   phase self-compensates through the retarded kinematics to ~1/N₀ of the naive estimate, so
+#   there is nothing to correct and the |u(r)|²-shaped term only aberrates the array. Kept for
+#   reproducibility of the scan; leave at 0.
 BUNCH_NB >= 0 || error("EDM_BUNCH_NB must be ≥ 0, got $BUNCH_NB")
 (BUNCH_NB == 0 && BUNCH_L != 0) &&
     error("EDM_BUNCH_L requires EDM_BUNCH_NB > 0 (the helical term's length scale is λ/n_b)")
@@ -324,9 +326,13 @@ R₀ = Rmax * sunflower(N, 2)
 # The ρ² term curves the start pancake into the paraboloid that cancels the flat-screen transverse
 # path spread at the on-axis pixel — ACHROMATIC array focusing of the backscatter; this removes the
 # speckle (the transverse path spread IS its source — see the inverse-speckle-tomography report).
-# The ℓ term imprints a helix at bin n_b: with the drive's OAM m, the coherently observed winding
-# at n_b is m∓ℓ (sign fixed empirically by the smoke's phase maps). Offsets are ≤ 0.15λ, so the
-# envelope overlap, meet-at-origin timing, and window margins are unaffected.
+# The ℓ term imprints a helix at bin n_b. MEASURED convention (W7900 spot-resolving smokes,
+# 2026-07-17): with this code's e^{-imθ} LG phase and m=-2, the observed winding is 2+ℓ —
+# ℓ=-2 gives the winding-0 AXIAL SPOT (on-axis amplitude = the valid metric, 13×rms at N=10³),
+# ℓ=0 the |2| vortex ring at ~1λ, ℓ=+2 the |4| ring at ~2.2λ (ring configs need radial-profile
+# metrics; on-axis reads null). Coherence measured full (weight-limited √N_eff) at a₀ ≤ 0.3 and
+# ~0.65× at a₀=1 — no chirp wall. Offsets are ≤ 0.15λ, so the envelope overlap, meet-at-origin
+# timing, and window margins are unaffected.
 # Ponderomotive chirp pre-compensation (EDM_BUNCH_CHIRP = s): each electron accumulates an
 # intensity-dependent observed carrier phase ΔΦ = 2ω·a₀²·|u_rel(r)|²·I₂ (I₂ = √(π/2)·τ/(1+β)),
 # ~30·a₀²·|u|² cycles at γ=10 — the a₀=1 array decoherer (see the bunching relay notes). A static

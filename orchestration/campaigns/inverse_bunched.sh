@@ -6,9 +6,12 @@
 #   • the ρ² term is achromatic phased-array FOCUSING — it cancels the transverse path spread
 #     (the speckle source), so the on-axis coherent amplitude grows ∝ N instead of √N
 #     (expected on-axis intensity gain vs `base`: ~N = 2000, i.e. +33 dB at bin 398);
-#   • the ℓ term winds the array into a helix at n_b = 398 — with the drive's OAM m = −2 the
-#     coherently observed winding is m∓ℓ (sign convention is fixed EMPIRICALLY by the phase maps:
-#     one of lm2/lp2 will show winding 0, the other −4; l0 shows the recovered −2 vortex).
+#   • the ℓ term winds the array into a helix at n_b = 398 — MEASURED (W7900, 2026-07-17):
+#     observed winding = 2+ℓ in this code's convention, so lm2 is the AXIAL SPOT cell (on-axis
+#     metric valid; 13×rms at N=10³), l0 the |2| vortex ring at ~1λ, lp2 the |4| ring at ~2.2λ
+#     (score ring cells by radial profile, NOT on-axis). Coherence is full (weight-limited) at
+#     a₀ ≤ 0.3 and ~0.65× at a₀=1 — no chirp compensation needed (EDM_BUNCH_CHIRP measured
+#     harmful; leave unset).
 # N=2000 (not 10⁴): the coherent term needs no statistics — contrast over residual speckle is
 # already ~√N·b ≈ 45× in amplitude — and kernel time scales ∝ N (~1–1.5 h/cell on MI300X-class).
 #
