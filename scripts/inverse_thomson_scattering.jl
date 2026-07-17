@@ -100,6 +100,11 @@ const INTERP_SAVEAT = get(ENV, "EDM_INTERP_SAVEAT", "4")         # trajectory-sp
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const GAMMA = parse(Float64, get(ENV, "EDM_GAMMA", "10.0"))      # electron Lorentz factor (counter-propagating, +z)
 GAMMA >= 1.0 || error("EDM_GAMMA must be ≥ 1, got $GAMMA")
+const TSPAN_TAU = parse(Float64, get(ENV, "EDM_TSPAN_TAU", "8")) # proper-time span per side, in units of τ.
+#   The interaction occupies only ~τ/γ of PROPER time around τ=0 (lab window = ±TSPAN_TAU·γ·τ), and the
+#   uniform-saveat knot count scales ∝ γ·span — so γ-ladder campaigns scale this ∝ 1/γ (8, 1.6, 0.8 at
+#   γ = 10, 50, 100 keeps the validated ±80τ lab window and a γ-free knot count). Default 8 = legacy ±8τ.
+TSPAN_TAU > 0 || error("EDM_TSPAN_TAU must be > 0, got $TSPAN_TAU")
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
 FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"total\", got \"$FIELD_MODE\"")
@@ -112,10 +117,16 @@ const WINDOW = Symbol(get(ENV, "EDM_WINDOW", "full"))
 WINDOW in (:full, :narrow) || error("EDM_WINDOW must be \"full\" or \"narrow\", got \"$WINDOW\"")
 const SCREEN_HW = parse(Float64, get(ENV, "EDM_SCREEN_HW", "25"))   # screen half-width in w₀; shrink (e.g. 5)
 #   in :narrow mode to cut the flat-screen geometric arrival spread (∝ hw²/Z) ⇒ shorter window ⇒ less VRAM.
+const WINDOW_LEAD = parse(Float64, get(ENV, "EDM_WINDOW_LEAD", "0.5"))   # :narrow lead-in before the burst (λ units)
+const WINDOW_TAIL = parse(Float64, get(ENV, "EDM_WINDOW_TAIL", "0.5"))   # :narrow tail after it. The pair is the
+#   γ-free part of the window, so (lead+tail)·SPP dominates N_samples at high γ (SPP ∝ 4γ²) — shrink
+#   toward ~0.15 there. Defaults 0.5/0.5 = the legacy hard-coded margins.
+(WINDOW_LEAD > 0 && WINDOW_TAIL > 0) ||
+    error("EDM_WINDOW_LEAD/EDM_WINDOW_TAIL must be > 0, got $WINDOW_LEAD/$WINDOW_TAIL")
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
-@info "Inverse-Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 GAMMA WINDOW SCREEN_HW SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
+@info "Inverse-Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 GAMMA TSPAN_TAU WINDOW SCREEN_HW WINDOW_LEAD WINDOW_TAIL SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
 const T_START = time()   # wall-clock start → [timing].total in the manifest
 
 # Laser parameters
@@ -160,10 +171,11 @@ end
         "$(2 * maximum(HARMONICS)) to clear Nyquist; got EDM_SPP=$SPP"
 )
 
-# Time span (proper time). Kept at ±8τ for parity with thomson_scattering.jl; the boosted
-# electron's interaction is Doppler-shortened, so this can likely be tightened later.
-τi = -8τ
-τf = 8τ
+# Time span (proper time): ±EDM_TSPAN_TAU·τ per side. The default 8 keeps parity with
+# thomson_scattering.jl (and with every pre-knob inverse run); the boosted interaction is
+# Doppler-shortened to ~τ/γ of proper time, so campaigns tighten this ∝ 1/γ (see the knob note).
+τi = -TSPAN_TAU * τ
+τf = TSPAN_TAU * τ
 tspan = (τi, τf)
 
 # ── Screen geometry + observer window — sized HERE, before the (expensive) ensemble solve,
@@ -193,7 +205,7 @@ const corner_spread = (√2 * screen_hw + Rmax)^2 / (2Z)   # latest arrival exce
 const N_samples, x⁰_start = if WINDOW == :full
     NSAMPLES, c * τi + hypot(Z, screen_hw + Rmax)
 else
-    lead = 0.5λ; tail = 0.5λ                            # lead-in / tail (x⁰ lengths, 1λ = 1 T)
+    lead = WINDOW_LEAD * λ; tail = WINDOW_TAIL * λ      # lead-in / tail (x⁰ lengths, 1λ = 1 T; env knobs)
     x0 = Z - lead                                       # arrival ≈ Z ⇒ burst sits ~`lead` into the window
     ceil(Int, (lead + corner_spread + burst + tail) / (c * δt)), x0
 end
@@ -313,9 +325,10 @@ const ABSTOL = isempty(ABSTOL_ENV) ? 1.0e-11 : parse(Float64, ABSTOL_ENV)
 # rest-electron sibling's convention): spacing by T would deliver γ(1+β)× fewer knots per
 # oscillation than the knob promises, and since `saveat` REPLACES Vern9's dense output as the
 # spline's only knots, that would alias the quiver entirely.
-# RAM: knots/trajectory = 16τ·γ(1+β)·knots / T ≈ 31k at γ=10, knots=4 → ~6 MB of splines per
-# trajectory, ~60 GB at N=10⁴ — fine on the cluster nodes, tight on 123 GB boxes; lower
-# EDM_INTERP_SAVEAT (or EDM_N) if host RAM binds.
+# RAM: knots/trajectory = 2·TSPAN_TAU·τ·γ(1+β)·knots / T (≈ 31k at γ=10, TSPAN_TAU=8, knots=4)
+# → ~6 MB of splines per trajectory, ~60 GB at N=10⁴ — fine on the cluster nodes, tight on 123 GB
+# boxes; lower EDM_INTERP_SAVEAT (or EDM_N) if host RAM binds. With the campaign convention
+# TSPAN_TAU ∝ 1/γ the count is γ-free (~61k at knots=8).
 saveat = collect(τi:((2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)):τf)
 ensemble = EnsembleProblem(prob; prob_func, safetycopy = false)
 t_trajectories = @elapsed solution = solve(
@@ -424,6 +437,9 @@ config = Dict{String, Any}(
     "scattering" => "inverse",         # counter-propagating boosted electrons vs. rest-electron thomson_scattering.jl
     "window" => string(WINDOW),        # :full (wide, coarse) | :narrow (burst-centred, high-SPP)
     "screen_hw_w0" => SCREEN_HW,       # EDM_SCREEN_HW knob (w₀ units; [setup].screen_hw is the derived a.u. value)
+    "tspan_tau" => TSPAN_TAU,          # EDM_TSPAN_TAU knob (proper-time span per side, τ units; [setup].τi/τf are derived)
+    "window_lead" => WINDOW_LEAD,      # EDM_WINDOW_LEAD / EDM_WINDOW_TAIL knobs (:narrow margins, λ units)
+    "window_tail" => WINDOW_TAIL,
     "harmonics" => collect(HARMONICS), # harmonic bins the maps extract (≈4γ²ω for :narrow)
     "backscatter_n0" => N0,            # on-axis backscatter fundamental ω_s/ω = (1+β)/(1−β) ≈ 4γ²
 )
