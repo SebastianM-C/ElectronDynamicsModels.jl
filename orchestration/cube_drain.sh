@@ -8,11 +8,14 @@
 # it is complete and consistent on disk. Verify = a second checksum dry-run pass transfers
 # nothing; only then is the .drained sentinel written. Failures just retry next sweep.
 #
-# Env: DRAIN_STORE (user@host of the jailed store), DRAIN_KEY (default ~/.ssh/depot_key).
+# Env: DRAIN_STORE (user@host of the jailed store), DRAIN_KEY (default ~/.ssh/depot_key),
+#      DRAIN_PORT (default 22; Hetzner storage-box DIRECT access = port 23 + sub-account —
+#      each machine then gets its own stream instead of sharing the VPS sshfs write pipe).
 set -u
 STORE="${DRAIN_STORE:?set DRAIN_STORE (user@host of the jailed store)}"
 KEY="${DRAIN_KEY:-$HOME/.ssh/depot_key}"
-RS() { rsync -e "ssh -i $KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes" "$@"; }
+PORT="${DRAIN_PORT:-22}"
+RS() { rsync -e "ssh -p $PORT -i $KEY -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes" "$@"; }
 log() { echo "[drain $(date -u +%FT%TZ)] $*"; }
 
 log "watching $HOME/EDM/runs (store: $STORE)"

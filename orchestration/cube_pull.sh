@@ -5,12 +5,14 @@
 # cube_drain.sh (on the VMs) fills it while campaigns run; this empties it with no VM billing.
 #
 # Env: PULL_STORE (user@host of the jailed store), PULL_DEST (archive dir),
-#      PULL_KEY (default ~/.ssh/id_ed25519_depot; must be jailed to the store).
+#      PULL_KEY (default ~/.ssh/id_ed25519_depot; must be jailed to the store),
+#      PULL_PORT (default 22; 23 + sub-account for direct Hetzner storage-box access).
 set -u
 STORE="${PULL_STORE:?set PULL_STORE (user@host of the jailed store)}"
 DEST="${PULL_DEST:?set PULL_DEST (archive dir on this machine)}"
 KEY="${PULL_KEY:-$HOME/.ssh/id_ed25519_depot}"
-RS() { rsync -e "ssh -i $KEY -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$@"; }
+PORT="${PULL_PORT:-22}"
+RS() { rsync -e "ssh -p $PORT -i $KEY -o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null" "$@"; }
 log() { echo "[pull $(date -u +%FT%TZ)] $*"; }
 EMPTY=$(mktemp -d)
 mkdir -p "$DEST"
