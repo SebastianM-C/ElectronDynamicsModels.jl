@@ -113,6 +113,15 @@ run_campaign() {
     . "$cf"   # CAMPAIGN (for product paths); the same file is re-read on the VM
     if vm_reachable; then
         log "reusing kept-warm VM $NAME ($IP) from $STATE (no provision/warm)"
+        # A reused VM keeps whatever clone it was warmed with — sync it to the requested
+        # branch or later commits silently run the WRONG scripts (campaign files ship via
+        # push_orchestration, but scripts/ + lib/ come from the VM's clone). Cheap no-op
+        # when already current; instantiate tops up any dep drift.
+        log "syncing VM clone to $BRANCH…"
+        ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && git fetch --quiet origin '$BRANCH' \
+            && git checkout --quiet '$BRANCH' && git merge --quiet --ff-only \"origin/$BRANCH\" \
+            && julia --startup=no --project=scripts -e 'using Pkg; Pkg.instantiate()' > /dev/null 2>&1 \
+            && git log --oneline -1" | sed 's/^/[vm-clone] /'
     else
         trap 'rc=$?; log "FAILED (rc=$rc) before VM was handed off"; notify rotating_light urgent "EDM hotaisle FAILED" "$CAMPAIGN setup errored (rc=$rc); tearing down"; teardown; exit $rc' ERR
         provision; wait_ssh; warm
