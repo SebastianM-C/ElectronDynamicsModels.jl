@@ -124,6 +124,56 @@ download_verify() {
     return 1
 }
 
+# Cube drainer (R2): when the campaign keeps cubes, run cube_drain_r2.sh ON the VM so uploads
+# overlap the remaining compute. Script + creds are copied OUT of the repo clone — a later branch
+# sync on a reused VM must not yank a running drainer. Idempotent (pgrep guard); rc>0 ⇒ caller
+# alerts, but a missing drainer never blocks the campaign (the teardown gate still holds cubes).
+start_drainer() {
+    [ "${KEEP_CUBE:-0}" = 1 ] || return 0
+    local envf="${CUBE_R2_ENV:-$HOME/.config/edm-r2.env}"
+    [ -f "$envf" ] || { log "[drain] $envf missing — no R2 creds to ship"; return 1; }
+    ssh_vm 'mkdir -p ~/.config && cat > ~/.config/edm-r2.env && chmod 600 ~/.config/edm-r2.env' < "$envf" || return 1
+    ssh_vm 'cat > ~/cube_drain_r2.sh' < "$ORCH/cube_drain_r2.sh" || return 1
+    # guard is its OWN ssh call: bundled with the nohup start, the remote shell's cmdline would
+    # contain the plain script name and pgrep would always self-match (drainer never starts)
+    if ! ssh_vm "pgrep -f '[c]ube_drain_r2.sh' >/dev/null" 2>/dev/null; then
+        ssh_vm 'nohup bash ~/cube_drain_r2.sh >> ~/drain_r2.log 2>&1 < /dev/null &' || return 1
+    fi
+    log "[drain] cube_drain_r2.sh running on the VM (log: ~/drain_r2.log)"
+}
+
+# Cube-safety gate: teardown deletes the VM's disk — the ONLY copy of an undrained cube. Refuse
+# while any drain-eligible cube (has its <uuid>.reduced marker, the drainer's own contract; smoke
+# excluded likewise) lacks a .drained_ sentinel. FORCE_TEARDOWN=1 overrides.
+cube_gate() {
+    local pending rc=0
+    pending=$(ssh_vm 'bash -s' 2>/dev/null <<'GATE'
+for cube in "$HOME"/EDM/runs/*/field_*.jls; do
+    [ -e "$cube" ] || continue
+    dir=$(dirname "$cube"); camp=$(basename "$dir"); base=$(basename "$cube")
+    uuid=${base%.jls}; uuid=${uuid##*_}
+    [ "$camp" = smoke ] && continue
+    [ -e "$dir/$uuid.reduced" ] || continue
+    [ -e "$dir/.drained_$base" ] || echo "$camp/$base"
+done
+GATE
+    ) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log "[gate] cube check failed (ssh rc=$rc) — cannot verify drains; proceeding (nothing to save over dead ssh)"
+        return 0
+    fi
+    [ -z "$pending" ] && return 0
+    if [ "${FORCE_TEARDOWN:-0}" = 1 ]; then
+        log "[gate] FORCE_TEARDOWN=1 — destroying despite undrained cubes:"; echo "$pending" | sed 's/^/  /'
+        return 0
+    fi
+    log "[gate] REFUSING teardown — undrained cubes on $NAME (the VM holds the only copy):"
+    echo "$pending" | sed 's/^/  /'
+    log "[gate] wait for the drainer (tail ~/drain_r2.log on the VM), or override: FORCE_TEARDOWN=1 $0 teardown"
+    notify rotating_light urgent "EDM teardown BLOCKED" "$NAME: undrained cubes — $(echo "$pending" | tr '\n' ' '); drainer still working? FORCE_TEARDOWN=1 to override."
+    exit 1
+}
+
 run_campaign() {
     local cf="${1:?usage: hotaisle.sh run <campaign.sh>}" cname; cname=$(basename "$cf")
     . "$cf"   # CAMPAIGN (for product paths); the same file is re-read on the VM
@@ -153,6 +203,7 @@ run_campaign() {
     # it here or every julia invocation dies rc=127. The { …; } grouping keeps the pidfile write INSIDE
     # the cd (a bare `A && B & C` backgrounds A&&B and runs C in the ssh cwd = $HOME).
     ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && { nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
+    start_drainer || notify warning high "EDM drainer NOT started" "$CAMPAIGN on $NAME: cubes stay on the VM only; teardown gate will hold them"
     log "polling for completion (DONE marker, or driver-death = crash so we don't poll forever while billing)…"
     until ssh_vm "grep -q '\\] ${CAMPAIGN} DONE' EDM/runs/${CAMPAIGN}.out 2>/dev/null"; do
         if ! ssh_vm "kill -0 \$(cat EDM/runs/${CAMPAIGN}.pid 2>/dev/null) 2>/dev/null"; then
@@ -176,6 +227,7 @@ run_campaign() {
 teardown() {
     [ -f "$STATE" ] || { echo "no kept VM recorded in $STATE"; exit 0; }
     read -r NAME IP PROV_TS MIN_MIN < "$STATE"
+    cube_gate
     local min_s=$(( ${MIN_MIN:-1} * 60 )) el=$(( $(date +%s) - ${PROV_TS:-$(date +%s)} ))
     if [ "$el" -lt "$min_s" ]; then
         log "waiting $(( (min_s - el + 59) / 60 )) min to reach the ${MIN_MIN}-min reservation minimum (billed either way; Ctrl-C to delete now)"
