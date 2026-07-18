@@ -14,7 +14,7 @@
 
 using TOML, Serialization, Statistics, Printf
 using CairoMakie
-using RunManifests   # write_derived, check_schema_version
+using RunManifests   # write_derived, write_comparison, check_schema_version
 
 const ZOOM_HW = parse(Float64, get(ENV, "EDM_DIFF_ZOOM", "1.0"))
 
@@ -85,6 +85,26 @@ function main(dir)
                     "the difference phase. See inverse-speckle-tomography, Postscript II.",
             )
         end
+        # Multi-parent chips surface through the comparison tab: declare each bunched cell
+        # vs base (lone-run sides via `where`). Declarations go to the results-tree
+        # comparisons/ sibling when present (the established home), else the campaign dir.
+        campaign = basename(abspath(dir))
+        compdir = isdir(joinpath(dir, "..", "comparisons")) ? joinpath(dir, "..", "comparisons") : dir
+        write_comparison(
+            compdir;
+            label = "bunched ℓ = $(c.l) vs base (array signal)",
+            differs = "prebunching Δz on the common disk",
+            sides = [
+                (; label = "ℓ = $(c.l), n_b = $(c.nb)", dir = campaign,
+                    script = "inverse_thomson_scattering.jl",
+                    where = Dict("bunch_nb" => c.nb, "bunch_l" => c.l)),
+                (; label = "base (unbunched)", dir = campaign,
+                    script = "inverse_thomson_scattering.jl",
+                    where = Dict("bunch_nb" => 0)),
+            ],
+            filename = "comparison_$(campaign)_l$(c.l).toml",
+        )
+        println("declared → comparison_$(campaign)_l$(c.l).toml")
     end
     return
 end

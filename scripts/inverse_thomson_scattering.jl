@@ -438,6 +438,13 @@ else
         harmonics = HARMONICS,   # :narrow ⇒ around the ≈4γ²ω backscatter line; :full ⇒ (1,2,3,4)
         title_prefix = "Inverse Thomson scattering", fileprefix = "inverse_thomson",
     )
+    # Speckle-envelope chips (per-bin maps are envelope × speckle; see the report).
+    write_envelope_products(
+        hprod.fields_h, HARMONICS, screen.x_grid, screen.y_grid;
+        w₀, Z, Rmax, λ, run_tag = RUN_TAG, outdir = OUTDIR,
+        source_datafile = basename(datafile),
+        title_prefix = "Inverse Thomson scattering", fileprefix = "inverse_thomson",
+    )
     plotfiles = hprod.plots
 end
 
