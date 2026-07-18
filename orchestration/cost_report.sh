@@ -17,9 +17,12 @@
 #   • per-campaign compute = Σ [timing].total over run_<uuid>.toml in each results dir given,
 #     priced at the owning VM's time-averaged rate (attribution via campaign_* rows' dir=…);
 #     dirs with no ledger attribution are non-cloud (local/SLURM) or pre-ledger → shown at $0
-#   • per-VM wall-clock cost (provision→teardown clipped to the window; running VMs bill through
-#     --until) and overhead = wall − compute. Cells still IN FLIGHT have no manifest yet, so they
-#     appear as overhead until their run_<uuid>.toml lands — rerun after download/publish.
+#   • per-VM wall-clock cost = Σ over the VM's lifetime SPANS (each provision→teardown clipped to
+#     the window). A VM NAME is reused across rentals, so one name can hold several spans; a span
+#     with no teardown is still LIVE and bills through --until (= now), marked "live" on the page.
+#     Overhead = wall − compute; cells still IN FLIGHT have no manifest yet, so they appear as
+#     overhead until their run_<uuid>.toml lands — rerun after download/publish.
+#   All displayed timestamps render in Europe/Bucharest (the ledger and all math stay UTC).
 #   • per-provider reconciliation: window top-ups + balance-implied spend, and LIFETIME
 #     top-ups vs last known balance ⇒ lifetime spend. Costs stay DERIVED (ledger + manifests),
 #     never stored in run metadata — a rate correction heals everything by regeneration.
@@ -104,19 +107,25 @@ tag_ledger() {   # L \t ts \t provider \t vm \t event \t detail \t rate \t balan
 }
 
 run_report() {
-{ digest_manifests; tag_ledger; } | awk -F'\t' \
+# TZ set for the reporter awk only: strftime() (display) honours it; ledger parsing (mktime …,1)
+# and the shell-side SINCE/UNTIL (date -u) stay UTC, so this converts DISPLAY times to Bucharest.
+{ digest_manifests; tag_ledger; } | TZ='Europe/Bucharest' awk -F'\t' \
     -v since="$SINCE_E" -v until="$UNTIL_E" -v fallback="$RATE_FALLBACK" -v api_rate="$API_RATE" \
     -v html="${HTML_FILE:+1}" '
-function iso(e) { return strftime("%Y-%m-%dT%H:%M:%SZ", e, 1) }
+# Times render in the process TZ (run_report sets TZ=Europe/Bucharest); the ledger stays UTC
+# and all epoch math below is UTC (mktime/date -u), so this is a display-only conversion.
+function iso(e) { return strftime("%Y-%m-%d %H:%M %Z", e) }
 function epoch(ts,   t) { t = ts; gsub(/[-:TZ]/, " ", t); return mktime(t, 1) }   # ISO-8601 Z → UTC epoch (gawk)
 function esc(s) { gsub(/&/, "\\&amp;", s); gsub(/</, "\\&lt;", s); gsub(/>/, "\\&gt;", s); return s }
-function vmcost(vm, a, b,   p, i, j, n, t, r, c, seg_t, seg_r) {
-    # integrate the VM hourly rate over [a,b]: provision rate, stepped by provider rate_change rows
+function vmcost(a, b, base, prov_time, p,   i, j, n, t, r, c, seg_t, seg_r) {
+    # integrate the hourly rate over [a,b] for one span: its provision rate `base`, stepped by
+    # provider rate_change rows (prov_time gates which changes predate the span). rate_change is
+    # unused so far, so in practice this is (b-a)/3600 * base/100.
     if (b <= a) return 0
-    p = vprovider[vm]; n = 0
-    seg_t[++n] = a; seg_r[n] = (vrate[vm] > 0) ? vrate[vm] : def_rate
+    n = 0
+    seg_t[++n] = a; seg_r[n] = (base > 0) ? base : def_rate
     for (i = 1; i <= nrc[p]; i++)
-        if (rct[p, i] <= a) { if (vrate[vm] == 0 || rct[p, i] >= vprov[vm]) seg_r[1] = rcr[p, i] }
+        if (rct[p, i] <= a) { if (base == 0 || rct[p, i] >= prov_time) seg_r[1] = rcr[p, i] }
         else if (rct[p, i] < b) { seg_t[++n] = rct[p, i]; seg_r[n] = rcr[p, i] }
     for (i = 2; i <= n; i++) {   # insertion sort (rate_change rows may be unordered)
         t = seg_t[i]; r = seg_r[i]; j = i - 1
@@ -133,8 +142,14 @@ $1 == "L" {
     if (e < 0) { printf "[warn] unparsable ts skipped: %s\n", $2 > "/dev/stderr"; next }
     if (prov != "" && !(prov in pseen)) { pseen[prov] = 1; plist[++np] = prov }
     if (vm != "" && vm != "-" && !(vm in known)) { known[vm] = 1; vlist[++nv] = vm; vprovider[vm] = prov }
-    if      (ev == "provision")   { vprov[vm] = e; vrate[vm] = rate + 0 }
-    else if (ev == "teardown")    { vdown[vm] = e }
+    if      (ev == "provision") {   # open a new lifetime span (VM names get REUSED across rentals)
+        if ((vm in vopen) && vopen[vm] > 0 && sp_end[vm, vopen[vm]] == 0) sp_end[vm, vopen[vm]] = e   # close a dangling prior span
+        k = ++nspan[vm]; sp_start[vm, k] = e; sp_rate[vm, k] = rate + 0; sp_end[vm, k] = 0; vopen[vm] = k
+    }
+    else if (ev == "teardown") {    # close the open span; an orphan teardown (span starts pre-window) clamps to `since`
+        if ((vm in vopen) && vopen[vm] > 0 && sp_end[vm, vopen[vm]] == 0) { sp_end[vm, vopen[vm]] = e; vopen[vm] = 0 }
+        else { k = ++nspan[vm]; sp_start[vm, k] = 0; sp_rate[vm, k] = 0; sp_end[vm, k] = e }
+    }
     else if (ev == "rate_change") { nrc[prov]++; rct[prov, nrc[prov]] = e; rcr[prov, nrc[prov]] = rate + 0
                                     if (e >= since && e <= until) notes[++nn] = iso(e) "  " prov " rate_change → " rate "¢/h  (" det ")" }
     else if (ev == "campaign_start" || ev == "campaign_done") {
@@ -162,16 +177,23 @@ $1 == "L" {
 }
 END {
     def_rate = (fallback != "") ? fallback + 0 : ((api_rate != "") ? api_rate + 0 : 0)
-    # ── per-VM wall / cost ──
+    # ── per-VM wall / cost: sum over every lifetime span (a reused VM name has >1). A span with
+    #    no teardown is LIVE → billed through `until` (= now), so a running VM shows in-progress cost. ──
     for (i = 1; i <= nv; i++) {
         vm = vlist[i]
-        if (!(vm in vprov) && !(vm in vdown)) { vskip[vm] = 1; continue }   # attribution-only vm
-        if ((vm in vprov) && vrate[vm] == 0 && def_rate == 0) used_def = 1
-        a = (vm in vprov) ? vprov[vm] : since; if (a < since) a = since
-        b = (vm in vdown) ? vdown[vm] : until; if (b > until) b = until
-        vwall[vm] = (b > a) ? (b - a) / 3600.0 : 0
-        vusd[vm]  = vmcost(vm, a, b)
-        vavg[vm]  = (vwall[vm] > 0) ? vusd[vm] / vwall[vm] : 0
+        if (!(vm in nspan)) { vskip[vm] = 1; continue }   # attribution-only vm (campaign rows, never provisioned)
+        vwall[vm] = 0; vusd[vm] = 0; vrun[vm] = 0
+        for (k = 1; k <= nspan[vm]; k++) {
+            a = (sp_start[vm, k] > 0) ? sp_start[vm, k] : since; if (a < since) a = since
+            b = (sp_end[vm, k]   > 0) ? sp_end[vm, k]   : until; if (b > until) b = until
+            if (sp_end[vm, k] == 0) vrun[vm] = 1   # open span ⇒ VM is live right now
+            if (b <= a) continue
+            base = sp_rate[vm, k]
+            if (base == 0 && def_rate == 0) used_def = 1
+            vwall[vm] += (b - a) / 3600.0
+            vusd[vm]  += vmcost(a, b, base, (sp_start[vm, k] > 0 ? sp_start[vm, k] : a), vprovider[vm])
+        }
+        vavg[vm] = (vwall[vm] > 0) ? vusd[vm] / vwall[vm] : 0
         tot_wall += vusd[vm]
     }
     # ── per-campaign compute (unattributed dirs = non-cloud/pre-ledger → $0) ──
@@ -183,7 +205,7 @@ END {
     }
     if (html) { html_out(); exit }
     # ── text output ──
-    printf "== EDM cloud spend  %s → %s ==\n", iso(since), iso(until)
+    printf "== EDM cloud spend  %s → %s  (times Europe/Bucharest) ==\n", iso(since), iso(until)
     if (nm > 0) {
         printf "\n%-28s %-9s %-16s %5s %8s %9s\n", "campaign", "provider", "vm", "cells", "GPU-h", "USD"
         for (i = 1; i <= nm; i++)
@@ -192,7 +214,7 @@ END {
     printf "\n%-16s %-9s %8s %9s %12s %13s\n", "vm", "provider", "wall-h", "wall-USD", "compute-USD", "overhead-USD"
     for (i = 1; i <= nv; i++) {
         vm = vlist[i]; if (vm in vskip) continue
-        printf "%-16s %-9s %8.2f %9.2f %12.2f %13.2f%s\n", vm, vprovider[vm], vwall[vm], vusd[vm], csum[vm] + 0, vusd[vm] - csum[vm], (vm in vdown) ? "" : "  (still running)"
+        printf "%-16s %-9s %8.2f %9.2f %12.2f %13.2f%s\n", vm, vprovider[vm], vwall[vm], vusd[vm], csum[vm] + 0, vusd[vm] - csum[vm], vrun[vm] ? "  (live — billed to now)" : ""
     }
     printf "\nTOTAL wall-clock spend in window: $%.2f  (manifest-backed compute $%.2f; overhead + in-flight cells $%.2f)\n", tot_wall, tot_compute, tot_wall - tot_compute
     for (i = 1; i <= np; i++) {
@@ -247,7 +269,7 @@ function html_out(   i, j, k, p, vm, m, ord, mx, GUT, PW, BH, PITCH, y, w, wc, w
     print ".sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:-1px}"
     print "</style></head><body><main>"
     print "<h1>EDM cloud campaign costs</h1>"
-    printf "<p class=\"meta\">updated %s &middot; window %s → %s &middot; derived from the cost ledger + run-manifest [timing] (never stored in run metadata)</p>\n", iso(systime()), iso(since), iso(until)
+    printf "<p class=\"meta\">updated %s &middot; window %s → %s &middot; all times Europe/Bucharest (ledger stays UTC) &middot; derived from the cost ledger + run-manifest [timing] (never stored in run metadata)</p>\n", iso(systime()), iso(since), iso(until)
     # ── figure: cost per campaign (single series → no legend; magnitude, sorted desc) ──
     GUT = 210; PW = 440; BH = 16; PITCH = 26
     m = 0
@@ -297,7 +319,7 @@ function html_out(   i, j, k, p, vm, m, ord, mx, GUT, PW, BH, PITCH, y, w, wc, w
             printf "<text x=\"%d\" y=\"%d\" text-anchor=\"end\" class=\"lab\">%s</text>\n", GUT - 8, y + 12, esc(vm)
             if (wc > 0.1) printf "<g><title>%s — compute $%.2f</title><rect x=\"%d\" y=\"%d\" width=\"%.2f\" height=\"%d\" fill=\"var(--s1)\"/></g>\n", esc(vm), csum[vm], GUT + 1, y, wc, BH
             if (wo > 0.1) print rbar(GUT + 1 + wc + (wc > 0.1 ? 2 : 0), y, wo, BH, 4, "var(--s2)", \
-                                     esc(vm) " — overhead $" sprintf("%.2f", vusd[vm] - csum[vm]) ((vm in vdown) ? "" : " — still running"))
+                                     esc(vm) " — overhead $" sprintf("%.2f", vusd[vm] - csum[vm]) (vrun[vm] ? " — live, billed to now" : ""))
             lab = sprintf("$%.2f", csum[vm] + 0)
             if (wc > length(lab) * 6.8 + 14) printf "<text x=\"%d\" y=\"%d\" class=\"inlab\">%s</text>\n", GUT + 8, y + 12, lab
             printf "<text x=\"%.1f\" y=\"%d\" class=\"val\">$%.2f</text>\n", GUT + 1 + wc + 2 + wo + 6, y + 12, vusd[vm]
@@ -307,7 +329,7 @@ function html_out(   i, j, k, p, vm, m, ord, mx, GUT, PW, BH, PITCH, y, w, wc, w
     print "<h2>Per VM</h2><table><tr><th>vm</th><th>provider</th><th class=\"n\">wall-h</th><th class=\"n\">wall USD</th><th class=\"n\">compute USD</th><th class=\"n\">overhead USD</th><th></th></tr>"
     for (i = 1; i <= nv; i++) {
         vm = vlist[i]; if (vm in vskip) continue
-        printf "<tr><td>%s</td><td>%s</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td>%s</td></tr>\n", esc(vm), esc(vprovider[vm]), vwall[vm], vusd[vm], csum[vm] + 0, vusd[vm] - csum[vm], (vm in vdown) ? "" : "<span class=\"run\">still running</span>"
+        printf "<tr><td>%s</td><td>%s</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td>%s</td></tr>\n", esc(vm), esc(vprovider[vm]), vwall[vm], vusd[vm], csum[vm] + 0, vusd[vm] - csum[vm], vrun[vm] ? "<span class=\"run\">live</span>" : ""
     }
     printf "<tr class=\"total\"><td>total</td><td></td><td class=\"n\"></td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td></td></tr>\n", tot_wall, tot_compute, tot_wall - tot_compute
     print "</table>"
