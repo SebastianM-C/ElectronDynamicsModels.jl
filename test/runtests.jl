@@ -35,6 +35,9 @@ using JET
     @testset "Lorenz Gauge" begin
         include("lorenz_gauge.jl")
     end
+    @testset "LL regime reach (dynamics + kernel)" begin
+        include("ll_regime.jl")
+    end
     @testset "Radiation Reaction" begin
         include("radiation.jl")
     end

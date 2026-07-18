@@ -230,6 +230,8 @@ function accumulate_potential(
     )
     n_iters ≥ 1 || throw(ArgumentError(
         "n_iters must be ≥ 1 — n_iters = 0 degrades to an unchecked Euler march"))
+    step(screen.x⁰_samples) > 0 || throw(ArgumentError(
+        "screen.x⁰_samples must be strictly increasing (got step = $(step(screen.x⁰_samples)))"))
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
 
@@ -355,6 +357,8 @@ function accumulate_field(
     )
     n_iters ≥ 1 || throw(ArgumentError(
         "n_iters must be ≥ 1 — n_iters = 0 degrades to an unchecked Euler march"))
+    step(screen.x⁰_samples) > 0 || throw(ArgumentError(
+        "screen.x⁰_samples must be strictly increasing (got step = $(step(screen.x⁰_samples)))"))
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
     c = screen.c
