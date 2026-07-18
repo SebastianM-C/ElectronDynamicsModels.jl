@@ -12,7 +12,7 @@
 # RunManifests, so this can't silently drift on a schema change the way hand-parsing the
 # raw TOML would.
 
-using TOML, Serialization, FFTW, Printf
+using TOML, Serialization, FFTW, Printf, Statistics
 using ElectronDynamicsModels    # harmonic_bins, harmonic_maps, power_spectrum, plot_*, symmetric_colorrange
 using RunManifests              # check_schema_version, spp_from_manifest
 using CairoMakie                # activates EDMMakieExt (the plot_* methods)
@@ -21,7 +21,7 @@ const COMPLABELS = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
 const C_LIGHT = 137.03599908330932
 
 """
-    harmonic_field_style() -> (; colormap, colorrange)
+    harmonic_field_style(; cap_mult = nothing) -> (; colormap, colorrange[, highclip, lowclip])
 
 Panel style for the field-harmonic heat-maps, splatted into [`plot_harmonic_grid`]. Those panels
 show the **real part** of each component (signed, oscillatory data), so the choice here sets how
@@ -29,9 +29,20 @@ the sign structure reads. Returns a `NamedTuple` with:
   * `colormap`  — a colorscheme name/object;
   * `colorrange` — a `data -> (lo, hi)` function applied **per panel** (`symmetric_colorrange` and
     `harmonic_colorrange` are both in scope from ElectronDynamicsModels).
+
+`cap_mult` caps the colorrange at ±`cap_mult`×median(|data|) with over-limit pixels rendered in
+the clip colors: speckle-dominated maps (inverse scattering) are otherwise normalized to their
+brightest grain (~6× median), which buries everything below ~2× median in the flat bottom of the
+colormap. The panel title still reports the true peak.
 """
-function harmonic_field_style()
-    return (; colormap = :jet, colorrange = symmetric_colorrange)
+function harmonic_field_style(; cap_mult = nothing)
+    cap_mult === nothing && return (; colormap = :jet, colorrange = symmetric_colorrange)
+    capped = data -> begin
+        hi = min(maximum(abs, data), cap_mult * median(abs.(data)))
+        hi = hi > 0 ? hi : one(hi)
+        (-hi, hi)
+    end
+    return (; colormap = :jet, colorrange = capped, highclip = :magenta, lowclip = :cyan)
 end
 
 """
@@ -163,7 +174,8 @@ symmetric per-panel range) is owned by [`harmonic_field_style`], applied in [`wr
 """
 function write_harmonic_products(
         fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
-        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, window = hann
+        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, window = hann,
+        style = harmonic_field_style(),
     )
     N_samples = size(fld.E, 1)
     freqs = rfftfreq(N_samples, 1 / δt)
@@ -200,7 +212,7 @@ function write_harmonic_products(
     # the reduced maps by write_field_products so the cached-hmaps recolor path shares the code.
     write_field_products(
         fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
-        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix, window = win_name,
+        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix, window = win_name, style,
     )
 
     plots = String[]
@@ -322,6 +334,9 @@ function recover_from_manifest(toml)
     inverse = get(cfg, "scattering", "") == "inverse"
     title_prefix, fileprefix = lpwa ? ("LPWA", "lpwa") :
         inverse ? ("Inverse Thomson scattering", "inverse_thomson") : ("Thomson scattering", "thomson")
+    # Speckle-dominated inverse maps get the median-capped colorrange (grains saturate in the
+    # clip colors); rest-electron/LPWA maps keep the plain symmetric range.
+    style = harmonic_field_style(cap_mult = inverse ? 4.0 : nothing)
     run_tag = m["provenance"]["run_id"]
     cube = joinpath(dir, m["outputs"]["datafile"])
     # Envelope view geometry (inverse runs only): the blur grain needs the screen distance +
@@ -353,7 +368,7 @@ function recover_from_manifest(toml)
         hprod = write_harmonic_products(
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
-            source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
+            source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, style,
             # The run's own bins (≈4γ²ω for inverse :narrow) — a deferred reduction must produce
             # exactly what the inline (non-SKIP_POST) path would have; legacy default (1,2,3,4).
             harmonics = Tuple(get(cfg, "harmonics", (1, 2, 3, 4))),
@@ -390,7 +405,7 @@ function recover_from_manifest(toml)
     write_field_products(
         h.fields_h, far, h.harmonics, ffund, h.x_grid, h.y_grid;
         w₀ = h.w₀, run_tag, outdir = dir,
-        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, window = win,
+        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, window = win, style,
     )
     envelope!(h.fields_h, h.harmonics, h.x_grid, h.y_grid, h.w₀)
     return write_phase_products(
