@@ -108,6 +108,8 @@ const TSPAN_TAU = parse(Float64, get(ENV, "EDM_TSPAN_TAU", "8")) # proper-time s
 TSPAN_TAU > 0 || error("EDM_TSPAN_TAU must be > 0, got $TSPAN_TAU")
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
+const SYSTEM = lowercase(get(ENV, "EDM_SYSTEM", "classical"))    # electron dynamics: classical | ll (Landau–Lifshitz radiation reaction)
+SYSTEM in ("classical", "ll") || error("EDM_SYSTEM must be \"classical\" or \"ll\", got \"$SYSTEM\"")
 FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"total\", got \"$FIELD_MODE\"")
 # Observer-time window mode. :full = the wide legacy window (coarse δt=T/SPP; at SPP=16 the ≈4γ²ω
 # backscatter line ALIASES onto ~2ω — see header). :narrow = recentre the sample window on the burst
@@ -275,7 +277,11 @@ end
     initial_phase = ϕ₀,
     k_direction = [0, 0, -1],
 )
-@named elec = ClassicalElectron(; laser)
+elec = if SYSTEM == "ll"
+    @named elec = LandauLifshitzElectron(; laser)
+else
+    @named elec = ClassicalElectron(; laser)
+end
 sys = mtkcompile(elec)
 
 # Meet-at-origin timing: with x⁰(τ)=γc·τ and z(τ)=γβc·τ (force-free flight), every electron
@@ -470,6 +476,7 @@ config = Dict{String, Any}(
     "sync_per_electron" => SYNC,       # replay input: run_spec_from_manifest reads this
     "observable" => "field",           # distinguishes this run from the 4-potential (_A) runs
     "scattering" => "inverse",         # counter-propagating boosted electrons vs. rest-electron thomson_scattering.jl
+    "system" => SYSTEM,                # classical | ll — written unconditionally (mixed pools crash axis detection)
     "window" => string(WINDOW),        # :full (wide, coarse) | :narrow (burst-centred, high-SPP)
     "screen_hw_w0" => SCREEN_HW,       # EDM_SCREEN_HW knob (w₀ units; [setup].screen_hw is the derived a.u. value)
     "tspan_tau" => TSPAN_TAU,          # EDM_TSPAN_TAU knob (proper-time span per side, τ units; [setup].τi/τf are derived)
