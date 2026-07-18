@@ -133,9 +133,10 @@ grab_pod() {
                 -d "$(jq -n --arg gpu "$gpu" --arg img "$IMAGE" --arg pub "$PUBKEY" --arg vol "${VOLID:-}" \
                         --arg dc "$DC" --arg start "$START_CMD" --argjson disk "$DISK" \
                     '{name:"edm-runpod",imageName:$img,gpuTypeIds:[$gpu],cloudType:"SECURE",gpuCount:1,
-                      containerDiskInGb:$disk,dataCenterIds:[$dc],
+                      containerDiskInGb:$disk,
                       ports:["22/tcp"],supportPublicIp:true,env:{PUBLIC_KEY:$pub},
                       dockerEntrypoint:["/bin/bash","-c"],dockerStartCmd:[$start]}
+                     + (if $dc != "" then {dataCenterIds:[$dc]} else {} end)
                      + (if $vol != "" then {networkVolumeId:$vol,volumeMountPath:"/workspace"} else {} end)')" 2>/dev/null)" || resp=""
             pid="$(echo "$resp" | jq -r '.id // empty' 2>/dev/null)"
             # Camping can run unattended for hours and billing starts HERE, before warm —
