@@ -28,6 +28,7 @@ function load_cells(dir)
         hm = joinpath(dir, "hmaps_$id.jls")
         isfile(hm) || (println("skip $f — no hmaps"); continue)
         push!(cells, (; id, nb = get(m["config"], "bunch_nb", 0), l = get(m["config"], "bunch_l", 0),
+            a0 = m["config"]["a0"], alg = get(m["config"], "accumulation_alg", "GPUKernelRK4"),
             h = deserialize(hm)))
     end
     return cells
@@ -35,11 +36,15 @@ end
 
 function main(dir)
     cells = load_cells(dir)
-    base = [c for c in cells if c.nb == 0]
-    length(base) == 1 || error("expected exactly one base cell (bunch_nb == 0), got $(length(base))")
-    base = only(base)
+    # One base (bunch_nb == 0) per (a0, kernel) group: a bunched cell only shares its disk's
+    # speckle with the base solved at the SAME a0 and kernel.
+    bases = Dict((c.a0, c.alg) => c for c in cells if c.nb == 0)
+    isempty(bases) && error("no base cell (bunch_nb == 0) found in $dir")
     for c in cells
         c.nb == 0 && continue
+        base = get(bases, (c.a0, c.alg), nothing)
+        base === nothing &&
+            (println("skip $(c.id[1:8]) — no base for (a0=$(c.a0), $(c.alg))"); continue)
         size(c.h.fields_h) == size(base.h.fields_h) && c.h.x_grid == base.h.x_grid ||
             error("grid mismatch between $(c.id[1:8]) and base — cells must share the screen")
         w₀ = base.h.w₀
@@ -90,21 +95,25 @@ function main(dir)
         # comparisons/ sibling when present (the established home), else the campaign dir.
         campaign = basename(abspath(dir))
         compdir = isdir(joinpath(dir, "..", "comparisons")) ? joinpath(dir, "..", "comparisons") : dir
+        # `where` pins each side to ONE run (a0 + kernel included: multi-group campaigns carry
+        # several bases); the filename mirrors that so groups don't collide.
+        grp = Dict("a0" => c.a0, "accumulation_alg" => c.alg)
+        tag = "l$(c.l)_nb$(c.nb)_$(replace(c.alg, "GPUKernel" => ""))_a$(replace(string(c.a0), "." => "p"))"
         write_comparison(
             compdir;
-            label = "bunched ℓ = $(c.l) vs base (array signal)",
+            label = "bunched ℓ = $(c.l), n_b = $(c.nb) vs base ($(replace(c.alg, "GPUKernel" => "")), a₀ = $(c.a0))",
             differs = "prebunching Δz on the common disk",
             sides = [
                 (; label = "ℓ = $(c.l), n_b = $(c.nb)", dir = campaign,
                     script = "inverse_thomson_scattering.jl",
-                    where = Dict("bunch_nb" => c.nb, "bunch_l" => c.l)),
+                    where = merge(Dict("bunch_nb" => c.nb, "bunch_l" => c.l), grp)),
                 (; label = "base (unbunched)", dir = campaign,
                     script = "inverse_thomson_scattering.jl",
-                    where = Dict("bunch_nb" => 0)),
+                    where = merge(Dict("bunch_nb" => 0), grp)),
             ],
-            filename = "comparison_$(campaign)_l$(c.l).toml",
+            filename = "comparison_$(campaign)_$(tag).toml",
         )
-        println("declared → comparison_$(campaign)_l$(c.l).toml")
+        println("declared → comparison_$(campaign)_$(tag).toml")
     end
     return
 end
