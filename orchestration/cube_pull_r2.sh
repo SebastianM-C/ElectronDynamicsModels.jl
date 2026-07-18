@@ -9,30 +9,34 @@
 #
 # Env: CUBE_R2_ENV (default ~/.config/edm-r2.env — same file as the drain side),
 #      R2_BUCKET (default simulation-storage), PULL_DEST (archive dir),
-#      R2_PULL_STREAMS (default 8 multi-thread download streams).
+#      R2_PULL_STREAMS (default 8 multi-thread download streams), RCLONE (default from PATH).
 set -u
+PATH="$HOME/bin:$PATH"   # non-interactive shells (systemd, ssh -c) miss ~/bin
+RCLONE="${RCLONE:-rclone}"
+command -v "$RCLONE" >/dev/null 2>&1 || { echo "[pull-r2] $RCLONE not found (PATH=$PATH) — install rclone or set RCLONE=/path/to/rclone"; exit 1; }
 ENVF="${CUBE_R2_ENV:-$HOME/.config/edm-r2.env}"
 [ -f "$ENVF" ] || { echo "[pull-r2] $ENVF missing — refusing to start"; exit 1; }
 . "$ENVF"
 BUCKET="${R2_BUCKET:-simulation-storage}"
+RC() { "$RCLONE" --s3-no-check-bucket "$@"; }   # bucket-scoped tokens can't ListBuckets
 DEST="${PULL_DEST:?set PULL_DEST (archive dir on this machine)}"
 log() { echo "[pull-r2 $(date -u +%FT%TZ)] $*"; }
 mkdir -p "$DEST"
 
 while :; do
-    rclone lsf -R --files-only "r2:$BUCKET/cubes/" 2>/dev/null | grep '\.jls$' |
+    RC lsf -R --files-only "r2:$BUCKET/cubes/" 2>/dev/null | grep '\.jls$' |
     while IFS= read -r rel; do   # rel = <campaign>/<uuid>/<file>.jls
         camp=${rel%%/*}; rest=${rel#*/}; uuid=${rest%%/*}; base=${rest#*/}
         [ -e "$DEST/$camp/.verified_$base" ] && continue
         mkdir -p "$DEST/$camp"
         log "$camp/$base ← r2"
-        rclone copyto --multi-thread-streams "${R2_PULL_STREAMS:-8}" \
+        RC copyto --multi-thread-streams "${R2_PULL_STREAMS:-8}" \
             "r2:$BUCKET/cubes/$rel" "$DEST/$camp/$base" || { log "download failed $base — next sweep"; continue; }
-        want=$(rclone cat "r2:$BUCKET/cubes/$camp/$uuid/$base.sha256" 2>/dev/null | cut -d' ' -f1)
+        want=$(RC cat "r2:$BUCKET/cubes/$camp/$uuid/$base.sha256" 2>/dev/null | cut -d' ' -f1)
         have=$(sha256sum "$DEST/$camp/$base" | cut -d' ' -f1)
         if [ -n "$want" ] && [ "$want" = "$have" ]; then
             touch "$DEST/$camp/.verified_$base"
-            rclone purge "r2:$BUCKET/cubes/$camp/$uuid" && log "verified end-to-end + freed: $camp/$base"
+            RC purge "r2:$BUCKET/cubes/$camp/$uuid" && log "verified end-to-end + freed: $camp/$base"
         else
             log "VERIFY FAILED $base (want=${want:-none} have=$have) — keeping bucket copy"
         fi
