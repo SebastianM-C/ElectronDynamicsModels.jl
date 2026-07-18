@@ -39,6 +39,26 @@ function analytic_traj(; g, A, Ω, vz, τspan, N, K = 1.0)
         SVector{4, Int}(5, 6, 7, 8), K)
 end
 
+# a₀ = 10 born-at-rest plane-wave worldline (exact closed form, u·u = 1):
+#   φ = τ,  w = (a₀²/2)cos²φ,  u = (1+w, a₀cosφ, 0, w),
+#   x = (τ + z, a₀sinφ, 0, z),  z = (a₀²/4)(φ + sinφ·cosφ)
+# In proper time this has only 1st/2nd harmonics at any a₀ — all the a₀³
+# spectral compression lives in the observer-time pull-back, which is exactly
+# what stresses the per-slot root solve at the beaming-angle pixel.
+function planewave_traj(; a₀, ncyc, N, K = 1.0)
+    ts = collect(range(0.0, 2π * ncyc, length = N))
+    w(φ) = (a₀^2 / 2) * cos(φ)^2
+    zz(φ) = (a₀^2 / 4) * (φ + sin(φ) * cos(φ))
+    us = [SVector{8}(τ + zz(τ), a₀ * sin(τ), 0.0, zz(τ),
+                     1 + w(τ), a₀ * cos(τ), 0.0, w(τ)) for τ in ts]
+    itp = CubicSpline(us, ts; extrapolation = ExtrapolationType.Extension)
+    as = [SVector{4}(-a₀^2 * sin(τ) * cos(τ), -a₀ * sin(τ), 0.0,
+                     -a₀^2 * sin(τ) * cos(τ)) for τ in ts]
+    a_itp = CubicSpline(as, ts; extrapolation = ExtrapolationType.Extension)
+    return TrajectoryInterpolant(itp, a_itp, SVector{4, Int}(1, 2, 3, 4),
+        SVector{4, Int}(5, 6, 7, 8), K)
+end
+
 # Relative Frobenius error — robust to the single-slot boundary ambiguity at the
 # edge of each pixel's arrival window (where even Tsit5 vs Vern9 disagree by a
 # few %).  A max-abs metric would report that edge slot instead of the bulk fit.
@@ -127,6 +147,95 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         @test e1 > 1.0e-2          # a single correction is not enough here
         @test e3 < 5.0e-3          # three corrections reach reference agreement
         @test e3 < e1              # adding corrections reduces the discrepancy
+    end
+
+    @testset "light-front residual holds the floor at production-scale Z" begin
+        # Regression pin for the screen-relative (light-front) spelling of the
+        # light-cone residual.  At Z ~ 2e9 the absolute spelling
+        # x⁰_k − x⁰(τ) − R carries an ε·Z ≈ 2.4e-7 storage-quantization floor;
+        # the regrouped f = tₖ − ψ(τ) − ρ²/(R + d³) keeps rounding at the
+        # interaction scale (~1e-15 here).  Every other testset runs at small Z
+        # where the two spellings agree — this one fails (by ~2 orders) if the
+        # kernel ever regresses to absolute coordinates.
+        g, A, Ω, vz = 1.05, 0.15, 2.0, 0.95
+        traj = analytic_traj(; g, A, Ω, vz, τspan = (0.0, 20.0), N = 8000)
+        gt = ElectronDynamicsModels.to_gpu(traj)
+        LCE = ElectronDynamicsModels._lightcone_eval   # promoted out of Experimental on main
+
+        Z = 2.0e9
+        τstar = 10.3                                  # generic mid-span point
+        for xp in (0.0, 1.0e5)                        # on-axis, and edge (ρ² term live)
+            r_obs = SVector{3}(xp, 0.0, Z)
+            # True arrival time of the emission at τstar from the closed-form
+            # worldline, in BigFloat; τstar is then the exact retarded time for
+            # this target, so the converged residual must vanish to rounding.
+            τb = big(τstar)
+            x1b = big(A) * sin(big(Ω) * τb)
+            arrival = big(g) * τb + sqrt((big(xp) - x1b)^2 + (big(Z) - big(vz) * τb)^2)
+            tₖ = Float64(arrival - big(Z))            # screen-relative target (small)
+            _, f, rhs = LCE(τstar, gt, r_obs, tₖ)
+            @test abs(f) < 1.0e-9                     # old spelling: ~2.4e-7 — fails
+            @test rhs > 0                             # future-directed Doppler factor
+        end
+
+        # End-to-end at the same Z: offset grid + window block wiring
+        # (t_first = x⁰_first − z_screen exact by Sterbenz; tₖ built small).
+        trajs = [traj]
+        Nx = Ny = 5
+        half = 1.0e5
+        x_grid = LinRange(-half, half, Nx)
+        y_grid = LinRange(-half, half, Ny)
+        x⁰ = LinRange(Z, Z + 8.0, 240)
+        screen = ObserverScreen(x_grid, y_grid, Z, x⁰; c = 1.0)
+        A_ref = accumulate_potential(trajs, screen, Vern9())
+        A1 = accumulate_potential(trajs, screen, GPUKernelNewton(), CPU(); n_iters = 1)
+        A3 = accumulate_potential(trajs, screen, GPUKernelNewton(), CPU(); n_iters = 3)
+        @test maximum(abs, A_ref) > 0
+        @test rel_l2(A1, A_ref) < 5.0e-3              # matches the adaptive reference
+        @test rel_l2(A3, A1) < 1.0e-10                # converged: extra iters are no-ops
+    end
+
+    @testset "bracketed step survives aliased sampling (a₀ = 10, worst pixel)" begin
+        # The undamped Newton step fails on screens under-sampled for their
+        # harmonic content: at the beaming-angle pixel (θ = 2/a₀, Doppler
+        # factor swinging ~400× per cycle) with ~64 samples/period, the tangent
+        # throws iterates across arrival-curve wiggles, and MORE undamped
+        # iterations make it WORSE (report: 98/384 → 265/384 failed slots from
+        # n_iters 3 → 6; clamping to the τ-span is not a convergence
+        # mechanism).  The bracketed step turns every iteration into
+        # guaranteed enclosure shrinkage: error decreases monotonically in
+        # n_iters and reaches a converged fixed point.  The residual plateau
+        # vs the adaptive reference (~8% here) is spike-slot value sensitivity
+        # on an aliased grid, not solver error — hence the monotonicity and
+        # self-convergence assertions rather than a tight absolute tolerance.
+        a₀, ncyc = 10.0, 6
+        traj = planewave_traj(; a₀, ncyc, N = 8000)
+        trajs = [traj]
+        τf = last(traj.itp.t)
+
+        θ = 2 / a₀
+        D = 100 * (a₀^2 / 4) * τf
+        z_screen = D * cos(θ)
+        x_grid = [D * sin(θ)]
+        y_grid = [0.0]
+        𝒜(τ) = (v = traj.itp(τ);
+            v[1] + hypot(x_grid[1] - v[2], y_grid[1] - v[3], z_screen - v[4]))
+        x⁰ = LinRange(𝒜(0.0), 𝒜(τf), 64 * ncyc)     # ~64 samples/period: aliased
+        screen = ObserverScreen(x_grid, y_grid, z_screen, x⁰; c = 1.0)
+
+        A_ref = accumulate_potential(trajs, screen, Vern9())
+        An(n) = accumulate_potential(trajs, screen, GPUKernelNewton(), CPU(); n_iters = n)
+        A1, A3, A8, A12 = An(1), An(3), An(8), An(12)
+        err(A) = rel_l2(A, A_ref)
+
+        @test all(isfinite, A12)
+        @test err(A3) < err(A1) / 5        # rapid progress once corrections act
+        @test err(A12) ≤ err(A3)           # more iterations never hurt (bracket!)
+        # The hardest slots converge through the bisection tail (enclosure halves
+        # per iteration), so A8 → A12 still moves at the ~1e-4 level; the march is
+        # deterministic, so a measured-with-margin bound is stable.
+        @test rel_l2(A12, A8) < 1.0e-3
+        @test_throws ArgumentError An(0)   # guard: Euler-march degradation is an error
     end
 
     @testset "n_substeps drives RK4 convergence (forward Doppler)" begin
