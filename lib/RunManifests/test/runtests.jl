@@ -43,6 +43,22 @@ end
     @test spec.env["EDM_GPU_BACKEND"] == "cuda"      # read from [provenance], not [config]
     @test m["model"]["amplitude"] == 2.5             # `extra` section written verbatim
 
+    # Guarded inverse-Thomson knobs: round-trip when present, absent when absent (legacy manifests
+    # replay with the script defaults — a legacy run must never grow new env out of thin air).
+    cfg2 = merge(config, Dict{String, Any}(
+        "gamma" => 50.0, "tspan_tau" => 1.6, "window_lead" => 0.15, "window_tail" => 0.15,
+        "bunch_nb" => 398, "bunch_l" => -2))
+    path2 = write_solver_manifest(
+        dir; run_id = "rt2", provenance = prov, config = cfg2,
+        laser = Dict(), setup = Dict(), outputs = Dict("plots" => String[]),
+    )
+    env2 = run_spec_from_manifest(TOML.parsefile(path2)).env
+    @test env2["EDM_GAMMA"] == "50.0" && env2["EDM_TSPAN_TAU"] == "1.6"
+    @test env2["EDM_WINDOW_LEAD"] == "0.15" && env2["EDM_WINDOW_TAIL"] == "0.15"
+    @test env2["EDM_BUNCH_NB"] == "398" && env2["EDM_BUNCH_L"] == "-2"
+    @test !haskey(spec.env, "EDM_TSPAN_TAU") && !haskey(spec.env, "EDM_WINDOW_LEAD") &&
+          !haskey(spec.env, "EDM_BUNCH_NB")
+
     # Enforcement: dropping any single required key makes the writer refuse to write.
     for k in REQUIRED_CONFIG_KEYS
         bad = delete!(copy(config), k)
