@@ -189,6 +189,17 @@ function run_spec_from_manifest(manifest::AbstractDict)
     haskey(cfg, "harmonics") && (env["EDM_HARMONICS"] = join(cfg["harmonics"], ","))
     haskey(cfg, "reltol") && (env["EDM_RELTOL"] = string(cfg["reltol"]))
     haskey(cfg, "abstol") && (env["EDM_ABSTOL"] = string(cfg["abstol"]))
+    # Retarded-time GPU solver — guarded: absent in pre-Newton manifests (⇒ rk4 default).
+    # The manifest records the dashboard-canonical kernel name; emit BOTH knob spellings so
+    # replay works on any pinned commit (EDM_ACCUM_ALG = canonical, EDM_GPU_SOLVER = the
+    # legacy alias the first newton-campaign scripts read).
+    solver_env = Dict("GPUKernelRK4" => "rk4", "GPUKernelNewton" => "newton")
+    alg = get(cfg, "accumulation_alg", nothing)
+    if haskey(solver_env, alg)
+        env["EDM_ACCUM_ALG"] = solver_env[alg]
+        env["EDM_GPU_SOLVER"] = solver_env[alg]
+    end
+    haskey(cfg, "newton_iters") && (env["EDM_NEWTON_ITERS"] = string(cfg["newton_iters"]))
     sv = get(cfg, "interp_saveat", "adaptive")
     sv != "adaptive" && (env["EDM_INTERP_SAVEAT"] = string(sv))
     return (; commit, env)
@@ -321,12 +332,16 @@ function write_derived(
     return joinpath(dir, name)
 end
 
-# Normalise one comparison side spec to (label, dir, script). Accepts a NamedTuple
-# `(; label, dir[, script])`, a `Dict`, or a `(label, dir[, script])` tuple.
+# Normalise one comparison side spec to (label, dir, script, where). Accepts a NamedTuple
+# `(; label, dir[, script][, var"where"])`, a `Dict` (keys "label"/"dir"/"script"/"where"),
+# or a `(label, dir[, script])` tuple. `where` — a Dict of canonical-param => value
+# constraints — selects WHICH runs of `dir` form this side (for same-dir sides).
 function _side_fields(s)
-    s isa AbstractDict && return (s["label"], s["dir"], get(s, "script", nothing))
-    s isa NamedTuple && return (s.label, s.dir, hasproperty(s, :script) ? s.script : nothing)
-    s isa Tuple && return (s[1], s[2], length(s) >= 3 ? s[3] : nothing)
+    s isa AbstractDict &&
+        return (s["label"], s["dir"], get(s, "script", nothing), get(s, "where", nothing))
+    s isa NamedTuple && return (s.label, s.dir, hasproperty(s, :script) ? s.script : nothing,
+        hasproperty(s, :where) ? getproperty(s, :where) : nothing)
+    s isa Tuple && return (s[1], s[2], length(s) >= 3 ? s[3] : nothing, nothing)
     return error("write_comparison: unrecognised side spec of type $(typeof(s))")
 end
 
@@ -341,10 +356,13 @@ runs) are compared, matched cell-by-cell along a shared swept axis.
 `sides` is a vector of at least two side specs — each a NamedTuple `(; label, dir[, script])`,
 a `Dict`, or a `(label, dir[, script])` tuple. `dir` is a results-dir **basename** the dashboard
 resolves to the sweep auto-detected there; the optional `script` disambiguates a dir holding more
-than one sweep (e.g. an LPWA and a Thomson run in the same folder). `differs` is a free-form label
-for what distinguishes the sides (e.g. `"method"`); `along` names the shared swept axis to match on
-— **omit it** to let the dashboard infer the sides' common axis (the usual case, since a per-pair
-caller can't see what the whole campaign sweeps).
+than one sweep (e.g. an LPWA and a Thomson run in the same folder). A side may also carry a
+`where` Dict of canonical-param => value constraints (Dict key `"where"`, or NT field
+`var"where"`) restricting the side to the matching runs of its dir — required when BOTH sides
+live in one campaign dir (e.g. two retarded-time kernels swept in one campaign). `differs` is a
+free-form label for what distinguishes the sides (e.g. `"method"`); `along` names the shared
+swept axis to match on — **omit it** to let the dashboard infer the sides' common axis (the
+usual case, since a per-pair caller can't see what the whole campaign sweeps).
 
 Idempotent: `filename` defaults to a deterministic slug of the side dirs, so a per-pair comparison
 re-run across a sweep rewrites ONE declaration instead of accumulating copies. Stamps the current
@@ -358,9 +376,11 @@ function write_comparison(
     sidedicts = Dict{String, Any}[]
     dirtags = String[]
     for s in sides
-        sl, sd, sc = _side_fields(s)
+        sl, sd, sc, sw = _side_fields(s)
         d = Dict{String, Any}("label" => string(sl), "dir" => string(sd))
         sc === nothing || (d["script"] = string(sc))
+        sw === nothing || isempty(sw) ||
+            (d["where"] = Dict{String, Any}(string(k) => v for (k, v) in pairs(sw)))
         push!(sidedicts, d)
         push!(dirtags, string(sd))
     end

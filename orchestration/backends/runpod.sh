@@ -52,6 +52,18 @@ rp()      { curl -fsS -H "Authorization: Bearer $TOK" -H "Content-Type: applicat
 ssh_vm()  { /usr/bin/ssh $SSHOPTS -p "$PORT" root@"$IP" "$@"; }
 log()     { echo "[$(date -u +%FT%TZ)] $*"; }
 
+# Persistent cost ledger (shared with hotaisle.sh; reported by orchestration/cost_report.sh).
+# rate_cents_h = the pod's costPerHr (converted to cents) captured at grab time — rates vary per
+# GPU type and drift. TODO: RunPod has a billing API (cf. MCP get-billing) — wire a cheap spend
+# read into the balance_usd column if/when useful. A ledger write must NEVER break a campaign.
+LEDGER="${EDM_CLOUD_LEDGER:-$HOME/.config/edm-cloud-ledger.tsv}"
+ledger()  {   # ledger <vm> <event> <detail> [rate_cents_h] [balance_usd]
+    { mkdir -p "$(dirname "$LEDGER")"
+      [ -f "$LEDGER" ] || printf 'ts_utc\tprovider\tvm\tevent\tdetail\trate_cents_h\tbalance_usd\n' > "$LEDGER"
+      printf '%s\trunpod\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" "${4:-}" "${5:-}" >> "$LEDGER"
+    } 2>/dev/null || true
+}
+
 # sshd bootstrap: sshd in the foreground IS the keep-alive; also authorize the injected key.
 # Needed on any image or the container crash-loops (rocm/pytorch's default CMD just exits).
 # rsync + zstd serve the depot cache restore/push and the product download, on ANY base image.
@@ -112,7 +124,7 @@ grab_pod() {
     local -a cands; mapfile -t cands < <(gpu_candidates)
     [ "${#cands[@]}" -gt 0 ] || { log "[ERROR] gpu_candidates returned nothing"; return 1; }
     log "grabbing (poll ${POLL}s ≤$MAXTRIES tries): ${cands[*]}"
-    local try gpu prof resp pid
+    local try gpu prof resp pid rate
     for ((try=1; try<=MAXTRIES; try++)); do
         for gpu in "${cands[@]}"; do
             prof="$(gpu_profile "$gpu")"; [ -n "$prof" ] || { log "no profile for '$gpu'"; continue; }
@@ -126,7 +138,13 @@ grab_pod() {
                       dockerEntrypoint:["/bin/bash","-c"],dockerStartCmd:[$start]}
                      + (if $vol != "" then {networkVolumeId:$vol,volumeMountPath:"/workspace"} else {} end)')" 2>/dev/null)" || resp=""
             pid="$(echo "$resp" | jq -r '.id // empty' 2>/dev/null)"
-            [ -n "$pid" ] && { POD="$pid"; log "grabbed $gpu → pod $POD ($BACKEND / $IMAGE)"; return 0; }
+            # Camping can run unattended for hours and billing starts HERE, before warm —
+            # ping as soon as a pod is secured, not only at campaign launch.
+            [ -n "$pid" ] && { POD="$pid"
+                rate="$(echo "$resp" | jq -r 'if .costPerHr then (.costPerHr*100|round) else empty end' 2>/dev/null)" || rate=""
+                ledger "$POD" provision "gpu=$gpu dc=$DC" "$rate"
+                log "grabbed $gpu → pod $POD ($BACKEND / $IMAGE, ${rate:-?}¢/h)"
+                notify satellite default "EDM runpod grabbed" "$gpu → pod $POD (try $try/$MAXTRIES, billing started)"; return 0; }
         done
         [ $(( (try-1) % 10 )) -eq 0 ] && log "  no capacity yet (try $try/$MAXTRIES)…"
         sleep "$POLL"
@@ -213,6 +231,7 @@ monitor_and_download() {   # poll for DONE (crash = 3 consecutive dead liveness 
             if [ "$misses" -ge 3 ]; then
                 ssh_vm "cd EDM && grep -q '\\] ${CAMPAIGN} DONE' runs/${CAMPAIGN}.out 2>/dev/null" && break   # finished between checks
                 notify rotating_light urgent "EDM runpod CRASH" "$CAMPAIGN driver died with no DONE on $POD — pod KEPT; '$0 attach' to retry or teardown."
+                ledger "$POD" campaign_crash "campaign=$CAMPAIGN driver died, no DONE"
                 log "[ERROR] driver gone, no DONE — pod $POD KEPT. tail:"; ssh_vm "cd EDM && tail -n 20 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[pod] /'; return 1
             fi
             log "  liveness check failed ($misses/3) — transient ssh blip or a real crash, retrying…"
@@ -236,6 +255,7 @@ monitor_and_download() {   # poll for DONE (crash = 3 consecutive dead liveness 
         log "campaign done; rsync skipped (RUNPOD_RSYNC_DOWNLOAD=0) — drain from the volume later: orchestration/drain.sh $CAMPAIGN"
     fi
     notify white_check_mark default "EDM runpod done" "$CAMPAIGN → $OUT/$CAMPAIGN ; pod $POD KEPT — run teardown."
+    ledger "$POD" campaign_done "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"
     log "products → $OUT/$CAMPAIGN ; pod $POD KEPT (state $STATE). More: $0 run <campaign>. Finish: $0 teardown"
 }
 
@@ -270,6 +290,7 @@ run_campaign() {
         log "$CAMPAIGN already RUNNING on the pod — monitoring it (no relaunch)"
     else
         notify hourglass_flowing_sand default "EDM runpod started" "$CAMPAIGN on $POD ($BACKEND @$DC)"
+        ledger "$POD" campaign_start "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"
         log "launching $CAMPAIGN on the pod via the local backend ($BACKEND), detached…"
         ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && rm -f runs/${CAMPAIGN}.out runs/${CAMPAIGN}.pid && { nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
     fi
@@ -288,7 +309,8 @@ teardown() {   # delete the pod (stops GPU billing); a volume, if attached, is K
     read -r POD IP PORT VOLID BACKEND < "$STATE"; [ "$VOLID" = "-" ] && VOLID=""
     /usr/bin/ssh -O exit -o ControlPath="$CM" root@"$IP" 2>/dev/null || true
     if rp -X DELETE "$API/pods/$POD" >/dev/null 2>&1; then
-        rm -f "$STATE"; log "deleted pod $POD${VOLID:+; volume $VOLID KEPT (drain via S3, then delete to stop storage \$)}"
+        rm -f "$STATE"; ledger "$POD" teardown "${VOLID:+volume=$VOLID kept}"
+        log "deleted pod $POD${VOLID:+; volume $VOLID KEPT (drain via S3, then delete to stop storage \$)}"
         notify checkered_flag default "EDM runpod torn down" "pod $POD deleted${VOLID:+; volume $VOLID kept}."
     else
         notify rotating_light urgent "EDM teardown FAILED" "DELETE of pod $POD errored — likely STILL billing. Delete in console."
