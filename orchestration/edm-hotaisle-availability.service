@@ -1,0 +1,8 @@
+# EDM Hot Aisle availability poll — installed copy of orchestration/hotaisle_availability.sh
+# (see orchestration/README-availability.md for setup)
+[Unit]
+Description=EDM Hot Aisle GPU availability poll
+
+[Service]
+Type=oneshot
+ExecStart=%h/.local/bin/edm-hotaisle-availability
