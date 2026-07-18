@@ -1,10 +1,7 @@
 # ── Newton light-cone GPU kernel: per-slot root solve + LW accumulation ──
-# Lives in the `Experimental` submodule (production staging, like the batched
-# Tsit5 path) and extends the parent `accumulate_potential`/`accumulate_field`.
-#
-# Alternative to the GPUKernelRK4 march (kernel_rk4.jl): instead of
-# integrating dτ_r/dx⁰ = 1/(u⁰ − u⃗·n̂) between saveat slots, solve the light-cone
-# condition
+# Extends `accumulate_potential`/`accumulate_field` as the alternative to the
+# GPUKernelRK4 march (kernel_rk4.jl): instead of integrating
+# dτ_r/dx⁰ = 1/(u⁰ − u⃗·n̂) between saveat slots, solve the light-cone condition
 #     f(τ) = x⁰_target − x⁰(τ) − |r_obs − x⃗(τ)|  =  0
 # at each slot with warm-started Newton corrections.  f is strictly monotone
 # decreasing — f′(τ) = −(u⁰ − u⃗·n̂) < 0 since u⁰ ≥ |u⃗| on a timelike worldline —
@@ -12,15 +9,18 @@
 # spline eval that provides the residual.  Unlike the RK4 march, the per-slot
 # error does not accumulate along the observer-time grid.
 #
-# Measured on the W7900 (a₀ = 0.1 production setup, see
-# reports/newton_lightcone_retarded_time.typ): n_iters = 1 sits at the accuracy
-# floor (9.4e-11 vs tight reference; RK4 n_substeps = 1 is 9.5e-10) and runs
-# 1.5–2.0× faster than RK4 n_substeps = 1 on the potential path, time-neutral
-# to ~1.3× faster on the field path.  Strongly-relativistic forward-scattering
-# geometries need n_iters = 3 (the analog of RK4 needing n_substeps = 8 there).
-
-using ..ElectronDynamicsModels: to_gpu, lienard_wiechert_F_split, extract_EB
-import ..ElectronDynamicsModels: accumulate_field
+# Which kernel when (newton_a0_{low,high} production campaigns, MI300X 2026-07;
+# W7900 potential-path numbers in reports/newton_lightcone_retarded_time.typ):
+#   - Boosted forward scattering (γ ≫ 1): Newton. At γ = 10, n_iters = 1 is
+#     ~10× more accurate than RK4 n_substeps = 1 and 4.3× cheaper than
+#     matched-accuracy RK4 n_substeps = 8; converged by n_iters = 2.
+#   - Rest-electron field maps (a₀ ≲ 0.1): RK4. Accuracy is identical in norm
+#     (n_iters = 1 already at the 9.4e-11 floor; ≡ n_iters = 2 to 1e-13) but
+#     RK4 runs 1.3–1.4× faster there, and its error is smooth/correlated along
+#     observer time, so deep-floor harmonic B maps keep coherent ring structure
+#     where Newton's white per-slot error raises the floor (h4 B ~129×).
+# Per-slot error character is the differentiator near numerical floors:
+# norms decide convergence, error spectra decide what survives the FFT.
 
 """
     GPUKernelNewton
@@ -30,6 +30,13 @@ retarded proper time at each saveat slot is obtained by solving the light-cone
 condition `x⁰_target − x⁰(τ) − |r_obs − x⃗(τ)| = 0` with `n_iters` warm-started
 Newton corrections, instead of marching the retarded-time ODE as
 [`GPUKernelRK4`](@ref) does.
+
+Per-slot errors are independent across observer-time slots (no accumulation).
+Prefer this kernel for boosted forward-scattering geometries (γ ≫ 1), where
+`n_iters = 1–2` beats matched-accuracy RK4 by ~4× in cost; prefer
+[`GPUKernelRK4`](@ref) for rest-electron field maps and deep-floor harmonic
+B-map studies, where its smoother error spectrum preserves near-floor ring
+structure. Measured campaign numbers in the header of `gpu/kernel_newton.jl`.
 """
 struct GPUKernelNewton end
 
