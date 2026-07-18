@@ -220,6 +220,57 @@ download_verify() {   # md5 each non-cube product pod-vs-local (subdirs included
     notify rotating_light high "EDM download CHECK FAILED" "$CAMPAIGN: md5 mismatch/missing → $dst"; return 1
 }
 
+# Cube drainer (R2): mirrors hotaisle.sh — copy script + creds OUT of the repo clone (a branch
+# sync must not yank a running drainer), pgrep-guarded nohup start, only when the campaign sets
+# KEEP_CUBE=1. rc>0 ⇒ caller alerts; a missing drainer never blocks (the teardown gate holds cubes).
+start_drainer() {
+    [ "${KEEP_CUBE:-0}" = 1 ] || return 0
+    local envf="${CUBE_R2_ENV:-$HOME/.config/edm-r2.env}"
+    [ -f "$envf" ] || { log "[drain] $envf missing — no R2 creds to ship"; return 1; }
+    ssh_vm 'mkdir -p ~/.config && cat > ~/.config/edm-r2.env && chmod 600 ~/.config/edm-r2.env' < "$envf" || return 1
+    ssh_vm 'cat > ~/cube_drain_r2.sh' < "$ORCH/cube_drain_r2.sh" || return 1
+    # guard is its OWN ssh call: bundled with the nohup start, the remote shell's cmdline would
+    # contain the plain script name and pgrep would always self-match (drainer never starts)
+    if ! drainer_active; then
+        ssh_vm 'nohup bash ~/cube_drain_r2.sh >> ~/drain_r2.log 2>&1 < /dev/null &' || return 1
+    fi
+    log "[drain] cube_drain_r2.sh running on the pod (log: ~/drain_r2.log)"
+}
+# check-only remote cmdline carries just the [c]-bracketed pattern — no self-match
+drainer_active() { ssh_vm "pgrep -f '[c]ube_drain_r2.sh' >/dev/null" 2>/dev/null; }
+
+# Cube-safety gate: pod deletion destroys pod-local disk — the ONLY copy of an undrained cube
+# (volume-backed runs are exempt: teardown keeps the volume). Same eligibility contract as the
+# drainer (<uuid>.reduced present, smoke excluded). FORCE_TEARDOWN=1 overrides.
+cube_gate() {
+    local pending rc=0
+    pending=$(ssh_vm 'bash -s' 2>/dev/null <<'GATE'
+for cube in "$HOME"/EDM/runs/*/field_*.jls; do
+    [ -e "$cube" ] || continue
+    dir=$(dirname "$cube"); camp=$(basename "$dir"); base=$(basename "$cube")
+    uuid=${base%.jls}; uuid=${uuid##*_}
+    [ "$camp" = smoke ] && continue
+    [ -e "$dir/$uuid.reduced" ] || continue
+    [ -e "$dir/.drained_$base" ] || echo "$camp/$base"
+done
+GATE
+    ) || rc=$?
+    if [ "$rc" -ne 0 ]; then
+        log "[gate] cube check failed (ssh rc=$rc) — cannot verify drains; proceeding (nothing to save over dead ssh)"
+        return 0
+    fi
+    [ -z "$pending" ] && return 0
+    if [ "${FORCE_TEARDOWN:-0}" = 1 ]; then
+        log "[gate] FORCE_TEARDOWN=1 — deleting despite undrained cubes:"; echo "$pending" | sed 's/^/  /'
+        return 0
+    fi
+    log "[gate] REFUSING teardown — undrained cubes on $POD (the pod holds the only copy):"
+    echo "$pending" | sed 's/^/  /'
+    log "[gate] wait for the drainer (tail ~/drain_r2.log on the pod), or override: FORCE_TEARDOWN=1 $0 teardown"
+    notify rotating_light urgent "EDM teardown BLOCKED" "pod $POD: undrained cubes — $(echo "$pending" | tr '\n' ' '); drainer still working? FORCE_TEARDOWN=1 to override."
+    exit 1
+}
+
 monitor_and_download() {   # poll for DONE (crash = 3 consecutive dead liveness checks), then download+verify
     log "polling for completion (DONE marker; crash = 3 consecutive failed liveness checks)…"
     local misses=0
@@ -246,8 +297,8 @@ monitor_and_download() {   # poll for DONE (crash = 3 consecutive dead liveness 
         log "campaign done; downloading products via rsync…"
         mkdir -p "$OUT/$CAMPAIGN"
         local -a excl=(--exclude='field_*.jls')
-        if [ "${KEEP_CUBE:-0}" = 1 ] && [ -z "${VOLID:-}" ]; then
-            excl=(); log "  KEEP_CUBE=1 with no volume ⇒ cubes included in the download (bulky!)"
+        if [ "${KEEP_CUBE:-0}" = 1 ] && [ -z "${VOLID:-}" ] && ! drainer_active; then
+            excl=(); log "  KEEP_CUBE=1, no volume, no drainer ⇒ cubes included in the download (bulky!)"
         fi
         /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS -p $PORT" ${excl[@]+"${excl[@]}"} root@"$IP":"EDM/runs/$CAMPAIGN/" "$OUT/$CAMPAIGN/"
         download_verify "$OUT/$CAMPAIGN" || log "[verify] issues — products still on the pod${VOLID:+ and volume /workspace/runs/$CAMPAIGN}"
@@ -294,6 +345,7 @@ run_campaign() {
         log "launching $CAMPAIGN on the pod via the local backend ($BACKEND), detached…"
         ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && rm -f runs/${CAMPAIGN}.out runs/${CAMPAIGN}.pid && { nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
     fi
+    start_drainer || notify warning high "EDM drainer NOT started" "$CAMPAIGN on $POD: cubes stay on the pod only; teardown gate will hold them"
     monitor_and_download
 }
 
@@ -301,12 +353,18 @@ attach_campaign() {   # resume monitoring+download after a driver-side interrupt
     local cf="${1:?usage: runpod.sh attach <campaign.sh>}"; . "$cf"
     pod_reachable || { log "[ERROR] no reachable kept pod ($STATE)"; exit 1; }
     log "attached to kept pod $POD ($IP:$PORT) for $CAMPAIGN"
+    start_drainer || notify warning high "EDM drainer NOT started" "$CAMPAIGN on $POD: cubes stay on the pod only; teardown gate will hold them"
     monitor_and_download
 }
 
 teardown() {   # delete the pod (stops GPU billing); a volume, if attached, is KEPT (bills ~\$0.07/GB-mo)
     [ -f "$STATE" ] || { echo "no kept pod recorded in $STATE"; exit 0; }
     read -r POD IP PORT VOLID BACKEND < "$STATE"; [ "$VOLID" = "-" ] && VOLID=""
+    if [ -n "${VOLID:-}" ]; then
+        log "[gate] volume $VOLID attached — cubes persist past the pod, gate skipped"
+    else
+        cube_gate
+    fi
     /usr/bin/ssh -O exit -o ControlPath="$CM" root@"$IP" 2>/dev/null || true
     if rp -X DELETE "$API/pods/$POD" >/dev/null 2>&1; then
         rm -f "$STATE"; ledger "$POD" teardown "${VOLID:+volume=$VOLID kept}"
