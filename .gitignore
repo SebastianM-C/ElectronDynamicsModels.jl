@@ -25,4 +25,7 @@
 /scripts/hotaisle_campaign.sh
 /scripts/balance_monitor.sh
 /scripts/*.sbatch
-animation/rpr_frames/
+animation/rpr_frames*/
+animation/lookdev/
+# RadeonProRender compiled-shader cache (regenerated on first RPR run)
+/cache/

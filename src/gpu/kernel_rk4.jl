@@ -106,7 +106,10 @@ function _gpu_unified_one_electron!(
         iy = ((i_lin - 1) ÷ Nx) + 1
         r_obs = SVector{3}(x_grid[ix], y_grid[iy], z_screen)
 
-        # Pixel-specific advanced-time window x⁰_i, x⁰_f
+        # Pixel-specific advanced-time window x⁰_i, x⁰_f.  NOTE: kernel_newton.jl
+        # computes the same window in screen-relative offsets (light-front
+        # residual) — the two kernels' window blocks are intentionally no longer
+        # line-identical.
         v_i = gpu_traj.itp(τi)
         d_i¹ = r_obs[1] - v_i[gpu_traj.x_idxs[2]]
         d_i² = r_obs[2] - v_i[gpu_traj.x_idxs[3]]
@@ -295,7 +298,10 @@ function _gpu_unified_field_one_electron!(
         iy = ((i_lin - 1) ÷ Nx) + 1
         r_obs = SVector{3}(x_grid[ix], y_grid[iy], z_screen)
 
-        # Pixel-specific advanced-time window x⁰_i, x⁰_f
+        # Pixel-specific advanced-time window x⁰_i, x⁰_f.  NOTE: kernel_newton.jl
+        # computes the same window in screen-relative offsets (light-front
+        # residual) — the two kernels' window blocks are intentionally no longer
+        # line-identical.
         v_i = gpu_traj.itp(τi)
         d_i¹ = r_obs[1] - v_i[gpu_traj.x_idxs[2]]
         d_i² = r_obs[2] - v_i[gpu_traj.x_idxs[3]]

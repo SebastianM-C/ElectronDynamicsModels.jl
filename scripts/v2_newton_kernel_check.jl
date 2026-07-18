@@ -2,7 +2,8 @@
 # Vern9 CPU reference, in both analytic regimes of test/gpu_radiation.jl,
 # alongside GPUKernelRK4 for context. A-level (accumulated potential) errors.
 #
-# Run from the worktree root: julia --project=scripts scripts/v2_newton_kernel_check.jl
+# Run from the repo root: julia --project=test scripts/v2_newton_kernel_check.jl
+# (needs KernelAbstractions for the CPU backend — the test env has it, scripts does not)
 
 using ElectronDynamicsModels
 using ElectronDynamicsModels: TrajectoryInterpolant, ObserverScreen
