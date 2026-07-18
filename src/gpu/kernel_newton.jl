@@ -45,24 +45,36 @@ struct GPUKernelNewton end
 # τ ← τ + f·rhs with rhs = 1/(u⁰ − u⃗·n̂) = r_norm/xr_dot_u > 0, and the final
 # (converged) eval doubles as the accumulation eval: `v` carries the full
 # [xμ; uμ] state and K/xr_dot_u = K·rhs/r_norm.
-@inline function _lightcone_eval(τ, gpu_traj, r_obs, x⁰_target)
+@inline function _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
     v = gpu_traj.itp(τ)
     x⁰ = v[gpu_traj.x_idxs[1]] # x⁰(τ)
+    x³ = v[gpu_traj.x_idxs[4]] # x³(τ)
     d¹ = r_obs[1] - v[gpu_traj.x_idxs[2]]
     d² = r_obs[2] - v[gpu_traj.x_idxs[3]]
     d³ = r_obs[3] - v[gpu_traj.x_idxs[4]]
+    # ρ = x⊥ - R = [d¹, d²]
+    # R - d³ = ρ²/(||R||+d³)
+    # screen_dist (regrouped) = ρ²/(||R||+d³)
+    # The terms are regrouped for better conditioning
+    # assumes z_screen > x³(τ)
+    ρ² = d¹*d¹ + d²*d²
     r_norm = sqrt(d¹ * d¹ + d² * d² + d³ * d³)
-    # x⁰_target - x⁰(τ) = ||r_obs - x(τ)|| = ||R||
+    screen_dist = ρ² / (r_norm + d³)
+    # x⁰_k - x⁰(τ) = ||r_obs - x(τ)|| = ||R||
+    # x⁰_k = Z + tₖ
+    # ψₖ(τ) = x⁰(τ) - x³(τ)
+    ψₖ = x⁰ - x³
     u⁰ = v[gpu_traj.u_idxs[1]]
     u¹ = v[gpu_traj.u_idxs[2]]
     u² = v[gpu_traj.u_idxs[3]]
     u³ = v[gpu_traj.u_idxs[4]]
-    # X^μ = x^μ - x^μ(τ) = (x⁰_target - x⁰(τ), R)
+    # X^μ = x^μ - x^μ(τ) = (x⁰_k - x⁰(τ), R)
     # m_dot(xr, uμ) with xr = (r_norm, d¹, d², d³)
     xr_dot_u = r_norm * u⁰ - (d¹ * u¹ + d² * u² + d³ * u³)
     # n̂ = R/||R|| => X ⋅ u = r_norm * (u⁰ - n̂ ⋅ u⃗)
     rhs = r_norm / xr_dot_u
-    f = x⁰_target - x⁰ - r_norm
+    # f = tₖ - ψₖ(τ) - ρ²/(||R||+d³)
+    f = tₖ - ψₖ - screen_dist
     return v, f, rhs, r_norm, d¹, d², d³
 end
 
@@ -74,7 +86,7 @@ end
 function _gpu_newton_one_electron!(
         A_buf, gpu_traj,
         x_grid, y_grid, z_screen,
-        x⁰_first, δx⁰, N_samples, Nx, Ny,
+        t_first, δx⁰, N_samples, Nx, Ny,
         τi, τf, pixel_iter, backend, n_iters
     )
     K = gpu_traj.K
@@ -86,28 +98,39 @@ function _gpu_newton_one_electron!(
 
         # Pixel-specific advanced-time window x⁰_i, x⁰_f
         v_i = gpu_traj.itp(τi)
+        x_i⁰ = v_i[gpu_traj.x_idxs[1]] # x⁰(τi)
+        x_i³ = v_i[gpu_traj.x_idxs[4]] # x³(τi)
         d_i¹ = r_obs[1] - v_i[gpu_traj.x_idxs[2]]
         d_i² = r_obs[2] - v_i[gpu_traj.x_idxs[3]]
         d_i³ = r_obs[3] - v_i[gpu_traj.x_idxs[4]]
         R_i = sqrt(d_i¹^2 + d_i²^2 + d_i³^2)
-        x⁰_i_px = v_i[gpu_traj.x_idxs[1]] + R_i
+        # light-front coordinate reformulation
+        ψ_i = x_i⁰ - x_i³
+        ρ_i² = d_i¹^2 + d_i²^2
+        t_i_px = ψ_i + ρ_i²/(R_i + d_i³)
 
         v_f = gpu_traj.itp(τf)
+        x_f⁰ = v_f[gpu_traj.x_idxs[1]] # x⁰(τf)
+        x_f³ = v_f[gpu_traj.x_idxs[4]] # x³(τf)
         d_f¹ = r_obs[1] - v_f[gpu_traj.x_idxs[2]]
         d_f² = r_obs[2] - v_f[gpu_traj.x_idxs[3]]
         d_f³ = r_obs[3] - v_f[gpu_traj.x_idxs[4]]
-        x⁰_f_px = v_f[gpu_traj.x_idxs[1]] + sqrt(d_f¹^2 + d_f²^2 + d_f³^2)
+        # light-front coordinate reformulation
+        ψ_f = x_f⁰ - x_f³
+        ρ_f² = d_f¹^2 + d_f²^2
+        R_f = sqrt(d_f¹^2 + d_f²^2 + d_f³^2)
+        t_f_px = ψ_f + ρ_f²/(R_f + d_f³)
 
         inv_δ = inv(δx⁰)
         # Strict-interior slot range matching Tsit5 with save_start/save_end=false.
-        k_start = max(1, floor(Int, (x⁰_i_px - x⁰_first) * inv_δ) + 2)
-        k_end = min(N_samples, ceil(Int, (x⁰_f_px - x⁰_first) * inv_δ))
+        k_start = max(1, floor(Int, (t_i_px - t_first) * inv_δ) + 2)
+        k_end = min(N_samples, ceil(Int, (t_f_px - t_first) * inv_δ))
 
         if k_start > k_end
             return
         end
 
-        # Warm start at the window edge: τ(x⁰_i_px) = τi exactly, and the v_i
+        # Warm start at the window edge: τ(t_i_px) = τi exactly, and the v_i
         # eval above already provides rhs(τi) for the first predictor stride —
         # no RK4 bridge needed.
         u⁰_i = v_i[gpu_traj.u_idxs[1]]
@@ -116,17 +139,18 @@ function _gpu_newton_one_electron!(
         u³_i = v_i[gpu_traj.u_idxs[4]]
         rhs = R_i / (R_i * u⁰_i - (d_i¹ * u¹_i + d_i² * u²_i + d_i³ * u³_i))
         τ = τi
-        x⁰_target = x⁰_first + (k_start - 1) * δx⁰
-        Δ = x⁰_target - x⁰_i_px   # ∈ (0, δx⁰] unless k_start clamped to 1
+
+        tₖ = t_first + (k_start - 1) * δx⁰
+        Δ = tₖ - t_i_px   # ∈ (0, δx⁰] unless k_start clamped to 1
 
         for k in k_start:k_end
             # Euler predictor from the previous slot's converged state, then
             # fixed-count Newton corrections on the light-cone residual.
             τ = clamp(τ + Δ * rhs, τi, τf)
-            v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, x⁰_target)
+            v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
             for _ in 1:n_iters
                 τ = clamp(τ + f * rhs, τi, τf)
-                v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, x⁰_target)
+                v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
             end
 
             # Accumulate from the last residual eval — zero extra spline evals.
@@ -136,7 +160,7 @@ function _gpu_newton_one_electron!(
             @inbounds A_buf[ix, iy, 3, k] += coeff * v[gpu_traj.u_idxs[3]]
             @inbounds A_buf[ix, iy, 4, k] += coeff * v[gpu_traj.u_idxs[4]]
 
-            x⁰_target += δx⁰
+            tₖ += δx⁰
             Δ = δx⁰
         end
     end
@@ -175,6 +199,8 @@ function accumulate_potential(
     A_buf = Adapt.adapt(backend, zeros(Nx, Ny, 4, N_samples))
 
     x⁰_first = first(screen.x⁰_samples)
+    # light-front coordinate reformulation
+    t_first = x⁰_first - screen.z
     δx⁰ = step(screen.x⁰_samples)
 
     # Iteration target: one element per pixel. Sentinel array; never read.
@@ -187,7 +213,7 @@ function accumulate_potential(
         _gpu_newton_one_electron!(
             A_buf, gpu_traj,
             screen.x_grid, screen.y_grid, screen.z,
-            x⁰_first, δx⁰, N_samples, Nx, Ny,
+            t_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_iters,
         )
         sync_per_electron && KernelAbstractions.synchronize(backend)
@@ -209,7 +235,7 @@ end
 function _gpu_newton_field_one_electron!(
         mode::Val, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
         x_grid, y_grid, z_screen,
-        x⁰_first, δx⁰, N_samples, Nx, Ny,
+        t_first, δx⁰, N_samples, Nx, Ny,
         τi, τf, pixel_iter, backend, n_iters
     )
     K = gpu_traj.K
@@ -221,22 +247,33 @@ function _gpu_newton_field_one_electron!(
 
         # Pixel-specific advanced-time window x⁰_i, x⁰_f
         v_i = gpu_traj.itp(τi)
+        x_i⁰ = v_i[gpu_traj.x_idxs[1]] # x⁰(τi)
+        x_i³ = v_i[gpu_traj.x_idxs[4]] # x³(τi)
         d_i¹ = r_obs[1] - v_i[gpu_traj.x_idxs[2]]
         d_i² = r_obs[2] - v_i[gpu_traj.x_idxs[3]]
         d_i³ = r_obs[3] - v_i[gpu_traj.x_idxs[4]]
         R_i = sqrt(d_i¹^2 + d_i²^2 + d_i³^2)
-        x⁰_i_px = v_i[gpu_traj.x_idxs[1]] + R_i
+        # light-front coordinate reformulation
+        ψ_i = x_i⁰ - x_i³
+        ρ_i² = d_i¹^2 + d_i²^2
+        t_i_px = ψ_i + ρ_i²/(R_i + d_i³)
 
         v_f = gpu_traj.itp(τf)
+        x_f⁰ = v_f[gpu_traj.x_idxs[1]] # x⁰(τf)
+        x_f³ = v_f[gpu_traj.x_idxs[4]] # x³(τf)
         d_f¹ = r_obs[1] - v_f[gpu_traj.x_idxs[2]]
         d_f² = r_obs[2] - v_f[gpu_traj.x_idxs[3]]
         d_f³ = r_obs[3] - v_f[gpu_traj.x_idxs[4]]
-        x⁰_f_px = v_f[gpu_traj.x_idxs[1]] + sqrt(d_f¹^2 + d_f²^2 + d_f³^2)
+        # light-front coordinate reformulation
+        ψ_f = x_f⁰ - x_f³
+        ρ_f² = d_f¹^2 + d_f²^2
+        R_f = sqrt(d_f¹^2 + d_f²^2 + d_f³^2)
+        t_f_px = ψ_f + ρ_f²/(R_f + d_f³)
 
         inv_δ = inv(δx⁰)
         # Strict-interior slot range matching Tsit5 with save_start/save_end=false.
-        k_start = max(1, floor(Int, (x⁰_i_px - x⁰_first) * inv_δ) + 2)
-        k_end = min(N_samples, ceil(Int, (x⁰_f_px - x⁰_first) * inv_δ))
+        k_start = max(1, floor(Int, (t_i_px - t_first) * inv_δ) + 2)
+        k_end = min(N_samples, ceil(Int, (t_f_px - t_first) * inv_δ))
 
         if k_start > k_end
             return
@@ -248,15 +285,15 @@ function _gpu_newton_field_one_electron!(
         u³_i = v_i[gpu_traj.u_idxs[4]]
         rhs = R_i / (R_i * u⁰_i - (d_i¹ * u¹_i + d_i² * u²_i + d_i³ * u³_i))
         τ = τi
-        x⁰_target = x⁰_first + (k_start - 1) * δx⁰
-        Δ = x⁰_target - x⁰_i_px
+        tₖ = t_first + (k_start - 1) * δx⁰
+        Δ = tₖ - t_i_px
 
         for k in k_start:k_end
             τ = clamp(τ + Δ * rhs, τi, τf)
-            v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, x⁰_target)
+            v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
             for _ in 1:n_iters
                 τ = clamp(τ + f * rhs, τi, τf)
-                v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, x⁰_target)
+                v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
             end
 
             # Field write from the converged eval (X reuses r_norm and d).
@@ -279,7 +316,7 @@ function _gpu_newton_field_one_electron!(
                 end
             end
 
-            x⁰_target += δx⁰
+            tₖ += δx⁰
             Δ = δx⁰
         end
     end
@@ -318,6 +355,8 @@ function accumulate_field(
     end
 
     x⁰_first = first(screen.x⁰_samples)
+    # light-front coordinate reformulation
+    t_first = x⁰_first - screen.z
     δx⁰ = step(screen.x⁰_samples)
 
     pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny))
@@ -329,7 +368,7 @@ function accumulate_field(
         _gpu_newton_field_one_electron!(
             mode, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
             screen.x_grid, screen.y_grid, screen.z,
-            x⁰_first, δx⁰, N_samples, Nx, Ny,
+            t_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_iters,
         )
         sync_per_electron && KernelAbstractions.synchronize(backend)
