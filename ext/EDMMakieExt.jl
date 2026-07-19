@@ -17,6 +17,7 @@ function ElectronDynamicsModels.plot_harmonic_grid(
         maps::AbstractArray{<:Number, 3}, x_grid, y_grid;
         w₀ = 1, labels, title = "",
         colormap = :jet, colorrange = harmonic_colorrange, transform = real,
+        highclip = nothing, lowclip = nothing,
         colorbar_offset = true, ncols = 3, panelsize = 300, outfile = nothing,
     )
     ncomp = size(maps, 1)
@@ -39,7 +40,9 @@ function ElectronDynamicsModels.plot_harmonic_grid(
                 gl[1, 1]; width = panelsize, height = panelsize, xlabel = xlab, ylabel = ylab,
                 title = "$(labels[c])  (peak $(_sci(maximum(abs, cmap_c))))",
             )
-            hm = heatmap!(ax, xs, ys, data; colormap, colorrange = cr)
+            hm = heatmap!(ax, xs, ys, data; colormap, colorrange = cr,
+                (highclip === nothing ? (;) : (; highclip))...,
+                (lowclip === nothing ? (;) : (; lowclip))...)
             if colorbar_offset
                 # Factor the shared power-of-ten into the Colorbar's native `label` so the ticks carry
                 # only short mantissas (the exponent rides the Colorbar's own label and stays attached).
