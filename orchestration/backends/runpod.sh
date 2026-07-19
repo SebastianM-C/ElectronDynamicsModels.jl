@@ -27,10 +27,18 @@
 set -Eeuo pipefail
 ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."; ORCH="$(cd "$ORCH" && pwd)"
 # Caller-env overrides must survive config.env (sourced via run_cell.sh below, where a plain
-# RUNPOD_BRANCH=... assignment would clobber them) — capture before, prefer after.
+# RUNPOD_BRANCH=... assignment would clobber them) — capture before, prefer after. Same for
+# every per-campaign knob a caller passes inline: VOLUME_GB bit us 2026-07-19 (caller's 1400
+# silently reverted to config.env's 0 ⇒ a volumeless pod for a volume-dependent campaign).
 _CALLER_BRANCH="${RUNPOD_BRANCH-}"
+_CALLER_VOLGB="${RUNPOD_VOLUME_GB-}"
+_CALLER_DISK="${RUNPOD_DISK_GB-}"
+_CALLER_DC="${RUNPOD_DC-__unset__}"
 . "$ORCH/run_cell.sh"        # config.env + notify() (notifications fire from THIS driving machine)
 [ -n "$_CALLER_BRANCH" ] && RUNPOD_BRANCH="$_CALLER_BRANCH"
+[ -n "$_CALLER_VOLGB" ] && RUNPOD_VOLUME_GB="$_CALLER_VOLGB"
+[ -n "$_CALLER_DISK" ] && RUNPOD_DISK_GB="$_CALLER_DISK"
+[ "$_CALLER_DC" != "__unset__" ] && RUNPOD_DC="$_CALLER_DC"   # explicit empty = unpinned, must survive too
 
 MODE="${1:?usage: runpod.sh run <campaign.sh> | attach <campaign.sh> | teardown}"
 TOK=$(cat "${RUNPOD_TOKEN_FILE:-$HOME/.config/runpod/token}")
