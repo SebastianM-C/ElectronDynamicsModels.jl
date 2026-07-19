@@ -12,7 +12,7 @@
 # RunManifests, so this can't silently drift on a schema change the way hand-parsing the
 # raw TOML would.
 
-using TOML, Serialization, FFTW, Printf
+using TOML, Serialization, FFTW, Printf, Statistics
 using ElectronDynamicsModels    # harmonic_bins, harmonic_maps, power_spectrum, plot_*, symmetric_colorrange
 using RunManifests              # check_schema_version, spp_from_manifest
 using CairoMakie                # activates EDMMakieExt (the plot_* methods)
@@ -21,7 +21,7 @@ const COMPLABELS = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
 const C_LIGHT = 137.03599908330932
 
 """
-    harmonic_field_style() -> (; colormap, colorrange)
+    harmonic_field_style(; cap_mult = nothing) -> (; colormap, colorrange[, highclip, lowclip])
 
 Panel style for the field-harmonic heat-maps, splatted into [`plot_harmonic_grid`]. Those panels
 show the **real part** of each component (signed, oscillatory data), so the choice here sets how
@@ -29,9 +29,20 @@ the sign structure reads. Returns a `NamedTuple` with:
   * `colormap`  — a colorscheme name/object;
   * `colorrange` — a `data -> (lo, hi)` function applied **per panel** (`symmetric_colorrange` and
     `harmonic_colorrange` are both in scope from ElectronDynamicsModels).
+
+`cap_mult` caps the colorrange at ±`cap_mult`×median(|data|) with over-limit pixels rendered in
+the clip colors: speckle-dominated maps (inverse scattering) are otherwise normalized to their
+brightest grain (~6× median), which buries everything below ~2× median in the flat bottom of the
+colormap. The panel title still reports the true peak.
 """
-function harmonic_field_style()
-    return (; colormap = :jet, colorrange = symmetric_colorrange)
+function harmonic_field_style(; cap_mult = nothing)
+    cap_mult === nothing && return (; colormap = :jet, colorrange = symmetric_colorrange)
+    capped = data -> begin
+        hi = min(maximum(abs, data), cap_mult * median(abs.(data)))
+        hi = hi > 0 ? hi : one(hi)
+        (-hi, hi)
+    end
+    return (; colormap = :jet, colorrange = capped, highclip = :magenta, lowclip = :cyan)
 end
 
 """
@@ -79,6 +90,66 @@ function write_field_products(
     return
 end
 
+# FFT Gaussian blur (σ in pixels); periodic boundaries — fine for envelope views.
+function _gaussian_blur(A::AbstractMatrix, σ_px)
+    σ_px <= 0 && return A
+    kx, ky = fftfreq(size(A, 1)), fftfreq(size(A, 2))
+    G = [exp(-2π^2 * σ_px^2 * (kx[i]^2 + ky[j]^2)) for i in eachindex(kx), j in eachindex(ky)]
+    return real.(ifft(fft(A) .* G))
+end
+
+"""
+    write_envelope_products(fields_h, harmonics, x_grid, y_grid; w₀, Z, Rmax, λ,
+        grain_mult = 3.0, run_tag, outdir, source_datafile, title_prefix, fileprefix)
+
+Speckle-envelope view of the per-harmonic intensity: `Σ|F|²` over the E and B components,
+Gaussian-blurred over `grain_mult` speckle grains. The grain is the disk-aperture diffraction
+scale at the scattered wavelength, `(λ/n)·Z/(2·Rmax)` — per-bin maps are envelope × speckle
+(inverse-speckle-tomography report), so blurring over a few grains recovers the envelope the
+speckle hides while the raw maps stay the ground truth. One `envelope` chip per harmonic
+(`setup.harmonic`), blur geometry in `[plot_params]`.
+"""
+function write_envelope_products(
+        fields_h, harmonics, x_grid, y_grid;
+        w₀, Z, Rmax, λ, grain_mult = 3.0, run_tag, outdir, source_datafile,
+        title_prefix, fileprefix,
+    )
+    px = x_grid[2] - x_grid[1]
+    for (k, n) in enumerate(harmonics)
+        grain = (λ / n) * Z / (2 * Rmax)
+        σ = grain_mult * grain
+        I_E = _gaussian_blur(dropdims(sum(abs2, fields_h[k, 1:3, :, :]; dims = 1); dims = 1), σ / px)
+        I_B = _gaussian_blur(dropdims(sum(abs2, fields_h[k, 4:6, :, :]; dims = 1); dims = 1), σ / px)
+        out = joinpath(outdir, @sprintf("%s_envelope_h%d_%s.png", fileprefix, n, run_tag))
+        fig = Figure(size = (1100, 500))
+        for (j, (lbl, I)) in enumerate((("⟨|E|²⟩", I_E), ("⟨|B|²⟩", I_B)))
+            ax = Axis(fig[1, j], title = lbl, xlabel = "x / w₀", ylabel = "y / w₀", aspect = 1)
+            hm = heatmap!(ax, x_grid ./ w₀, y_grid ./ w₀, I, colormap = :viridis)
+            Colorbar(fig[2, j], hm, vertical = false)
+        end
+        Label(fig[0, :], @sprintf("%s — intensity envelope at %dω₁ (blur σ = %.2g w₀ = %.3g grains)",
+            title_prefix, n, σ / w₀, grain_mult), fontsize = 18)
+        save(out, fig)
+        println("saved → $out")
+        write_derived(
+            outdir; kind = "envelope", label = "$title_prefix intensity envelope", run_id = run_tag,
+            plot = basename(out), source = source_datafile,
+            setup = Dict("harmonic" => n),
+            plot_params = Dict(
+                "blur σ/w₀" => round(σ / w₀; sigdigits = 3),
+                "grain/w₀" => round(grain / w₀; sigdigits = 3),
+                "grain_mult" => grain_mult,
+            ),
+            description = "Gaussian-blurred `\$\\Sigma|F|^2\$` intensity over the E (left) and B " *
+                "(right) components at $(n)ω₁. The per-bin maps are envelope × fully-developed " *
+                "speckle; the blur (σ = $(grain_mult)× the disk-aperture diffraction grain " *
+                "\$\\lambda_n Z / 2R_{max}\$) averages the speckle to expose the envelope. Raw maps " *
+                "in the h$n chip remain the ground truth.",
+        )
+    end
+    return
+end
+
 """
     write_harmonic_products(fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
         harmonics = (1, 2, 3, 4), title_prefix, fileprefix)
@@ -103,7 +174,8 @@ symmetric per-panel range) is owned by [`harmonic_field_style`], applied in [`wr
 """
 function write_harmonic_products(
         fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
-        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, window = hann
+        harmonics = (1, 2, 3, 4), title_prefix, fileprefix, window = hann,
+        style = harmonic_field_style(),
     )
     N_samples = size(fld.E, 1)
     freqs = rfftfreq(N_samples, 1 / δt)
@@ -140,7 +212,7 @@ function write_harmonic_products(
     # the reduced maps by write_field_products so the cached-hmaps recolor path shares the code.
     write_field_products(
         fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
-        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix, window = win_name,
+        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix, window = win_name, style,
     )
 
     plots = String[]
@@ -262,8 +334,22 @@ function recover_from_manifest(toml)
     inverse = get(cfg, "scattering", "") == "inverse"
     title_prefix, fileprefix = lpwa ? ("LPWA", "lpwa") :
         inverse ? ("Inverse Thomson scattering", "inverse_thomson") : ("Thomson scattering", "thomson")
+    # Speckle-dominated inverse maps get the median-capped colorrange (grains saturate in the
+    # clip colors); rest-electron/LPWA maps keep the plain symmetric range.
+    style = harmonic_field_style(cap_mult = inverse ? 4.0 : nothing)
     run_tag = m["provenance"]["run_id"]
     cube = joinpath(dir, m["outputs"]["datafile"])
+    # Envelope view geometry (inverse runs only): the blur grain needs the screen distance +
+    # disk radius; both live in [setup]. `nothing` ⇒ no envelope chips (rest-electron runs).
+    st = get(m, "setup", Dict())
+    envgeo = (inverse && haskey(st, "Z") && haskey(st, "Rmax")) ?
+        (; Z = st["Z"], Rmax = st["Rmax"], λ = las["wavelength"]) : nothing
+    envelope!(fields_h, harmonics, x_grid, y_grid, w₀) = envgeo === nothing ? nothing :
+        write_envelope_products(
+            fields_h, harmonics, x_grid, y_grid;
+            w₀, envgeo..., run_tag, outdir = dir,
+            source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
+        )
 
     if isfile(cube)
         λ = las["wavelength"]
@@ -282,11 +368,12 @@ function recover_from_manifest(toml)
         hprod = write_harmonic_products(
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
-            source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix,
+            source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, style,
             # The run's own bins (≈4γ²ω for inverse :narrow) — a deferred reduction must produce
             # exactly what the inline (non-SKIP_POST) path would have; legacy default (1,2,3,4).
             harmonics = Tuple(get(cfg, "harmonics", (1, 2, 3, 4))),
         )
+        envelope!(hprod.fields_h, Tuple(get(cfg, "harmonics", (1, 2, 3, 4))), x_grid, y_grid, las["w0"])
         # Close the loop the inline (non-SKIP_POST) path already does: a deferred/async reduction
         # must ALSO declare what it produced, so [outputs] is complete for resolve_hmaps + the
         # dashboard hmaps download. `sorted` keeps [timing] last (the ops timing-append relies on it).
@@ -318,8 +405,9 @@ function recover_from_manifest(toml)
     write_field_products(
         h.fields_h, far, h.harmonics, ffund, h.x_grid, h.y_grid;
         w₀ = h.w₀, run_tag, outdir = dir,
-        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, window = win,
+        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, window = win, style,
     )
+    envelope!(h.fields_h, h.harmonics, h.x_grid, h.y_grid, h.w₀)
     return write_phase_products(
         h.fields_h, h.x_grid, h.y_grid;
         w₀ = h.w₀, harmonics = h.harmonics, run_tag, outdir = dir,

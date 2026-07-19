@@ -35,7 +35,7 @@ _CALLER_BRANCH="${RUNPOD_BRANCH-}"
 MODE="${1:?usage: runpod.sh run <campaign.sh> | attach <campaign.sh> | teardown}"
 TOK=$(cat "${RUNPOD_TOKEN_FILE:-$HOME/.config/runpod/token}")
 API="https://rest.runpod.io/v1"
-DC="${RUNPOD_DC:-EU-RO-1}"
+DC="${RUNPOD_DC-EU-RO-1}"   # unset ⇒ EU-RO-1; EXPLICIT empty ⇒ unpinned (scheduler picks the DC)
 ROCM_IMAGE="${RUNPOD_ROCM_IMAGE:-rocm/pytorch@sha256:4449f856653602317e4101a76fce599c7fcd58ccec2e539951fce5f73083179e}"
 CUDA_IMAGE="${RUNPOD_CUDA_IMAGE:-runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404}"
 DISK="${RUNPOD_DISK_GB:-120}"
@@ -133,9 +133,10 @@ grab_pod() {
                 -d "$(jq -n --arg gpu "$gpu" --arg img "$IMAGE" --arg pub "$PUBKEY" --arg vol "${VOLID:-}" \
                         --arg dc "$DC" --arg start "$START_CMD" --argjson disk "$DISK" \
                     '{name:"edm-runpod",imageName:$img,gpuTypeIds:[$gpu],cloudType:"SECURE",gpuCount:1,
-                      containerDiskInGb:$disk,dataCenterIds:[$dc],
+                      containerDiskInGb:$disk,
                       ports:["22/tcp"],supportPublicIp:true,env:{PUBLIC_KEY:$pub},
                       dockerEntrypoint:["/bin/bash","-c"],dockerStartCmd:[$start]}
+                     + (if $dc != "" then {dataCenterIds:[$dc]} else {} end)
                      + (if $vol != "" then {networkVolumeId:$vol,volumeMountPath:"/workspace"} else {} end)')" 2>/dev/null)" || resp=""
             pid="$(echo "$resp" | jq -r '.id // empty' 2>/dev/null)"
             # Camping can run unattended for hours and billing starts HERE, before warm —
