@@ -495,6 +495,7 @@ config = Dict{String, Any}(
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
+    "gpu_trace" => basename(gputracefile),   # builder gates the util/power/VRAM panels on this key
     "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
 )
 if !SKIP_POST
