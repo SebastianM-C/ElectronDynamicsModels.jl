@@ -17,8 +17,9 @@
 # config.env: HOTAISLE_TEAM, HOTAISLE_GPUS, HOTAISLE_REPO_URL, HOTAISLE_BRANCH (, HOTAISLE_API).
 # Secrets stay external: API token at ~/.config/hotaisle/token; ntfy creds (driving-side) via NTFY_ENV.
 # BILLING: 1 GPU = per-minute (1-min minimum); 2/4 carry 60/120-min minimums. Teardown waits out the
-# minimum, then a non-force DELETE — ALWAYS verify the VM is gone in the TUI (ssh admin.hotaisle.app);
-# the API DELETE is best-effort and billing only truly stops on TUI destroy.
+# minimum, then a non-force DELETE. The API DELETE is reliable (validated repeatedly 2026-07):
+# a confirmed 2xx + empty VM list = destroyed and billing stopped; the TUI check is optional
+# double-verification. A FAILED (non-2xx) DELETE still means likely-still-billing — alert + TUI.
 set -Eeuo pipefail
 ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."; ORCH="$(cd "$ORCH" && pwd)"
 . "$ORCH/run_cell.sh"        # config.env + notify() (notifications fire from THIS driving machine)
@@ -118,7 +119,10 @@ download_verify() {
         if [ ! -f "$dst/$fn" ]; then log "[verify] MISSING locally: $fn"; bad=1; continue; fi
         lsum=$(md5sum "$dst/$fn" | awk '{print $1}')
         [ "$lsum" = "$vsum" ] || { log "[verify] MD5 MISMATCH: $fn (vm=$vsum local=$lsum)"; bad=1; }
-    done < <(ssh_vm "cd EDM/runs/$CAMPAIGN && md5sum * 2>/dev/null | grep -vE 'field_.*\\.jls'")
+    # Filter the FILE LIST before hashing — `md5sum * | grep -v` still md5s every kept cube
+    # (~25 min GPU-idle per ~300 GB) and the long-silent ssh pipe can die and hang the driver
+    # (2026-07-19 incident: 43 min idle, driver killed, products published manually).
+    done < <(ssh_vm "cd EDM/runs/$CAMPAIGN && find . -maxdepth 1 -type f ! -name 'field_*.jls' -exec md5sum {} + 2>/dev/null")
     [ "$bad" -eq 0 ] && { log "[verify] $CAMPAIGN OK (md5 match; cubes excluded)"; return 0; }
     notify rotating_light high "EDM download CHECK FAILED" "$CAMPAIGN: md5 mismatch/missing on download to $dst"
     return 1

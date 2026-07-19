@@ -78,6 +78,23 @@ run_cell() {
     local label=$1; shift
     local uuid; uuid=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
     mkdir -p "$CAMP"
+    # Disk gate (adaptive, KEEP_CUBE campaigns): container-disk quotas are enforced LAZILY —
+    # a cube write into a full disk "succeeds" and only surfaces as EOFError at reduce time
+    # (2026-07-19 incident). Cell 1 sets the scale; later cells wait until free space ≥ 1.25×
+    # the largest cube seen so far, polling while the drainer frees uploads. Bounded wait
+    # (30 min) so a dead drainer degrades to the old behavior + a loud note, not a deadlock.
+    if [ "${KEEP_CUBE:-0}" = 1 ]; then
+        local need free t=0
+        need=$(find "$CAMP" -maxdepth 1 -name 'field_*.jls' -printf '%s\n' 2>/dev/null | sort -n | tail -1)
+        if [ -n "${need:-}" ] && [ "$need" -gt 0 ]; then
+            need=$((need + need / 4))
+            while free=$(df -B1 --output=avail "$CAMP" | tail -1) && [ "$free" -lt "$need" ]; do
+                [ "$t" -eq 0 ] && echo "[$(date -u +%FT%TZ)] disk gate: $label waits for $((need / 2 ** 30)) GiB free in $CAMP (have $((free / 2 ** 30)))"
+                t=$((t + 30)); [ "$t" -gt 1800 ] && { echo "[$(date -u +%FT%TZ)] disk gate: TIMEOUT after 30 min — proceeding at risk"; break; }
+                sleep 30
+            done
+        fi
+    fi
     [ -f "$CAMP/cells.tsv" ] || printf 'label\tuuid\tscript\tbackend\toverrides\n' > "$CAMP/cells.tsv"
     printf '%s\t%s\t%s\t%s\t%s\n' "$label" "$uuid" "$(basename "$SCRIPT")" "${BACKEND:-?}" "$*" >> "$CAMP/cells.tsv"
     local log="$CAMP/run_${uuid}.log"
