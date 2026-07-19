@@ -143,3 +143,34 @@ function _gpu_accumulate_kernel!(gpu_traj, screen, τ_all_cpu, τ_buf, A_buf, ba
     end
     return
 end
+
+"""
+    _download_permuted(buf) -> Array{T,4}
+
+Download an accumulation buffer laid out `[ix, iy, μ, k]` (pixel-fastest for coalesced
+device writes; observer slot `k` slowest) into the cube layout `[k, μ, ix, iy]` without a
+full-size intermediate. The old `permutedims(Array(buf), (4, 3, 1, 2))` held cube + copy on
+the host — a 2× peak that capped carrier-resolved cube designs at ~half the node's RAM (the
+permute lives on the host because the >2³¹-element GPU `permutedims` overflows its 32-bit
+linear indices, cudaError 700). Downloading contiguous `k`-chunks through the linear
+`copyto!` DMA path and `permutedims!`-ing each into a view of the preallocated cube keeps
+the host peak at ~(1 + 1/16)× cube; device memory and kernels are untouched, and every
+transfer stays far below 2³¹ elements. Works unchanged on the CPU backend (`buf::Array`).
+"""
+function _download_permuted(buf::AbstractArray{T, 4}) where {T}
+    Nx, Ny, M, K = size(buf)
+    out = Array{T, 4}(undef, K, M, Nx, Ny)
+    chunk = max(1, cld(K, 16))
+    stage = Array{T}(undef, Nx * Ny * M * chunk)
+    bufv = vec(buf)
+    slab = Nx * Ny * M
+    for k0 in 1:chunk:K
+        nk = min(chunk, K - k0 + 1)
+        copyto!(stage, 1, bufv, (k0 - 1) * slab + 1, nk * slab)
+        permutedims!(
+            view(out, k0:(k0 + nk - 1), :, :, :),
+            reshape(view(stage, 1:(nk * slab)), Nx, Ny, M, nk), (4, 3, 1, 2),
+        )
+    end
+    return out
+end

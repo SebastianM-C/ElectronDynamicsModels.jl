@@ -60,6 +60,15 @@ while :; do
         if RC copyto "$cube" "r2:$BUCKET/cubes/$camp/$uuid/$base" &&
            echo "$sha  $base" | RC rcat "r2:$BUCKET/cubes/$camp/$uuid/$base.sha256"; then
             touch "$dir/.drained_$base"; log "uploaded $base (sha256 $sha)"
+            # Small-disk pods (e.g. RunPod's default 120 GB container disk): free the local copy
+            # once the upload + sha sidecar are in the bucket — the puller verifies end-to-end
+            # against that sha before archiving. Without this, cubes accumulate and the NEXT
+            # cell's write truncates at the quota (2026-07-19: cube 2 died at 44/74 GiB, cells
+            # 3-6 got 8 KiB stubs — the container quota is enforced lazily, so the writes
+            # "succeeded" and the corruption only surfaced at reduce time as EOFError).
+            if [ "${DRAIN_DELETE_LOCAL:-0}" = 1 ]; then
+                rm -f "$cube" && log "local freed: $base (R2 copy authoritative until archived)"
+            fi
         else
             log "upload failed for $base — retrying next sweep"
         fi

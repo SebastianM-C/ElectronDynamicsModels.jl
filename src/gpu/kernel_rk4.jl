@@ -266,11 +266,9 @@ function accumulate_potential(
     end
 
     # Permute the pixel-fastest buffer back to the public (N_samples, 4, Nx, Ny)
-    # layout. Do it on the HOST: a full-res A_buf has > 2³¹ elements
-    # (400·400·4·8000 = 5.12e9) and GPU `permutedims` uses 32-bit linear
-    # indexing → illegal-address overflow. The device→host copy is 64-bit-safe,
-    # so copy first, then permute with CPU (Int64) indexing.
-    return permutedims(Array(A_buf), (4, 3, 1, 2))
+    # layout on the HOST (GPU permutedims overflows 32-bit indices past 2³¹ elements),
+    # chunked so the peak stays ~1× cube instead of 2× — see _download_permuted.
+    return _download_permuted(A_buf)
 end
 
 # ── Field variant of the unified RK4 kernel ──
@@ -455,17 +453,17 @@ function accumulate_field(
     end
 
     if mode == Val(:split)
-        E_far = permutedims(Array(E1_buf), (4, 3, 1, 2))
-        B_far = permutedims(Array(B1_buf), (4, 3, 1, 2))
-        E_near = permutedims(Array(E2_buf), (4, 3, 1, 2))
-        B_near = permutedims(Array(B2_buf), (4, 3, 1, 2))
+        E_far = _download_permuted(E1_buf)
+        B_far = _download_permuted(B1_buf)
+        E_near = _download_permuted(E2_buf)
+        B_near = _download_permuted(B2_buf)
         E = E_far .+ E_near
         B = B_far .+ B_near
         return (; E, B, E_far, B_far)
     else
         # Level-2: far+near already summed in the kernel → E1/B1 hold the total directly.
-        E = permutedims(Array(E1_buf), (4, 3, 1, 2))
-        B = permutedims(Array(B1_buf), (4, 3, 1, 2))
+        E = _download_permuted(E1_buf)
+        B = _download_permuted(B1_buf)
         return (; E, B)
     end
 end

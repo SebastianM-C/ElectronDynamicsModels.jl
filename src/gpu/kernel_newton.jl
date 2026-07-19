@@ -265,7 +265,7 @@ function accumulate_potential(
         finalize(gpu_traj.itp.c2)
     end
 
-    return permutedims(Array(A_buf), (4, 3, 1, 2))
+    return _download_permuted(A_buf)
 end
 
 # ── Field variant of the Newton light-cone kernel ──
@@ -404,16 +404,16 @@ function accumulate_field(
     end
 
     if mode == Val(:split)
-        E_far = permutedims(Array(E1_buf), (4, 3, 1, 2))
-        B_far = permutedims(Array(B1_buf), (4, 3, 1, 2))
-        E_near = permutedims(Array(E2_buf), (4, 3, 1, 2))
-        B_near = permutedims(Array(B2_buf), (4, 3, 1, 2))
+        E_far = _download_permuted(E1_buf)
+        B_far = _download_permuted(B1_buf)
+        E_near = _download_permuted(E2_buf)
+        B_near = _download_permuted(B2_buf)
         E = E_far .+ E_near
         B = B_far .+ B_near
         return (; E, B, E_far, B_far)
     else
-        E = permutedims(Array(E1_buf), (4, 3, 1, 2))
-        B = permutedims(Array(B1_buf), (4, 3, 1, 2))
+        E = _download_permuted(E1_buf)
+        B = _download_permuted(B1_buf)
         return (; E, B)
     end
 end
