@@ -12,6 +12,11 @@
 # campaign_done / campaign_crash (detail carries campaign=<name> dir=<outdir>), teardown, topup
 # (detail amount=<usd>), balance, rate_change (generic provider-wide re-rate hook, integrated
 # piecewise — unused so far), incident (free text, surfaced as a note).
+# TOP-UPS ARE EXPLICIT: a topup is only ever an explicit `topup` row (backends never emit one —
+# they only record the API `balance` on provision/teardown rows). The reporter deliberately does
+# NOT infer top-ups from upward balance deltas: that would double-count the explicit rows and
+# under-count whenever spend lands between two balance reads (net delta hides part of the top-up).
+# So account funding is hand-entered as `topup` rows on the hub ledger — authoritative, not derived.
 #
 # What it prints (text to stdout, or a self-contained HTML page with --html FILE):
 #   • per-campaign compute = Σ [timing].total over run_<uuid>.toml in each results dir given,
@@ -30,12 +35,16 @@
 # --rate-cents, else 0 + warning. Plain bash + GNU awk/date; jq/curl only for the API fallback.
 #
 # MULTI-MACHINE: each campaign-driving machine appends to its own local ledger. The reporter
-# merges the main ledger with every *.tsv under ~/.config/edm-cloud-ledgers/ (drop other
-# machines' ledgers there — the dashboard publish hook rsyncs them in), or takes explicit
-# --ledger FILE (repeatable; replaces the defaults). Byte-identical rows are deduped, so a
-# ledger accidentally present twice is harmless. Convention: account-scoped rows (topup,
-# balance) live ONLY in the publish hub's own ledger or provider lifetime sums double-count;
-# machine-scoped rows (provision/campaign/teardown) live where the campaign was driven.
+# ingests the UNION of the local main ledger ($EDM_CLOUD_LEDGER) AND every *.tsv in the
+# rendezvous dir ($EDM_CLOUD_LEDGER_DIR, default ~/.config/edm-cloud-ledgers/) — one file per
+# machine (poincare.tsv, workstation.tsv, …), rsynced in by the publish hooks — so a second,
+# third, Nth machine's rows are all merged, never just one file. All rows are concatenated
+# (headers stripped) and `sort -u`-deduped, so a ledger that appears twice (e.g. the hub's own
+# ledger also present as its rendezvous copy) collapses to one; ISO timestamps then sort
+# chronologically. Explicit --ledger FILE (repeatable) replaces the defaults. Convention:
+# account-scoped rows (topup, balance) live ONLY in the publish hub's own ledger or provider
+# lifetime sums double-count; machine-scoped rows (provision/campaign/teardown) live where the
+# campaign was driven. Same union applies to backends/cost-publish's ledger pull (whole dir).
 # Campaign→VM attribution matches dir=… first (machine-local paths), then falls back to the
 # campaign=<name> token when exactly one VM claims that name (ambiguous names never match).
 set -euo pipefail
@@ -186,12 +195,17 @@ END {
         for (k = 1; k <= nspan[vm]; k++) {
             a = (sp_start[vm, k] > 0) ? sp_start[vm, k] : since; if (a < since) a = since
             b = (sp_end[vm, k]   > 0) ? sp_end[vm, k]   : until; if (b > until) b = until
-            if (sp_end[vm, k] == 0) vrun[vm] = 1   # open span ⇒ VM is live right now
+            live = (sp_end[vm, k] == 0)
+            if (live) vrun[vm] = 1   # open span ⇒ VM is live right now
             if (b <= a) continue
             base = sp_rate[vm, k]
             if (base == 0 && def_rate == 0) used_def = 1
+            c1 = vmcost(a, b, base, (sp_start[vm, k] > 0 ? sp_start[vm, k] : a), vprovider[vm])
             vwall[vm] += (b - a) / 3600.0
-            vusd[vm]  += vmcost(a, b, base, (sp_start[vm, k] > 0 ? sp_start[vm, k] : a), vprovider[vm])
+            vusd[vm]  += c1
+            kk = ++nspanw[vm]   # per-name in-window rental, retained for the per-span breakdown
+            sw_a[vm, kk] = a; sw_b[vm, kk] = b; sw_live[vm, kk] = live
+            sw_wall[vm, kk] = (b - a) / 3600.0; sw_usd[vm, kk] = c1
         }
         vavg[vm] = (vwall[vm] > 0) ? vusd[vm] / vwall[vm] : 0
         tot_wall += vusd[vm]
@@ -214,7 +228,11 @@ END {
     printf "\n%-16s %-9s %8s %9s %12s %13s\n", "vm", "provider", "wall-h", "wall-USD", "compute-USD", "overhead-USD"
     for (i = 1; i <= nv; i++) {
         vm = vlist[i]; if (vm in vskip) continue
-        printf "%-16s %-9s %8.2f %9.2f %12.2f %13.2f%s\n", vm, vprovider[vm], vwall[vm], vusd[vm], csum[vm] + 0, vusd[vm] - csum[vm], vrun[vm] ? "  (live — billed to now)" : ""
+        printf "%-16s %-9s %8.2f %9.2f %12.2f %13.2f%s%s\n", vm, vprovider[vm], vwall[vm], vusd[vm], csum[vm] + 0, vusd[vm] - csum[vm], \
+               vrun[vm] ? "  (live — billed to now)" : "", (nspanw[vm] > 1) ? sprintf("  [%d rentals]", nspanw[vm]) : ""
+        if (nspanw[vm] > 1)   # per-rental breakdown (compute is attributed per-name, not per-rental)
+            for (k = 1; k <= nspanw[vm]; k++)
+                printf "%-16s %-9s %8.2f %9.2f  %s → %s\n", "  \\_ rental " k, "", sw_wall[vm, k], sw_usd[vm, k], iso(sw_a[vm, k]), sw_live[vm, k] ? "now (live)" : iso(sw_b[vm, k])
     }
     printf "\nTOTAL wall-clock spend in window: $%.2f  (manifest-backed compute $%.2f; overhead + in-flight cells $%.2f)\n", tot_wall, tot_compute, tot_wall - tot_compute
     for (i = 1; i <= np; i++) {
@@ -260,6 +278,9 @@ function html_out(   i, j, k, p, vm, m, ord, mx, GUT, PW, BH, PITCH, y, w, wc, w
     print "tr.total td{border-top:1px solid var(--border-2);font-weight:600}"
     print ".note{color:var(--muted);font-size:12px;margin-top:6px}"
     print ".run{color:var(--accent);font-weight:600}"
+    print "tr.span td{border-bottom:1px dotted var(--border);padding-top:2px;padding-bottom:2px}"
+    print "td.sub{color:var(--muted);font-size:12px} td.sub .rng{font-family:var(--mono)}"
+    print ".rentals{color:var(--muted);font-weight:400;font-size:12px}"
     print ":root{--s1:#2a78d6;--s2:#008300}"   # validated 2-slot categorical palette (light mode, white surface)
     print ".viz{margin:6px 0 10px} .viz svg{width:100%;height:auto;display:block;max-width:760px}"
     print ".viz text{font-family:var(--ui);font-size:12px}"
@@ -329,11 +350,17 @@ function html_out(   i, j, k, p, vm, m, ord, mx, GUT, PW, BH, PITCH, y, w, wc, w
     print "<h2>Per VM</h2><table><tr><th>vm</th><th>provider</th><th class=\"n\">wall-h</th><th class=\"n\">wall USD</th><th class=\"n\">compute USD</th><th class=\"n\">overhead USD</th><th></th></tr>"
     for (i = 1; i <= nv; i++) {
         vm = vlist[i]; if (vm in vskip) continue
-        printf "<tr><td>%s</td><td>%s</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td>%s</td></tr>\n", esc(vm), esc(vprovider[vm]), vwall[vm], vusd[vm], csum[vm] + 0, vusd[vm] - csum[vm], vrun[vm] ? "<span class=\"run\">live</span>" : ""
+        printf "<tr><td>%s%s</td><td>%s</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td>%s</td></tr>\n", \
+               esc(vm), (nspanw[vm] > 1) ? sprintf(" <span class=\"rentals\">(%d rentals)</span>", nspanw[vm]) : "", esc(vprovider[vm]), \
+               vwall[vm], vusd[vm], csum[vm] + 0, vusd[vm] - csum[vm], vrun[vm] ? "<span class=\"run\">live</span>" : ""
+        if (nspanw[vm] > 1)   # per-rental breakdown of a reused name (compute is per-name, not per-rental)
+            for (k = 1; k <= nspanw[vm]; k++)
+                printf "<tr class=\"span\"><td class=\"sub\">&#8627; <span class=\"rng\">%s &rarr; %s</span></td><td></td><td class=\"n sub\">%.2f</td><td class=\"n sub\">%.2f</td><td></td><td></td><td>%s</td></tr>\n", \
+                       iso(sw_a[vm, k]), sw_live[vm, k] ? "now" : iso(sw_b[vm, k]), sw_wall[vm, k], sw_usd[vm, k], sw_live[vm, k] ? "<span class=\"run\">live</span>" : ""
     }
     printf "<tr class=\"total\"><td>total</td><td></td><td class=\"n\"></td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td class=\"n\">%.2f</td><td></td></tr>\n", tot_wall, tot_compute, tot_wall - tot_compute
     print "</table>"
-    print "<p class=\"note\">overhead = wall-clock − manifest-backed compute: provision/warm, idle gaps, drain tails, incidents — and cells still in flight (their manifests have not landed yet).</p>"
+    print "<p class=\"note\">overhead = wall-clock − manifest-backed compute: provision/warm, idle gaps, drain tails, incidents — and cells still in flight (their manifests have not landed yet). A VM name that was rented more than once shows its cumulative total on the main row and each rental (provision→teardown, or →now for a live one) as an indented span below; compute is attributed per name, not split across rentals.</p>"
     print "<h2>Providers &mdash; lifetime</h2><table><tr><th>provider</th><th class=\"n\">top-ups (window)</th><th class=\"n\">top-ups (lifetime)</th><th class=\"n\">last balance</th><th></th><th class=\"n\">lifetime spend</th></tr>"
     for (i = 1; i <= np; i++) {
         p = plist[i]
