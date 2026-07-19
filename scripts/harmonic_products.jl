@@ -319,35 +319,25 @@ function write_phase_products(
                 "in the Plot parameters.",
         )
         push!(plots, out)
-
-        # Polar companion — separate chip (azimuth → angular axis, ∠F → radial).
-        pout = joinpath(outdir, @sprintf("%s_phasePolar%s_h%d_%s.png", fileprefix, fld_tag, n, run_tag))
-        plot_phase_polar(
-            fields_h[k, comps, :, :], x_grid, y_grid;
-            w₀, labels = lbls, radii = ringradii, tol = ringtol,
-            title = @sprintf("%s — ∠F %s-field (polar) at %dω₁", title_prefix, fld_tag, n), outfile = pout,
-        )
-        println("saved → $pout")
-        write_derived(
-            outdir; kind = "phasePolar$fld_tag", label = "$title_prefix ∠F $fld_tag (polar)",
-            run_id = run_tag, plot = basename(pout), source = source_datafile,
-            setup = Dict("harmonic" => n), plot_params = base_pp,
-        )
-        push!(plots, pout)
     end
+    # phasePolar RETIRED (2026-07-19): the polar view duplicated the ring-scatter panel's
+    # information; `plot_phase_polar` stays in the package for manual use, and
+    # `_retire_stale_phase` cleans previously-published polar artifacts on recolor.
     return plots
 end
 
-# Delete the superseded single-grid phase artifacts (kinds `phase`/`phaserings`) for `run_tag` so
-# a re-plotted run doesn't show both old and new (phaseE/phaseB) chips. Matches the OLD names only
-# (NOT `phaseE`/`phaseB`): `derived_phase_<n>_<id8>` / `derived_phaserings_…` sidecars carrying this
-# run's id8, and `*_phase_h<n>_<tag>.png` / `*_phaserings_h<n>_<tag>.png`.
+# Delete superseded phase artifacts for `run_tag` so a re-plotted run doesn't show retired
+# chips alongside current ones: the old single-grid kinds (`phase`/`phaserings`, replaced by
+# phaseE/phaseB) and the retired `phasePolar<E|B>` companion (2026-07-19 — duplicated the ring
+# scatter). Matches the OLD names only (NOT `phaseE`/`phaseB`).
 function _retire_stale_phase(dir, run_tag)
     id8 = first(run_tag, 8)
     for f in readdir(dir)
-        stale = ((occursin(r"^derived_phase_\d", f) || startswith(f, "derived_phaserings_")) && occursin(id8, f)) ||
+        stale = ((occursin(r"^derived_phase_\d", f) || startswith(f, "derived_phaserings_") ||
+                  startswith(f, "derived_phasePolar")) && occursin(id8, f)) ||
             occursin(Regex("_phase_h\\d+_" * run_tag * "\\.png\$"), f) ||
-            occursin(Regex("_phaserings_h\\d+_" * run_tag * "\\.png\$"), f)
+            occursin(Regex("_phaserings_h\\d+_" * run_tag * "\\.png\$"), f) ||
+            occursin(Regex("_phasePolar[EB]_h\\d+_" * run_tag * "\\.png\$"), f)
         stale || continue
         rm(joinpath(dir, f))
         println("retired stale → $f")

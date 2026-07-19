@@ -1,10 +1,14 @@
-# System-view chips + comparison declarations for LL campaigns.
+# System-view pickers + comparison declarations for LL campaigns.
 #
 # classical | Landau–Lifshitz is a VIEW of the same cell (the builder collapses each
-# common-disk pair via VIEW_PARAMS): per harmonic, a `sys_h<n>` kind whose two sidecars
-# (anchored on the CLASSICAL run) vary only in setup.system — the builder renders one picker
-# per varying setup key per kind, so harmonic must live in the KIND, not in setup (a shared
-# kind="sysview" flattened 4 harmonics × 3 systems into one 12-value picker).
+# common-disk pair via VIEW_PARAMS), surfaced directly on the pair's `h<n>` field-map chips:
+# the classical run's auto-emitted single-value sidecar is REPLACED by two sidecars that reuse
+# the two runs' existing field-map PNGs (no re-render), varying only in setup.system. This
+# works because LL pairs run total-mode cubes — `field` is constant within the kind, so
+# `system` is the single varying setup key the builder renders as one picker (a second varying
+# key would flatten the picker into a cross-product — the retired kind="sysview" lesson);
+# split-mode pairs are guarded and skipped. Run AFTER any recolor pass: write_field_products
+# re-emits the single-value sidecar this script replaces.
 #
 # The LL − classical diff (common-disk complex difference — cancels shared speckle, isolates
 # the coherent RR imprint; the speckle report's bunched-diff pattern) is NOT a view of either
@@ -53,27 +57,33 @@ function main(dir)
         w₀ = cl.h.w₀
         # Boosted pairs (n0 > 1) label bins in ω_bs = n0·ω₁ units, like the h<n> chips.
         hlabel(n) = cl.n0 == 1 ? "$(n)ω₁" : @sprintf("%.4g ω_bs", n / cl.n0)
+        split = hasproperty(cl.h, :fields_far_h) && cl.h.fields_far_h !== nothing
+        split && @warn "split-mode pair — a system toggle on h<n> would add a second varying " *
+            "setup key (field) and flatten the picker; skipping the view merge" γ a0
+        win = hasproperty(cl.h, :window) ? cl.h.window : "hann"
         for (k, n) in enumerate(cl.h.harmonics)
-            # classical | Landau–Lifshitz — the two views of the cell (far/total pattern).
-            for (view, maps) in (("classical", cl.h.fields_h[k, :, :, :]),
-                    ("ll", ll.h.fields_h[k, :, :, :]))
-                out = joinpath(dir, @sprintf("inverse_thomson_sys_%s_h%d_%s.png", view, n, first(cl.id, 8)))
-                plot_harmonic_grid(
-                    maps, cl.h.x_grid, cl.h.y_grid;
-                    w₀, labels = COMPLABELS, style...,
-                    title = @sprintf("γ=%g a₀=%g — %s at %s", γ, a0, view, hlabel(n)),
-                    outfile = out,
-                )
-                write_derived(
-                    dir; kind = "sys_h$n", label = "system view $(hlabel(n))",
-                    run_id = cl.id, plot = basename(out),
-                    source = "hmaps_$(view == "classical" ? cl.id : ll.id).jls",
-                    setup = Dict("system" => view),
-                    description = "Classical | Landau–Lifshitz views of the same cell " *
-                        "(common disk). The LL − classical difference lives on the campaign's " *
-                        "comparison card. LL partner run: $(first(ll.id, 8)).",
-                )
-                println("saved → $(basename(out))")
+            # classical | Landau–Lifshitz directly on the pair's h<n> chip: two sidecars
+            # reusing the runs' own field-map PNGs (write_field_products already rendered
+            # both); the classical run's auto single-value sidecar is replaced below.
+            if !split
+                for (view, r) in (("classical", cl), ("ll", ll))
+                    write_derived(
+                        dir; kind = "h$n",
+                        label = cl.n0 == 1 ? @sprintf("%dω₁ field maps", n) :
+                            @sprintf("%.4g ω_bs field maps", n / cl.n0),
+                        run_id = cl.id,
+                        plot = @sprintf("inverse_thomson_field_h%d_%s.png", n, r.id),
+                        source = "hmaps_$(r.id).jls",
+                        setup = Dict("field" => "total", "system" => view),
+                        plot_params = Dict("apodization" => win),
+                        description = "Field harmonic maps at $(hlabel(n)) — toggle the " *
+                            "electron model (classical | Landau–Lifshitz, common disk). The " *
+                            "LL − classical difference lives on the campaign's comparison " *
+                            "card. LL partner run: $(first(ll.id, 8)).",
+                    )
+                end
+                rm(joinpath(dir, "derived_h$(n)_total_$(first(cl.id, 8)).toml"); force = true)
+                println("h$n → system picker (classical|ll)")
             end
             # LL − classical (common disk) — a comparison artifact between the two runs, not a
             # view of either: 2 parents route it to the comparison card's matched cell.
