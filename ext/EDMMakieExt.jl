@@ -74,16 +74,24 @@ function ElectronDynamicsModels.plot_harmonic_grid(
 end
 
 function ElectronDynamicsModels.plot_power_spectrum(
-        freqs, power_spec; ω, labels,
+        freqs, power_spec; ω, labels, marks = nothing, n0 = 1,
         colors = [:black, :dodgerblue, :seagreen, :crimson, :darkorange, :purple],
         linestyles = nothing, title = "", outfile = nothing,
     )
-    xh = collect(freqs) ./ (ω / 2π)            # frequency in units of the fundamental
+    # Frequency axis in units of the run's radiated fundamental: the drive ω₁ when n0 = 1
+    # (rest-electron runs), the on-axis backscattered line ω_bs = n0·ω₁ = (1+β)/(1−β)·ω₁ for
+    # boosted runs — integer multiples of the physical line then land on Makie's automatic
+    # ticks, whose default grid replaces the integer comb this plot used to hand-draw (the comb
+    # became wallpaper once spans reached 4γ² ~ 10⁶ ω₁: the aligned dash segments of ~10⁶
+    # overlapping dashed vlines rendered as solid gray bars).
+    xh = collect(freqs) ./ (ω / 2π) ./ n0
+    xlab = n0 == 1 ? "frequency / ω₁" : "frequency / ω_bs   (ω_bs = $(n0) ω₁)"
     yfloor = maximum(power_spec) * 1.0e-30     # log axis needs a positive floor
     fig = with_theme(theme_latexfonts()) do
         f = Figure(size = (1150, 560))
-        ax = Axis(f[1, 1]; xlabel = "frequency / ω₁", ylabel = "Σ_pixels |Â_μ|²", yscale = log10, title)
-        vlines!(ax, 1:floor(Int, last(xh)); color = (:gray, 0.35), linestyle = :dash)
+        ax = Axis(f[1, 1]; xlabel = xlab, ylabel = "Σ_pixels |Â_μ|²", yscale = log10, title)
+        # Explicit guides only where the run extracted harmonic bins (`marks`, in ω₁ units).
+        marks === nothing || vlines!(ax, collect(marks) ./ n0; color = (:gray, 0.6), linewidth = 1)
         for c in axes(power_spec, 2)
             lines!(ax, xh, max.(power_spec[:, c], yfloor); label = labels[c],
                 color = colors[(c - 1) % length(colors) + 1],

@@ -444,11 +444,12 @@ else
         harmonics = HARMONICS,   # :narrow ⇒ around the ≈4γ²ω backscatter line; :full ⇒ (1,2,3,4)
         title_prefix = "Inverse Thomson scattering", fileprefix = "inverse_thomson",
         style = harmonic_field_style(cap_mult = 4.0),   # speckle maps: median-capped colorrange
+        n0 = N0,                 # boosted runs label frequencies in ω_bs = N0·ω₁ units
     )
     # Speckle-envelope chips (per-bin maps are envelope × speckle; see the report).
     write_envelope_products(
         hprod.fields_h, HARMONICS, screen.x_grid, screen.y_grid;
-        w₀, Z, Rmax, λ, run_tag = RUN_TAG, outdir = OUTDIR,
+        w₀, Z, Rmax, λ, n0 = N0, run_tag = RUN_TAG, outdir = OUTDIR,
         source_datafile = basename(datafile),
         title_prefix = "Inverse Thomson scattering", fileprefix = "inverse_thomson",
     )

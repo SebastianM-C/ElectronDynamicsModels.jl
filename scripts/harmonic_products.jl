@@ -60,28 +60,38 @@ formula is compared against. `style` (colormap + per-panel colorrange) comes fro
 function write_field_products(
         fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
         w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix,
-        style = harmonic_field_style(), window = "hann",
+        style = harmonic_field_style(), window = "hann", n0 = 1,
     )
     fieldsets = fields_far_h === nothing ? (("total", fields_h),) :
         (("total", fields_h), ("far", fields_far_h))
     for (k, n) in enumerate(harmonics), (ftype, fh) in fieldsets
         tag = ftype == "far" ? "fieldfar" : "field"
         out = joinpath(outdir, @sprintf("%s_%s_h%d_%s.png", fileprefix, tag, n, run_tag))
+        # Boosted runs (n0 > 1) label bins as multiples of the on-axis backscattered line
+        # ω_bs = n0·ω₁ — the physically meaningful unit there; ω₁ multiples stay for n0 = 1.
+        # `kind`/filenames keep the raw bin number n (stable chip URLs across the rescale).
         plot_harmonic_grid(
             fh[k, :, :, :], x_grid, y_grid;
             w₀, labels = COMPLABELS, style...,
-            title = @sprintf(
-                "%s (%s field) — %dω₁ (%.3f× fundamental)",
-                title_prefix, ftype, n, ffund[k]
-            ),
+            title = n0 == 1 ?
+                @sprintf("%s (%s field) — %dω₁ (%.3f× fundamental)",
+                title_prefix, ftype, n, ffund[k]) :
+                @sprintf("%s (%s field) — %dω₁ = %.4g ω_bs (ω_bs = %dω₁)",
+                title_prefix, ftype, n, ffund[k] / n0, n0),
             outfile = out,
         )
         println("saved → $out")
         write_derived(
-            outdir; kind = "h$n", label = @sprintf("%dω₁ field maps", n), run_id = run_tag,
+            outdir; kind = "h$n",
+            label = n0 == 1 ? @sprintf("%dω₁ field maps", n) :
+                @sprintf("%.4g ω_bs field maps", n / n0),
+            run_id = run_tag,
             plot = basename(out), source = source_datafile,
             setup = Dict("field" => ftype), plot_params = Dict("apodization" => window),
-            description = "Field harmonic maps at $(n)ω₁ — each panel a component (Eˣ…Bᶻ). " *
+            description = "Field harmonic maps at $(n)ω₁" *
+                (n0 == 1 ? "" : " = $(round(n / n0, sigdigits = 4)) ω_bs (ω_bs = $(n0)ω₁, " *
+                    "the on-axis backscattered fundamental)") *
+                " — each panel a component (Eˣ…Bᶻ). " *
                 "Toggle total (far 1/R + near 1/R²) vs far (radiation 1/R only); the far field is " *
                 "what the LPWA analytic formula is compared against in the lpwa-vs-numeric view. " *
                 "Time→frequency reduction apodized with the '$window' window (leakage suppression).",
@@ -111,22 +121,43 @@ speckle hides while the raw maps stay the ground truth. One `envelope` chip per 
 """
 function write_envelope_products(
         fields_h, harmonics, x_grid, y_grid;
-        w₀, Z, Rmax, λ, grain_mult = 3.0, run_tag, outdir, source_datafile,
+        w₀, Z, Rmax, λ, n0 = 1, grain_mult = 3.0, run_tag, outdir, source_datafile,
         title_prefix, fileprefix,
     )
     px = x_grid[2] - x_grid[1]
     for (k, n) in enumerate(harmonics)
-        grain = (λ / n) * Z / (2 * Rmax)
+        # Aliased maps (bin n ≪ the 4γ² line n0) still carry the LINE's speckle: the grain is
+        # set by the physical scattered wavelength, not the bin label.
+        grain = (λ / max(n, n0)) * Z / (2 * Rmax)
         σ = grain_mult * grain
-        I_E = _gaussian_blur(dropdims(sum(abs2, fields_h[k, 1:3, :, :]; dims = 1); dims = 1), σ / px)
+        I_E_raw = dropdims(sum(abs2, fields_h[k, 1:3, :, :]; dims = 1); dims = 1)
+        I_E = _gaussian_blur(I_E_raw, σ / px)
         I_B = _gaussian_blur(dropdims(sum(abs2, fields_h[k, 4:6, :, :]; dims = 1); dims = 1), σ / px)
         out = joinpath(outdir, @sprintf("%s_envelope_h%d_%s.png", fileprefix, n, run_tag))
-        fig = Figure(size = (1100, 500))
+        fig = Figure(size = (1550, 500))
         for (j, (lbl, I)) in enumerate((("⟨|E|²⟩", I_E), ("⟨|B|²⟩", I_B)))
             ax = Axis(fig[1, j], title = lbl, xlabel = "x / w₀", ylabel = "y / w₀", aspect = 1)
             hm = heatmap!(ax, x_grid ./ w₀, y_grid ./ w₀, I, colormap = :viridis)
             Colorbar(fig[2, j], hm, vertical = false)
         end
+        # Azimuthal average: for axisymmetric features (beaming annuli) every radius averages
+        # hundreds of speckle grains — the strongest de-speckling available, no blur needed.
+        nx, ny = size(I_E_raw)
+        cx, cy = (nx + 1) / 2, (ny + 1) / 2
+        rmax_px = min(cx, cy) - 1
+        nbins = 60
+        acc = zeros(nbins); cnt = zeros(Int, nbins)
+        for j2 in 1:ny, i2 in 1:nx
+            r = hypot(i2 - cx, j2 - cy)
+            b = clamp(ceil(Int, r / rmax_px * nbins), 1, nbins)
+            r <= rmax_px || continue
+            acc[b] += I_E_raw[i2, j2]; cnt[b] += 1
+        end
+        prof = acc ./ max.(cnt, 1)
+        rs = ((1:nbins) .- 0.5) ./ nbins .* (rmax_px * px / w₀)
+        axp = Axis(fig[1, 3], title = "⟨|E|²⟩(r) azimuthal mean", xlabel = "r / w₀",
+            ylabel = "intensity", yscale = log10)
+        lines!(axp, rs, max.(prof, 1e-300))
         Label(fig[0, :], @sprintf("%s — intensity envelope at %dω₁ (blur σ = %.2g w₀ = %.3g grains)",
             title_prefix, n, σ / w₀, grain_mult), fontsize = 18)
         save(out, fig)
@@ -175,7 +206,7 @@ symmetric per-panel range) is owned by [`harmonic_field_style`], applied in [`wr
 function write_harmonic_products(
         fld, x_grid, y_grid, ω, δt; w₀, run_tag, outdir, source_datafile,
         harmonics = (1, 2, 3, 4), title_prefix, fileprefix, window = hann,
-        style = harmonic_field_style(),
+        style = harmonic_field_style(), n0 = 1,
     )
     N_samples = size(fld.E, 1)
     freqs = rfftfreq(N_samples, 1 / δt)
@@ -212,7 +243,7 @@ function write_harmonic_products(
     # the reduced maps by write_field_products so the cached-hmaps recolor path shares the code.
     write_field_products(
         fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
-        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix, window = win_name, style,
+        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix, window = win_name, style, n0,
     )
 
     plots = String[]
@@ -221,7 +252,8 @@ function write_harmonic_products(
     # raw leakage floor (apodizing it would hide the very thing it diagnoses).
     plot_power_spectrum(
         freqs, power_spectrum(fld; window = nothing);
-        ω, labels = COMPLABELS, title = "$title_prefix — field power spectra (un-windowed)", outfile = psfile,
+        ω, labels = COMPLABELS, marks = collect(Float64, harmonics), n0,
+        title = "$title_prefix — field power spectra (un-windowed)", outfile = psfile,
     )
     println("saved → $psfile")
     push!(plots, psfile)
@@ -342,8 +374,11 @@ function recover_from_manifest(toml)
     # Envelope view geometry (inverse runs only): the blur grain needs the screen distance +
     # disk radius; both live in [setup]. `nothing` ⇒ no envelope chips (rest-electron runs).
     st = get(m, "setup", Dict())
+    # On-axis backscattered fundamental ω_bs = n0·ω₁ (≈4γ²): frequency unit for boosted runs'
+    # powspec axis + harmonic-map labels, and the envelope blur-grain wavelength.
+    n0 = round(Int, get(cfg, "backscatter_n0", 1))
     envgeo = (inverse && haskey(st, "Z") && haskey(st, "Rmax")) ?
-        (; Z = st["Z"], Rmax = st["Rmax"], λ = las["wavelength"]) : nothing
+        (; Z = st["Z"], Rmax = st["Rmax"], λ = las["wavelength"], n0) : nothing
     envelope!(fields_h, harmonics, x_grid, y_grid, w₀) = envgeo === nothing ? nothing :
         write_envelope_products(
             fields_h, harmonics, x_grid, y_grid;
@@ -368,7 +403,7 @@ function recover_from_manifest(toml)
         hprod = write_harmonic_products(
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
-            source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, style,
+            source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, style, n0,
             # The run's own bins (≈4γ²ω for inverse :narrow) — a deferred reduction must produce
             # exactly what the inline (non-SKIP_POST) path would have; legacy default (1,2,3,4).
             harmonics = Tuple(get(cfg, "harmonics", (1, 2, 3, 4))),
@@ -405,7 +440,7 @@ function recover_from_manifest(toml)
     write_field_products(
         h.fields_h, far, h.harmonics, ffund, h.x_grid, h.y_grid;
         w₀ = h.w₀, run_tag, outdir = dir,
-        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, window = win, style,
+        source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, window = win, style, n0,
     )
     envelope!(h.fields_h, h.harmonics, h.x_grid, h.y_grid, h.w₀)
     return write_phase_products(

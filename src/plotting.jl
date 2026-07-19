@@ -26,11 +26,13 @@ calling this without it raises a `MethodError`.
 function plot_harmonic_grid end
 
 """
-    plot_power_spectrum(freqs, power_spec; ω, labels, colors=…, linestyles=nothing, title="", outfile=nothing)
+    plot_power_spectrum(freqs, power_spec; ω, labels, marks=nothing, n0=1, colors=…, linestyles=nothing, title="", outfile=nothing)
 
 Log-y plot of per-component power spectra `power_spec` (`(Nf, n)`, from [`power_spectrum`]) vs
-`freqs`, x-axis in units of the fundamental ω₁ (= `ω/2π`), with dashed integer-harmonic markers
-and a legend. Saves to `outfile` if given; returns the `Figure`.
+`freqs`, x-axis in units of the run's radiated fundamental: ω₁ (= `ω/2π`) when `n0 = 1`, else
+the backscattered line ω_bs = `n0`·ω₁ (boosted runs; `n0 ≈ 4γ²` from the manifest's
+`backscatter_n0`). Reference gridlines come from Makie's automatic ticks; `marks` (extracted
+harmonic bins, in ω₁ units) adds explicit guides. Saves to `outfile` if given; returns the `Figure`.
 
 **Requires CairoMakie** — `using CairoMakie` activates the implementation (package extension).
 """
