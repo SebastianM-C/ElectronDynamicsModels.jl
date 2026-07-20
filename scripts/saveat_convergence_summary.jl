@@ -25,30 +25,43 @@ function main(dir)
     for c in cells
         push!(get!(regimes, (c.γ, c.a0), []), c)
     end
-    fig = Figure(size = (760, 520))
-    ax = Axis(fig[1, 1]; xscale = log2, yscale = log10, xlabel = "EDM_INTERP_SAVEAT",
-        ylabel = "harmonic-map rel-L2 vs finest saveat",
-        title = "Trajectory-spline convergence — boosted regimes")
-    palette = (:crimson, :dodgerblue, :seagreen, :darkorange)
+    # Collect measurements first: each is one (regime, coarse-saveat) rel-L2 vs that regime's
+    # finest level. Grouped bar chart — x = regime, dodged by saveat level, LINEAR axes (the
+    # 2-7% spread reads better linearly than on the old log2/log10; saveat is a small category
+    # set, not a continuum).
+    reglist = sort(collect(keys(regimes)); by = first)
+    saveats = sort(unique(c.saveat for g in values(regimes) for c in g))   # dodge categories
+    xs = Int[]; heights = Float64[]; dodge = Int[]; blabels = String[]
     rows = String[]
-    for (i, ((γ, a0), g)) in enumerate(sort(collect(regimes); by = first))
-        gs = sort(g; by = c -> c.saveat)
-        fine = last(gs)                                       # highest saveat = reference
-        pts = NTuple{2, Float64}[]
+    for (ri, (γ, a0)) in enumerate(reglist)
+        gs = sort(regimes[(γ, a0)]; by = c -> c.saveat)
+        fine = last(gs)
         for c in gs[1:(end - 1)]
-            num = norm(vec(c.h.fields_h) .- vec(fine.h.fields_h))
-            den = max(norm(vec(fine.h.fields_h)), eps())
-            rel = num / den
-            push!(pts, (Float64(c.saveat), rel))
+            rel = norm(vec(c.h.fields_h) .- vec(fine.h.fields_h)) /
+                  max(norm(vec(fine.h.fields_h)), eps())
+            push!(xs, ri); push!(heights, rel)
+            push!(dodge, findfirst(==(c.saveat), saveats))
+            push!(blabels, @sprintf("%.1f%%", 100rel))
             push!(rows, @sprintf("γ=%g a₀=%g: saveat %d vs %d → rel-L2 %.2e",
                 γ, a0, c.saveat, fine.saveat, rel))
         end
-        isempty(pts) && continue
-        col = palette[(i - 1) % length(palette) + 1]
-        scatterlines!(ax, first.(pts), last.(pts); color = col, markersize = 12,
-            label = @sprintf("γ=%g, a₀=%g", γ, a0))
     end
-    axislegend(ax; position = :rt)
+    fig = Figure(size = (820, 520))
+    ax = Axis(fig[1, 1];
+        xlabel = "regime", ylabel = "harmonic-map rel-L2 vs finest saveat (%)",
+        title = "Trajectory-spline convergence — boosted regimes",
+        xticks = (1:length(reglist), [@sprintf("γ=%g\na₀=%g", γ, a0) for (γ, a0) in reglist]))
+    ylims!(ax, 0, 1.2 * 100 * maximum(heights))   # heights plotted in %, so scale the limit too
+    cmap = (:dodgerblue, :crimson, :seagreen)
+    barplot!(ax, xs, 100 .* heights; dodge = dodge, color = [cmap[d] for d in dodge],
+        bar_labels = blabels, label_size = 12,
+        strokewidth = 0.5, gap = 0.15, dodge_gap = 0.05)
+    # Legend only for saveat levels that actually appear as a COARSE bar (the finest level is
+    # the reference, never plotted — its dodge index never occurs, so skip it).
+    used = sort(unique(dodge))
+    elems = [PolyElement(color = cmap[i]) for i in used]
+    Legend(fig[1, 2], elems, ["saveat $(saveats[i]) vs finest" for i in used], "coarse level",
+        framevisible = false)
     out = joinpath(dir, "saveat_convergence.png")
     save(out, fig)
     println("saved → $(basename(out))")
