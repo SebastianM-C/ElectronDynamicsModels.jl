@@ -258,8 +258,14 @@ function write_harmonic_products(
     psfile = joinpath(outdir, "powspec_$(run_tag).png")
     # Power spectrum stays UN-windowed (window = nothing): it is the diagnostic that must still SHOW the
     # raw leakage floor (apodizing it would hide the very thing it diagnoses).
+    ps = power_spectrum(fld; window = nothing)
+    # Cache the spectrum (~640 KB) next to the hmaps: the PNG is then re-renderable on any
+    # machine without the multi-GB cube — the 2026-07-19 ω_bs restyle needed a full workstation
+    # cube pass for 24 runs solely because this array used to be discarded after plotting.
+    serialize(joinpath(outdir, "powspec_$(run_tag).jls"),
+        (; freqs = collect(freqs), ps, n0, harmonics = collect(harmonics), window = "none"))
     plot_power_spectrum(
-        freqs, power_spectrum(fld; window = nothing);
+        freqs, ps;
         ω, labels = COMPLABELS, marks = collect(Float64, harmonics), n0,
         title = "$title_prefix — field power spectra (un-windowed)", outfile = psfile,
     )
