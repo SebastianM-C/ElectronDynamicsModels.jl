@@ -20,6 +20,14 @@ using CairoMakie                # activates EDMMakieExt (the plot_* methods)
 const COMPLABELS = ("Eˣ", "Eʸ", "Eᶻ", "Bˣ", "Bʸ", "Bᶻ")
 const C_LIGHT = 137.03599908330932
 
+# Cube reader. EDM_DIRECT_READ=1 streams through `dd iflag=direct` (O_DIRECT): a container
+# cgroup charges the page cache of a plain read ALONGSIDE the deserialized arrays, so a
+# 155 GiB cube transiently costs ~2× and the reduce gets OOM-killed at a 263 GB limit
+# (2026-07-20, RunPod MI300X). O_DIRECT bypasses the cache entirely; dd fails loudly if the
+# filesystem doesn't support it, so callers learn immediately rather than silently regressing.
+_read_cube(path) = get(ENV, "EDM_DIRECT_READ", "0") == "1" ?
+    open(deserialize, `dd if=$path bs=64M iflag=direct status=none`) : deserialize(path)
+
 """
     harmonic_field_style(; cap_mult = nothing) -> (; colormap, colorrange[, highclip, lowclip])
 
@@ -386,7 +394,7 @@ function recover_from_manifest(toml)
         x_grid = LinRange(-hw, hw, cfg["Nx"])
         y_grid = LinRange(-hw, hw, cfg["Ny"])
         println("loading $(m["outputs"]["datafile"]) …")
-        raw = deserialize(cube)
+        raw = _read_cube(cube)
         # A split cube carries E_far/B_far — keep them so write_harmonic_products also emits the
         # far-field maps the φ0/LPWA comparison needs; a total cube has only E/B.
         fld = hasproperty(raw, :E_far) ? raw : (; E = raw.E, B = raw.B)
