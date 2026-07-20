@@ -53,7 +53,7 @@ DEPOT_CACHE="${DEPOT_CACHE:-}"; DEPOT_CACHE_KEY="${DEPOT_CACHE_KEY:-$HOME/.confi
 STATE="${RUNPOD_STATE:-$HOME/.config/runpod/campaign_pod}"; OUT="${RUNPOD_OUT:-$HOME/campaign_out}"
 POLL="${RUNPOD_POLL_SEC:-120}"; MAXTRIES="${RUNPOD_MAX_TRIES:-240}"
 PUBKEY="$(cat "${RUNPOD_SSH_PUBKEY:-$HOME/.config/runpod/ssh_pubkey}" 2>/dev/null || ssh-add -L 2>/dev/null | head -1)"
-CM="$HOME/.ssh/cm-runpod.sock"
+CM="$HOME/.ssh/cm-runpod-$(basename "$STATE").sock"   # per-STATE: concurrent drivers must not remux onto one socket
 SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600"
 
 rp()      { curl -fsS -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" "$@"; }
@@ -150,7 +150,7 @@ grab_pod() {
         for gpu in "${cands[@]}"; do
             prof="$(gpu_profile "$gpu")"; [ -n "$prof" ] || { log "no profile for '$gpu'"; continue; }
             BACKEND="${prof%% *}"; IMAGE="${prof#* }"
-            resp="$(curl -fsS -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" -X POST "$API/pods" \
+            resp="$(curl --fail-with-body -sS -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" -X POST "$API/pods" \
                 -d "$(jq -n --arg gpu "$gpu" --arg img "$IMAGE" --arg pub "$PUBKEY" --arg vol "${VOLID:-}" \
                         --arg dc "$DC" --arg start "$START_CMD" --argjson disk "$DISK" \
                     '{name:"edm-runpod",imageName:$img,gpuTypeIds:[$gpu],cloudType:"SECURE",gpuCount:1,
@@ -158,7 +158,15 @@ grab_pod() {
                       ports:["22/tcp"],supportPublicIp:true,env:{PUBLIC_KEY:$pub},
                       dockerEntrypoint:["/bin/bash","-c"],dockerStartCmd:[$start]}
                      + (if $dc != "" then {dataCenterIds:[$dc]} else {} end)
-                     + (if $vol != "" then {networkVolumeId:$vol,volumeMountPath:"/workspace"} else {} end)')" 2>/dev/null)" || resp=""
+                     + (if $vol != "" then {networkVolumeId:$vol,volumeMountPath:"/workspace"} else {} end)')" 2>&1)" || {
+                # --fail-with-body keeps the API's reason; stay quiet on the two EXPECTED capacity-poll
+                # messages (the throttled "no capacity yet" line below reports those), log everything else.
+                case "$resp" in
+                    *"no instances currently available"*|*"could not find any pods"*) : ;;
+                    *) log "grab $gpu ($BACKEND) create rejected: $resp" ;;
+                esac
+                resp=""
+            }
             pid="$(echo "$resp" | jq -r '.id // empty' 2>/dev/null)"
             # Camping can run unattended for hours and billing starts HERE, before warm —
             # ping as soon as a pod is secured, not only at campaign launch.
@@ -174,13 +182,17 @@ grab_pod() {
     log "[ERROR] gave up after $MAXTRIES tries"; return 1
 }
 
+resolve_endpoint() {   # set IP/PORT from the API for $POD — RunPod remaps container :22 to a new host port on restart
+    local j; j="$(rp "$API/pods/$POD?includeMachine=true" 2>/dev/null || true)"
+    IP="$(echo "$j" | jq -r '.publicIp // empty' 2>/dev/null)"
+    PORT="$(echo "$j" | jq -r '.portMappings["22"] // empty' 2>/dev/null)"
+    [ -n "$IP" ] && [ -n "$PORT" ]
+}
+
 wait_ready() {   # public IP + 22 mapping appear only once the container is stable; then sshd is up
-    log "waiting for public IP + sshd…"; local i j
+    log "waiting for public IP + sshd…"; local i
     for i in $(seq 1 60); do
-        j="$(rp "$API/pods/$POD?includeMachine=true" 2>/dev/null || true)"
-        IP="$(echo "$j" | jq -r '.publicIp // empty' 2>/dev/null)"
-        PORT="$(echo "$j" | jq -r '.portMappings["22"] // empty' 2>/dev/null)"
-        [ -n "$IP" ] && [ -n "$PORT" ] && { log "endpoint root@$IP:$PORT"; break; }
+        resolve_endpoint && { log "endpoint root@$IP:$PORT"; break; }
         sleep 15
     done
     [ -n "${IP:-}" ] && [ -n "${PORT:-}" ] || { log "[ERROR] no endpoint after wait"; return 1; }
@@ -223,7 +235,10 @@ pod_reachable() {
     [ -f "$STATE" ] || return 1
     read -r POD IP PORT VOLID BACKEND < "$STATE" || return 1
     [ "$VOLID" = "-" ] && VOLID=""
-    [ -n "${IP:-}" ] && [ "$IP" != PENDING ] && ssh_vm true 2>/dev/null
+    [ -n "${POD:-}" ] || return 1
+    resolve_endpoint || return 1   # a kept pod may have restarted onto a new host port; refresh before trusting STATE
+    echo "$POD $IP $PORT ${VOLID:--} $BACKEND" > "$STATE"
+    ssh_vm true 2>/dev/null
 }
 
 push_orchestration() {   # overlay the driver's orchestration/ (keeping the pod's config.env)
@@ -382,6 +397,7 @@ attach_campaign() {   # resume monitoring+download after a driver-side interrupt
 teardown() {   # delete the pod (stops GPU billing); a volume, if attached, is KEPT (bills ~\$0.07/GB-mo)
     [ -f "$STATE" ] || { echo "no kept pod recorded in $STATE"; exit 0; }
     read -r POD IP PORT VOLID BACKEND < "$STATE"; [ "$VOLID" = "-" ] && VOLID=""
+    resolve_endpoint 2>/dev/null || true   # refresh the port in case the pod restarted, so cube_gate/ssh hit the right endpoint
     if [ -n "${VOLID:-}" ]; then
         log "[gate] volume $VOLID attached — cubes persist past the pod, gate skipped"
     else
