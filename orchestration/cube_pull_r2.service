@@ -12,6 +12,8 @@ Environment=PULL_DEST=/storage/pool/smc/edm_cubes
 ExecStart=/usr/bin/env bash %h/.julia/dev/ElectronDynamicsModels/orchestration/cube_pull_r2.sh
 Restart=always
 RestartSec=60
+StandardOutput=append:%h/cube_pull_r2.log
+StandardError=append:%h/cube_pull_r2.log
 
 [Install]
 WantedBy=default.target
