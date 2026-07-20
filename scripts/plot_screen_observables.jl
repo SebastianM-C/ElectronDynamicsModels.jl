@@ -76,9 +76,12 @@ reduce_field(o, kp, dt, dA) = (;
 )
 
 # The heavy path: load the 86 GB field, run screen_observables, reduce to ~16 MB.
+# EDM_DIRECT_READ=1 streams via O_DIRECT to keep page cache off the container cgroup
+# (same rationale + failure mode as harmonic_products._read_cube).
 function build_cache()
     println("loading $datafile …")
-    fld = deserialize(datafile)
+    fld = get(ENV, "EDM_DIRECT_READ", "0") == "1" ?
+        open(deserialize, `dd if=$datafile bs=64M iflag=direct status=none`) : deserialize(datafile)
     Ns, _, nx, ny = size(fld.E)
     scr = thomson_screen(nx, Ns)
     dt = step(scr.x⁰_samples) / c

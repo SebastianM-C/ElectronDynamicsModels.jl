@@ -1,4 +1,4 @@
-# campaigns/ll_probe_fix.sh — makeup for a10_cl, the one ll_probe_rerun cell lost to host-OOM
+# campaigns/ll_probe_fix.sh — makeup for a10_cl (host-OOM at cell start) and a5_ll (cube never reached the volume — pod thrashed during its end-phase serialize)
 # (2026-07-19: an ssh ControlPath collision ran a second campaign's warm + cell startup on the
 # same pod while a backgrounded reduce held ~100 GB — LLVM ERROR: out of memory at cell start).
 CAMPAIGN=ll_probe
@@ -14,4 +14,5 @@ BASE=(
 )
 CELLS=(
   "a10_cl|EDM_A0=10"
+  "a5_ll|EDM_A0=5 EDM_SYSTEM=ll"
 )

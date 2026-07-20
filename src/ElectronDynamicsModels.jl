@@ -11,7 +11,7 @@ using HypergeometricFunctions: HypergeometricFunctions, _₁F₁, pochhammer
 using StaticArrays
 using SciMLBase
 using DataInterpolations
-using FFTW: rfft, rfftfreq
+using FFTW: rfft, rfftfreq, plan_rfft
 
 import Adapt
 import AcceleratedKernels as AK
