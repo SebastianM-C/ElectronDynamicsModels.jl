@@ -379,6 +379,56 @@ t_trajectories = @elapsed solution = solve(
 # Radiation computation
 trajs = trajectory_interpolants(solution)
 
+# ── γ(τ)/γ₀ trace, sampled through the trajectory INTERPOLANTS rather than the raw ODE
+# solutions: the uniform-saveat CubicSpline is what the radiation kernel actually integrates,
+# so reading γ through it — between knots, at EDM_GAMMA_TRACE_OVERSAMPLE× the knot rate —
+# keeps saveat-undersampling and spline artifacts visible in the trace instead of hidden by
+# the solver's dense output. Emits a small (~MBs) gammatau_<tag>.jls sidecar next to the cube;
+# ll_system_chips.jl overlays the classical|LL pair of traces as a 2-parent comparison
+# product. EDM_GAMMA_TRACE_OVERSAMPLE=0 disables the trace entirely.
+const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
+GAMMA_TRACE_OS >= 0 || error("EDM_GAMMA_TRACE_OVERSAMPLE must be ≥ 0, got $GAMMA_TRACE_OS")
+function gamma_trace(trajs, τs, c, γ0, τf)
+    # One accumulator per electron CHUNK, not per threadid: threadid() can exceed nthreads()
+    # (interactive pool) and tasks migrate, so threadid-indexed accumulators are unsound.
+    nch = max(1, min(Threads.nthreads(), length(trajs)))
+    chunks = collect(Iterators.partition(eachindex(trajs), cld(length(trajs), nch)))
+    sums = [zeros(length(τs)) for _ in chunks]
+    los = [fill(Inf, length(τs)) for _ in chunks]
+    his = [fill(-Inf, length(τs)) for _ in chunks]
+    drain = zeros(length(trajs))
+    tasks = map(enumerate(chunks)) do (ci, ch)
+        Threads.@spawn begin
+            s, lo, hi = sums[ci], los[ci], his[ci]
+            for e in ch
+                tr = trajs[e]
+                @inbounds for (k, τk) in enumerate(τs)
+                    γ = tr(τk)[2][1] / c
+                    s[k] += γ
+                    γ < lo[k] && (lo[k] = γ)
+                    γ > hi[k] && (hi[k] = γ)
+                end
+                drain[e] = 1 - tr(τf)[2][1] / (γ0 * c)
+            end
+        end
+    end
+    foreach(wait, tasks)
+    return reduce(+, sums) ./ length(trajs),
+        reduce((a, b) -> min.(a, b), los), reduce((a, b) -> max.(a, b), his), drain
+end
+if GAMMA_TRACE_OS > 0
+    t_gtrace = @elapsed begin
+        knot_dt = (2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)
+        γτ_grid = collect(τi:(knot_dt / GAMMA_TRACE_OS):τf)
+        γmean, γmin, γmax, γdrain = gamma_trace(trajs, γτ_grid, c, GAMMA, τf)
+        gtfile = joinpath(OUTDIR, "gammatau_$(RUN_TAG).jls")
+        serialize(gtfile, (; τs = γτ_grid, γ0 = Float64(GAMMA), ω, τ_pulse = τ,
+            γmean, γmin, γmax, drain = γdrain, oversample = GAMMA_TRACE_OS,
+            knots_per_period = parse(Float64, INTERP_SAVEAT)))
+    end
+    @info "γ(τ)/γ₀ trace serialized" t_gtrace n_τ = length(γτ_grid) mean_drain = sum(γdrain) / length(γdrain)
+end
+
 # (Screen geometry + observer-window sizing and their guards live ABOVE the ensemble solve,
 # so bad configurations fail before the expensive integration.)
 x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
