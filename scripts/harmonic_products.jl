@@ -247,12 +247,13 @@ function write_harmonic_products(
     )
     println("serialized harmonic maps → $hmapsfile  (window = $win_name)")
 
-    # Field maps → per-harmonic `h<n>` chips (total + far `setup.field` toggle), drawn straight from
-    # the reduced maps by write_field_products so the cached-hmaps recolor path shares the code.
-    write_field_products(
-        fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
-        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix, window = win_name, style, n0,
-    )
+    # Reduce-only mode (`.reduce_only` flag in outdir, or EDM_REDUCE_ONLY=1): do ONLY the work
+    # that needs the cube in RAM — hmaps + the powspec cache — and skip every plot render.
+    # Rendering re-runs anywhere from the serialized reductions (recolor path + powspec cache);
+    # on a 155 GiB-cube pod the renders were ~half the wall time. File-flag so a RUNNING reduce
+    # loop can be switched without editing its script (touch <campaign>/.reduce_only).
+    reduce_only = isfile(joinpath(outdir, ".reduce_only")) ||
+        get(ENV, "EDM_REDUCE_ONLY", "0") == "1"
 
     plots = String[]
     psfile = joinpath(outdir, "powspec_$(run_tag).png")
@@ -264,6 +265,17 @@ function write_harmonic_products(
     # cube pass for 24 runs solely because this array used to be discarded after plotting.
     serialize(joinpath(outdir, "powspec_$(run_tag).jls"),
         (; freqs = collect(freqs), ps, n0, harmonics = collect(harmonics), window = "none"))
+    if reduce_only
+        println("reduce-only: hmaps + powspec cache serialized; renders deferred")
+        return (; hmapsfile, plots, fields_h, fields_far_h, window = win_name)
+    end
+
+    # Field maps → per-harmonic `h<n>` chips (total + far `setup.field` toggle), drawn straight from
+    # the reduced maps by write_field_products so the cached-hmaps recolor path shares the code.
+    write_field_products(
+        fields_h, fields_far_h, harmonics, ffund, x_grid, y_grid;
+        w₀, run_tag, outdir, source_datafile, title_prefix, fileprefix, window = win_name, style, n0,
+    )
     plot_power_spectrum(
         freqs, ps;
         ω, labels = COMPLABELS, marks = collect(Float64, harmonics), n0,
@@ -412,7 +424,8 @@ function recover_from_manifest(toml)
             # exactly what the inline (non-SKIP_POST) path would have; legacy default (1,2,3,4).
             harmonics = Tuple(get(cfg, "harmonics", (1, 2, 3, 4))),
         )
-        envelope!(hprod.fields_h, Tuple(get(cfg, "harmonics", (1, 2, 3, 4))), x_grid, y_grid, las["w0"])
+        isfile(joinpath(dir, ".reduce_only")) || get(ENV, "EDM_REDUCE_ONLY", "0") == "1" ||
+            envelope!(hprod.fields_h, Tuple(get(cfg, "harmonics", (1, 2, 3, 4))), x_grid, y_grid, las["w0"])
         # Close the loop the inline (non-SKIP_POST) path already does: a deferred/async reduction
         # must ALSO declare what it produced, so [outputs] is complete for resolve_hmaps + the
         # dashboard hmaps download. `sorted` keeps [timing] last (the ops timing-append relies on it).
@@ -447,6 +460,21 @@ function recover_from_manifest(toml)
         source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, window = win, style, n0,
     )
     envelope!(h.fields_h, h.harmonics, h.x_grid, h.y_grid, h.w₀)
+    # Powspec from the reduction cache (cubes reduced in reduce-only mode serialize the
+    # spectrum): renders the PNG without the cube, closing the recolor path's one gap.
+    pscache = joinpath(dir, "powspec_$(run_tag).jls")
+    if isfile(pscache)
+        pc = deserialize(pscache)
+        λ = las["wavelength"]
+        plot_power_spectrum(
+            pc.freqs, pc.ps;
+            ω = C_LIGHT * 2π / λ, labels = COMPLABELS,
+            marks = collect(Float64, pc.harmonics), n0 = pc.n0,
+            title = "$title_prefix — field power spectra (un-windowed)",
+            outfile = joinpath(dir, "powspec_$(run_tag).png"),
+        )
+        println("saved → powspec_$(run_tag).png (from cache)")
+    end
     return write_phase_products(
         h.fields_h, h.x_grid, h.y_grid;
         w₀ = h.w₀, harmonics = h.harmonics, run_tag, outdir = dir,
