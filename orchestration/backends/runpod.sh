@@ -62,14 +62,27 @@ log()     { echo "[$(date -u +%FT%TZ)] $*"; }
 
 # Persistent cost ledger (shared with hotaisle.sh; reported by orchestration/cost_report.sh).
 # rate_cents_h = the pod's costPerHr (converted to cents) captured at grab time — rates vary per
-# GPU type and drift. TODO: RunPod has a billing API (cf. MCP get-billing) — wire a cheap spend
-# read into the balance_usd column if/when useful. A ledger write must NEVER break a campaign.
+# GPU type and drift. balance_usd = live account balance via pod_balance() (GraphQL myself{clientBalance};
+# REST v1 + MCP get-billing expose spend, NOT balance), recorded on provision + teardown so
+# cost_report always has a fresh anchor (spent = Σ topups − latest balance). A ledger write must
+# NEVER break a campaign — pod_balance() is fail-safe (empty on any error).
 LEDGER="${EDM_CLOUD_LEDGER:-$HOME/.config/edm-cloud-ledger.tsv}"
 ledger()  {   # ledger <vm> <event> <detail> [rate_cents_h] [balance_usd]
     { mkdir -p "$(dirname "$LEDGER")"
       [ -f "$LEDGER" ] || printf 'ts_utc\tprovider\tvm\tevent\tdetail\trate_cents_h\tbalance_usd\n' > "$LEDGER"
       printf '%s\trunpod\t%s\t%s\t%s\t%s\t%s\n' "$(date -u +%FT%TZ)" "$1" "$2" "$3" "${4:-}" "${5:-}" >> "$LEDGER"
     } 2>/dev/null || true
+}
+
+# Live account balance in USD, for the ledger's balance_usd anchor. RunPod exposes balance ONLY via
+# GraphQL myself{clientBalance} (REST v1 + MCP get-billing return spend, not balance; verified
+# 2026-07-20 — matched the console to the cent). MUST be fail-safe: it feeds $(...) inside a ledger
+# write that must never break a campaign (esp. at teardown), so echo the number or nothing and
+# swallow every error (bad/absent token, network, GraphQL errors block, jq miss).
+pod_balance() {
+    rp --max-time 5 -X POST https://api.runpod.io/graphql \
+       --data '{"query":"query{myself{clientBalance}}"}' 2>/dev/null \
+       | jq -r '.data.myself.clientBalance // empty' 2>/dev/null || true
 }
 
 # sshd bootstrap: sshd in the foreground IS the keep-alive; also authorize the injected key.
@@ -151,7 +164,7 @@ grab_pod() {
             # ping as soon as a pod is secured, not only at campaign launch.
             [ -n "$pid" ] && { POD="$pid"
                 rate="$(echo "$resp" | jq -r 'if .costPerHr then (.costPerHr*100|round) else empty end' 2>/dev/null)" || rate=""
-                ledger "$POD" provision "gpu=$gpu dc=$DC" "$rate"
+                ledger "$POD" provision "gpu=$gpu dc=$DC" "$rate" "$(pod_balance)"
                 log "grabbed $gpu → pod $POD ($BACKEND / $IMAGE, ${rate:-?}¢/h)"
                 notify satellite default "EDM runpod grabbed" "$gpu → pod $POD (try $try/$MAXTRIES, billing started)"; return 0; }
         done
@@ -376,7 +389,7 @@ teardown() {   # delete the pod (stops GPU billing); a volume, if attached, is K
     fi
     /usr/bin/ssh -O exit -o ControlPath="$CM" root@"$IP" 2>/dev/null || true
     if rp -X DELETE "$API/pods/$POD" >/dev/null 2>&1; then
-        rm -f "$STATE"; ledger "$POD" teardown "${VOLID:+volume=$VOLID kept}"
+        rm -f "$STATE"; ledger "$POD" teardown "${VOLID:+volume=$VOLID kept}" "" "$(pod_balance)"
         log "deleted pod $POD${VOLID:+; volume $VOLID KEPT (drain via S3, then delete to stop storage \$)}"
         notify checkered_flag default "EDM runpod torn down" "pod $POD deleted${VOLID:+; volume $VOLID kept}."
     else
