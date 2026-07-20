@@ -7,9 +7,9 @@ everything reproducibility-related:
   * **git provenance** — `git_state`, the standard solver `run_provenance` block;
   * **a clean-tree guard** — `assert_committed`, so a run is never produced from
     uncommitted code its `repo_commit` cannot reproduce;
-  * **manifest I/O** — `write_run_manifest` / `write_derived` / `write_comparison` (the
-    `run_*.toml`, `derived_*.toml`, and `comparison_*.toml` the results dashboard consumes)
-    and the `find_parent_*` readers;
+  * **manifest I/O** — `write_run_manifest` / `write_derived` / `write_comparison` /
+    `write_summary` (the `run_*.toml`, `derived_*.toml`, `comparison_*.toml`, and
+    `summary_*.toml` the results dashboard consumes) and the `find_parent_*` readers;
   * **the replay seed** — `run_spec_from_manifest`, the inverse of how solver scripts
     read `ENV`, used by the reproduce/sweep launcher.
 
@@ -23,7 +23,7 @@ using Dates
 
 export git_state, assert_committed, run_provenance, run_spec_from_manifest, expand_sweep
 export find_parent_manifest, find_parent_run, spp_from_manifest
-export write_derived, write_comparison, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
+export write_derived, write_comparison, write_summary, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
 export MANIFEST_SCHEMA_VERSION, manifest_schema_version, check_schema_version
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -407,6 +407,59 @@ function write_comparison(
         "comparison" => comp,
     )
     name = filename === nothing ? "comparison_" * join(dirtags, "__") * ".toml" : filename
+    open(io -> TOML.print(io, m; sorted = true), joinpath(dir, name), "w")
+    return joinpath(dir, name)
+end
+
+"""
+    write_summary(dir; kind, label, plot, run_ids, axis=nothing, datafile=nothing,
+                  setup=Dict(), plot_params=Dict(), description=nothing)
+
+Write a `[summary]` sidecar TOML into `dir` — a CAMPAIGN-level summary artifact, the third
+artifact class next to [`write_derived`](@ref) (one run's own post-processing) and
+[`write_comparison`](@ref) (a declared relationship between sweeps). A summary is one plot
+whose x-axis is the campaign's sweep axis (a convergence curve along `EDM_INTERP_SAVEAT`,
+a rel-L2 ∝ a₀²γ scaling law, per-cell profile overlays), so the dashboard attaches it to
+the SWEEP card detected in `dir`, not to a single run.
+
+`run_ids` is the member run id(s) the summary was computed from (written as `depends_on`);
+the dashboard binds the sidecar to the sweep in the same dir whose members intersect it —
+matched against the raw pre-view-collapse run list, so a collapsed view-variant member
+(e.g. the LL half of a classical|LL pair) still counts. `plot` is a PNG basename in `dir`;
+`axis` optionally names the swept canonical param the plot is along (e.g. `"a0"`,
+`"interp_saveat"`). `setup` / `plot_params` / `description` behave exactly as in
+[`write_derived`](@ref): `setup` keys that vary across same-kind summary sidecars become a
+value picker, `plot_params` is display-only, `description` is markdown + `\$…\$` KaTeX.
+
+Filename: `summary_<kind>[_<setup-vals>]_<id8>-<n>.toml` — `<id8>` is the first 8 chars of
+the lexicographically first run id and `<n>` the member count, deterministic for a fixed
+member set so a re-run overwrites its own sidecar instead of accumulating copies.
+"""
+function write_summary(
+        dir::AbstractString; kind, label, plot, run_ids,
+        axis = nothing, datafile = nothing, setup = Dict(), plot_params = Dict(),
+        description = nothing
+    )
+    deps = run_ids isa AbstractString ? [string(run_ids)] : [string(x) for x in run_ids]
+    isempty(deps) && error("write_summary: `run_ids` must name at least one member run")
+    d = Dict{String, Any}("kind" => kind, "label" => label, "depends_on" => deps, "plot" => plot)
+    axis === nothing || (d["axis"] = string(axis))
+    datafile === nothing || (d["datafile"] = datafile)
+    # `description`: markdown + \$…\$ LaTeX, rendered (KaTeX) in the dashboard plot modal.
+    description === nothing || (d["description"] = description)
+    m = Dict{String, Any}(
+        "schema_version" => MANIFEST_SCHEMA_VERSION,
+        "provenance" => Dict(
+            "script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
+            "host" => gethostname(), "timestamp" => string(now())
+        ),
+        "summary" => d,
+    )
+    isempty(setup) || (m["setup"] = Dict{String, Any}(string(k) => v for (k, v) in setup))
+    isempty(plot_params) || (m["plot_params"] = Dict{String, Any}(string(k) => v for (k, v) in plot_params))
+    suffix = isempty(setup) ? "" : "_" * join(string.(values(setup)), "-")   # filename: setup keys only
+    idtag = string(first(minimum(deps), 8), "-", length(deps))
+    name = "summary_$(kind)$(suffix)_$(idtag).toml"
     open(io -> TOML.print(io, m; sorted = true), joinpath(dir, name), "w")
     return joinpath(dir, name)
 end
