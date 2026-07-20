@@ -55,13 +55,22 @@ done one component at a time (these cubes are tens of GB at full resolution).
 function harmonic_maps(cube::AbstractArray{<:Number, 4}, bins::AbstractVector{<:Integer}; window = hann)
     out = Array{ComplexF64, 4}(undef, length(bins), size(cube, 2), size(cube, 3), size(cube, 4))
     w = reshape(isnothing(window) ? ones(size(cube, 1)) : window(size(cube, 1)), :, 1, 1)
+    # Preallocated + planned: the old per-component `rfft(w .* cube[:, j, :, :], 1)` allocated
+    # a fresh windowed copy AND a fresh complex output every iteration next to the resident
+    # cube — at 155 GiB cubes the GC couldn't keep the transients collected inside a 263 GB
+    # container limit and the reduce got OOM-killed (2026-07-20) — heap-size hints included:
+    # the copies are LIVE during the transform, so only reuse removes them from the peak.
+    T = float(real(eltype(cube)))
+    buf = Array{T, 3}(undef, size(cube, 1), size(cube, 3), size(cube, 4))
+    Fω = Array{Complex{T}, 3}(undef, size(cube, 1) ÷ 2 + 1, size(cube, 3), size(cube, 4))
+    plan = plan_rfft(buf, 1)
     for j in axes(cube, 2)
-        Fω = @views rfft(w .* cube[:, j, :, :], 1)        # one component at a time: peak ≈ cube + 1 comp, not 2×cube
+        @views buf .= cube[:, j, :, :]
+        buf .*= w
+        mul!(Fω, plan, buf)
         for (k, b) in enumerate(bins)
             @views out[k, j, :, :] = Fω[b, :, :]
         end
-        Fω = nothing
-        GC.gc()
     end
     return out
 end
@@ -79,11 +88,16 @@ pair with `rfftfreq(N_samples, 1/δt)` for the frequency axis. One component at 
 function power_spectrum(cube::AbstractArray{<:Number, 4}; window = nothing)
     out = zeros(Float64, size(cube, 1) ÷ 2 + 1, size(cube, 2))
     w = reshape(isnothing(window) ? ones(size(cube, 1)) : window(size(cube, 1)), :, 1, 1)
+    # Preallocated + planned per-component pipeline — same OOM rationale as harmonic_maps.
+    T = float(real(eltype(cube)))
+    buf = Array{T, 3}(undef, size(cube, 1), size(cube, 3), size(cube, 4))
+    Fω = Array{Complex{T}, 3}(undef, size(cube, 1) ÷ 2 + 1, size(cube, 3), size(cube, 4))
+    plan = plan_rfft(buf, 1)
     for c in axes(cube, 2)
-        Fω = @views rfft(w .* cube[:, c, :, :], 1)
+        @views buf .= cube[:, c, :, :]
+        buf .*= w
+        mul!(Fω, plan, buf)
         out[:, c] = dropdims(sum(abs2, Fω; dims = (2, 3)); dims = (2, 3))
-        Fω = nothing
-        GC.gc()
     end
     return out
 end
