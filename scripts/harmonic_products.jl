@@ -247,7 +247,16 @@ function write_harmonic_products(
     )
     println("serialized harmonic maps → $hmapsfile  (window = $win_name)")
     # Drain-path only (EDM_REDUCTION_MARKER set by run_cell _reduce_cell): enumerate the cache in .reduced.
-    get(ENV, "EDM_REDUCTION_MARKER", "0") == "1" && record_reduction!(outdir, run_tag, hmapsfile)
+    if get(ENV, "EDM_REDUCTION_MARKER", "0") == "1"
+        record_reduction!(outdir, run_tag, hmapsfile)
+        # The solver-side γ(τ) trace (inverse runs, EDM_GAMMA_TRACE_OVERSAMPLE > 0) is a reduction
+        # cache too: the gammatau comparison chip (ll_system_chips.jl) re-renders from it and can
+        # NEVER be rebuilt from the cube — the trajectories are gone after the run — so it must
+        # ride the same publish-autonomy enumeration. Written at run time, recorded here at reduce
+        # time because only the drain path stamps the marker.
+        gtfile = joinpath(outdir, "gammatau_$(run_tag).jls")
+        isfile(gtfile) && record_reduction!(outdir, run_tag, gtfile)
+    end
 
     # Reduce-only mode (`.reduce_only` flag in outdir, or EDM_REDUCE_ONLY=1): do ONLY the work
     # that needs the cube in RAM — hmaps + the powspec cache — and skip every plot render.
