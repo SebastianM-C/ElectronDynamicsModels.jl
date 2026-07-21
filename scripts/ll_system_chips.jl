@@ -110,8 +110,72 @@ function main(dir)
             )
             println("saved → $(basename(out))")
         end
+        gamma_drain_product(dir, cl, ll, γ, a0)
     end
     write_system_comparisons(dir, pairs)
+    return
+end
+
+# γ(τ)/γ₀ overlay — the radiation-reaction drain seen from the trajectory side, the
+# energy-loss meter the N₀-line centroid shift (≈ 2Δγ/γ) must agree with. Reads the
+# gammatau_<id>.jls traces the solver samples through its trajectory interpolants (the
+# uniform-saveat splines the radiation kernel integrates, read between knots — so
+# saveat-sampling artifacts stay visible), and overlays the pair. 2 parents route the chip
+# to the comparison card next to the field-map diffs. Pre-knob runs have no trace: skipped.
+function gamma_drain_product(dir, cl, ll, γ, a0)
+    fcl = joinpath(dir, "gammatau_$(cl.id).jls")
+    fll = joinpath(dir, "gammatau_$(ll.id).jls")
+    (isfile(fcl) && isfile(fll)) ||
+        return println("gammatau: no traces for the γ=$γ a₀=$a0 pair — skip")
+    g_cl, g_ll = deserialize(fcl), deserialize(fll)
+    length(g_cl.τs) == length(g_ll.τs) ||
+        return println("gammatau: trace grids differ for the γ=$γ a₀=$a0 pair — skip")
+    x = g_ll.τs ./ g_ll.τ_pulse                       # proper time in pulse widths
+    r_cl, r_ll = g_cl.γmean ./ g_cl.γ0, g_ll.γmean ./ g_ll.γ0
+    # Data-driven zoom on where the drain ACCUMULATES (per-step |Δ(γ/γ₀)| ≥ 2% of its max),
+    # padded 50% per side: the interaction is ~τ₀/γ of proper time — a sliver of the
+    # ±TSPAN_TAU·τ₀ span — and a deviation-LEVEL window would drag to the span's end, because
+    # the drained γ stays low after the pulse.
+    step = max.(abs.(diff(r_cl)), abs.(diff(r_ll)))
+    idx = findall(>=(0.02 * max(maximum(step), eps())), step)
+    lo, hi = isempty(idx) ? (firstindex(x), lastindex(x)) : (first(idx), last(idx) + 1)
+    pad = (hi - lo) ÷ 2
+    zoom = max(firstindex(x), lo - pad):min(lastindex(x), hi + pad)
+    drain = sum(g_ll.drain) / length(g_ll.drain)
+    fig = Figure(size = (1240, 470))
+    for (i, rng) in enumerate((eachindex(x), zoom))
+        ax = Axis(fig[1, i]; title = i == 1 ? "full span" : "interaction zoom",
+            xlabel = "τ / τ₀  (proper time, pulse widths)", ylabel = i == 1 ? "γ(τ) / γ₀" : "")
+        band!(ax, x[rng], g_cl.γmin[rng] ./ g_cl.γ0, g_cl.γmax[rng] ./ g_cl.γ0;
+            color = (:seagreen, 0.25))
+        band!(ax, x[rng], g_ll.γmin[rng] ./ g_ll.γ0, g_ll.γmax[rng] ./ g_ll.γ0;
+            color = (:crimson, 0.25))
+        lines!(ax, x[rng], r_cl[rng]; color = :seagreen, label = "classical")
+        lines!(ax, x[rng], r_ll[rng]; color = :crimson, label = "Landau–Lifshitz")
+        i == 1 && axislegend(ax; position = :lb)
+    end
+    Label(fig[0, :], @sprintf(
+        "γ=%g  a₀=%g — γ(τ)/γ₀ through the trajectory splines  (mean; bands = min–max over the disk)",
+        γ, a0), fontsize = 18)
+    out = joinpath(dir, @sprintf("inverse_thomson_gammatau_%s-%s.png",
+        first(ll.id, 8), first(cl.id, 8)))
+    save(out, fig)
+    write_derived(
+        dir; kind = "gammatau", label = "γ(τ)/γ₀ — radiation-reaction drain",
+        run_id = [cl.id, ll.id], plot = basename(out), source = "gammatau_$(ll.id).jls",
+        plot_params = Dict(
+            "Δγ/γ (LL, disk mean)" => round(drain; sigdigits = 3),
+            "Δγ/γ (LL, max)" => round(maximum(g_ll.drain); sigdigits = 3),
+            "classical residual" => round(maximum(abs, r_cl .- 1); sigdigits = 2),
+            "predicted N₀-line shift 2Δγ/γ" => round(2drain; sigdigits = 3),
+            "trace oversample" => g_ll.oversample),
+        description = "Disk-mean γ(τ)/γ₀ (bands: min–max over electrons), classical vs " *
+            "Landau–Lifshitz, sampled through the SAME uniform-saveat trajectory splines the " *
+            "radiation kernel integrates, read between knots — saveat-sampling artifacts stay " *
+            "visible rather than being smoothed by the solver's dense output. The LL end-state " *
+            "drain Δγ/γ predicts a red-shift of the scattered N₀ line's centroid by 2Δγ/γ.",
+    )
+    println("saved → $(basename(out))")
     return
 end
 
