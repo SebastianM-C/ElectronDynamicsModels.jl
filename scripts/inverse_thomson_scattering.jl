@@ -123,7 +123,8 @@ const SCREEN_HW = parse(Float64, get(ENV, "EDM_SCREEN_HW", "25"))   # screen hal
 const WINDOW_LEAD = parse(Float64, get(ENV, "EDM_WINDOW_LEAD", "0.5"))   # :narrow lead-in before the burst (λ units)
 const WINDOW_TAIL = parse(Float64, get(ENV, "EDM_WINDOW_TAIL", "0.5"))   # :narrow tail after it. The pair is the
 #   γ-free part of the window, so (lead+tail)·SPP dominates N_samples at high γ (SPP ∝ 4γ²) — shrink
-#   toward ~0.15 there. Defaults 0.5/0.5 = the legacy hard-coded margins.
+#   toward ~0.15 there. Defaults 0.5/0.5 = the legacy hard-coded margins. (Prebunched early
+#   arrivals are budgeted separately — see `bunch_early` below — so a thin lead stays safe.)
 (WINDOW_LEAD > 0 && WINDOW_TAIL > 0) ||
     error("EDM_WINDOW_LEAD/EDM_WINDOW_TAIL must be > 0, got $WINDOW_LEAD/$WINDOW_TAIL")
 const ACCUM_ALG = lowercase(get(ENV, "EDM_ACCUM_ALG", "rk4"))   # retarded-time kernel: rk4 (marching, the
@@ -219,13 +220,29 @@ Ny = NX
 # ∝ 1/N0 wider (≈3λ at γ=3 — a frozen 0.35λ budget would clip it).
 const burst = 1.4 * 2 * sqrt(log(100)) * c * τ / N0
 const corner_spread = (√2 * screen_hw + Rmax)^2 / (2Z)   # latest arrival excess (corner pixel, worst-side emitter)
+# Prebunched runs arrive EARLY as well as late: the Δz focus offset cancels each emitter's
+# path excess to the AXIS, so at an off-axis pixel r the compensation overshoots for the
+# near-side emitters — per-pixel arrivals span (r² ∓ 2·Rmax·r)/2Z about Z, and the early
+# edge bottoms out at −Rmax²/2Z (the pixel ring r = Rmax; ≈ 0.15λ at the production
+# geometry). `corner_spread` is unbunched geometry — it never sees those early arrivals,
+# and without this term they silently spend the lead margin (the header's "shrink lead
+# toward ~0.15λ at high γ" advice is EXACTLY the bound, so a trimmed-lead bunched run
+# would clip the leading edge of the coherent signal).
+const bunch_early = if BUNCH_NB == 0
+    0.0
+else
+    r_edge = min(√2 * screen_hw, Rmax)   # earliest-arrival pixel radius reachable on this screen
+    (2 * Rmax * r_edge - r_edge^2) / (2Z)
+end
 const N_samples, x⁰_start = if WINDOW == :full
     NSAMPLES, c * τi + hypot(Z, screen_hw + Rmax)
 else
     lead = WINDOW_LEAD * λ; tail = WINDOW_TAIL * λ      # lead-in / tail (x⁰ lengths, 1λ = 1 T; env knobs)
-    x0 = Z - lead                                       # arrival ≈ Z ⇒ burst sits ~`lead` into the window
-    ceil(Int, (lead + corner_spread + burst + tail) / (c * δt)), x0
+    x0 = Z - lead - bunch_early                         # arrival ≈ Z ⇒ burst sits ~`lead` into the window
+    ceil(Int, (lead + bunch_early + corner_spread + burst + tail) / (c * δt)), x0
 end
+BUNCH_NB > 0 && WINDOW == :narrow &&
+    @info "prebunching: window start budgeted for early focused arrivals" bunch_early_λ = round(bunch_early / λ, digits = 3)
 # Coverage guard (:full only — :narrow covers by construction): the burst arrives at ≈Z
 # (+corner_spread off-axis), but the legacy window starts a fixed ≈8cτ ≈ 191λ BEFORE Z with length
 # NSAMPLES·λ/SPP — so raising EDM_SPP (the natural knob for the ≈4γ²ω line) shrinks it until it
