@@ -24,6 +24,7 @@ using Dates
 export git_state, assert_committed, run_provenance, run_spec_from_manifest, expand_sweep
 export find_parent_manifest, find_parent_run, spp_from_manifest
 export write_derived, write_comparison, write_summary, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
+export record_reduction!
 export MANIFEST_SCHEMA_VERSION, manifest_schema_version, check_schema_version
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ function run_provenance(;
         "script" => script,
         "host" => gethostname(),
         "slurm_job_id" => get(ENV, "SLURM_JOB_ID", ""),
+        "cloud_provider" => get(ENV, "EDM_CLOUD_PROVIDER", "local"),
         "gpu_backend" => gpu_backend,
         "julia_version" => string(VERSION),
         "timestamp" => string(now()),
@@ -341,6 +343,37 @@ function write_derived(
     name = "derived_$(kind)$(suffix)_$(idtag).toml"
     open(io -> TOML.print(io, m; sorted = true), joinpath(dir, name), "w")
     return joinpath(dir, name)
+end
+
+"""
+    record_reduction!(dir, run_id, file) -> String
+
+Append `file` (a reduction product — a full path, or a basename resolved in `dir`) to the run's
+reduction staging marker `<run_id>.reduced.partial` in `dir`, recording its current byte size.
+The first call writes the header (`run_id`/`reduced_at`/`host`/`reduce_commit` + an empty
+`reduction` array); later calls append. The orchestration renames `.partial` →
+`<run_id>.reduced` atomically once every reducer for the cell succeeds, so the marker's PRESENCE
+is the drainer's "reduce complete" handshake and its CONTENTS enumerate the caches that must land
+durably on the storagebox for the run to be re-renderable WITHOUT the cube (publish-autonomy).
+
+Invariant: every product a drain-path reducer emits must be re-renderable from a cache recorded
+here. A plot rendered directly from the cube with NO cache is invisible to this marker and breaks
+publish-autonomy — add a cache instead of relying on the cube (which is only on the workstation).
+Today's drain-path reducers (harmonic_products, plot_screen_observables) cache every product.
+"""
+function record_reduction!(dir::AbstractString, run_id, file::AbstractString)
+    path = joinpath(dir, "$(run_id).reduced.partial")
+    m = isfile(path) ? TOML.parsefile(path) : Dict{String, Any}(
+        "run_id" => string(run_id),
+        "reduced_at" => string(now()),
+        "host" => gethostname(),
+        "reduce_commit" => _script_repo_commit(),
+        "reduction" => Dict{String, Any}[],
+    )
+    full = isfile(file) ? file : joinpath(dir, file)
+    push!(m["reduction"], Dict{String, Any}("file" => basename(file), "bytes" => filesize(full)))
+    open(io -> TOML.print(io, m; sorted = true), path, "w")
+    return path
 end
 
 # Normalise one comparison side spec to (label, dir, script, where). Accepts a NamedTuple

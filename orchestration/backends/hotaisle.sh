@@ -88,7 +88,7 @@ export PATH="$HOME/.juliaup/bin:$PATH"   # no JULIA_PKG_SERVER: the VM uses Juli
 rm -rf EDM && git clone --quiet --branch "$BRANCH" "$REPO_URL" EDM
 # VM-local config.env (gitignored ⇒ not cloned): rocm local backend, no ntfy on the VM, and
 # REDUCE_OVERLAP=1 so each cell's reduction overlaps the next cell's GPU compute (paid-time win).
-printf 'LOCAL_BACKEND=rocm\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=\nREDUCE_OVERLAP=1\n' > EDM/orchestration/config.env
+printf 'LOCAL_BACKEND=rocm\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=hotaisle\n' > EDM/orchestration/config.env
 BK=rocm REPO_DIR="$HOME/EDM"; . EDM/orchestration/depot_cache.sh   # julia-actions/cache semantics (default ~/.julia depot)
 depot_cache_restore   # → DC_RESTORED = exact | prefix (instantiate tops it up) | miss (fresh build)
 ok=0; for i in 1 2 3; do
