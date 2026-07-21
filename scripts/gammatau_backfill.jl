@@ -58,8 +58,11 @@ function enrich_marker!(dir, uuid, files)
     red = get!(m, "reduction", Any[])
     for f in files
         bn = basename(f)
-        any(e -> get(e, "file", "") == bn, red) && continue
-        push!(red, Dict{String, Any}("file" => bn, "bytes" => filesize(joinpath(dir, bn))))
+        entry = Dict{String, Any}("file" => bn, "bytes" => filesize(joinpath(dir, bn)))
+        i = findfirst(e -> get(e, "file", "") == bn, red)
+        # Replace, don't skip: a refreshed cache changes size, and build_status verifies
+        # durability BYTE-EXACT against the marker — a stale bytes entry would flag the run.
+        i === nothing ? push!(red, entry) : (red[i] = entry)
     end
     tmp = path * ".tmp"
     open(io -> TOML.print(io, m; sorted = true), tmp, "w")
@@ -76,10 +79,6 @@ function backfill_run(dir, mfile)
         return nothing
     end
     gt, ic = joinpath(dir, "gammatau_$uuid.jls"), joinpath(dir, "ic_$uuid.jls")
-    if isfile(gt) && isfile(ic)
-        println("skip $(first(uuid, 8)) — caches already present")
-        return uuid
-    end
 
     γ0 = Float64(cfg["gamma"])
     λ = las["wavelength"]
@@ -91,6 +90,25 @@ function backfill_run(dir, mfile)
     β = sqrt(1 - 1 / γ0^2)
     u⁰_t, u³_z = γ0 * c, c * sqrt(γ0^2 - 1)
     τi, τf = -cfg["tspan_tau"] * τ, cfg["tspan_tau"] * τ
+
+    R₀ = Rmax * sunflower(N, 2)
+    nb, l, chirp = Int(cfg["bunch_nb"]), Int(cfg["bunch_l"]), Float64(cfg["bunch_chirp"])
+    Z = set["Z"]
+    chirp == 0 || error("bunch_chirp ≠ 0 backfill not supported (chirp needs the p=2 |m|=2 u_rel)")
+    bunch_dz(r) = nb == 0 ? 0.0 :
+        ((1 + β) / 2) * ((r[1]^2 + r[2]^2) / (2Z) + l * atan(r[2], r[1]) / (2π) * λ / nb)
+    xμ = [[u⁰_t * τi, r..., u³_z * τi + bunch_dz(r)] for r in R₀]
+    u⁰ = [u⁰_t, 0.0, 0.0, u³_z]
+
+    # IC products need no solve (deterministic from the manifest): always refresh, so chip
+    # improvements re-render on a rerun. The γ(τ) trace gates the expensive part.
+    write_ic_products(xμ, u⁰, [bunch_dz(r) for r in R₀], dir, uuid;
+        γ0, λ, w₀, nb, l, chirp, p = Int(las["p"]), m = Int(las["m"]))
+    enrich_marker!(dir, uuid, [ic])
+    if isfile(gt)
+        println("$(first(uuid, 8)) — γ(τ) trace present, solve skipped (IC refreshed)")
+        return uuid
+    end
 
     @named world = Worldline(:τ, :atomic)
     @named laser = LaguerreGaussLaser(;
@@ -107,15 +125,6 @@ function backfill_run(dir, mfile)
     end
     sys = mtkcompile(elec)
 
-    R₀ = Rmax * sunflower(N, 2)
-    nb, l, chirp = Int(cfg["bunch_nb"]), Int(cfg["bunch_l"]), Float64(cfg["bunch_chirp"])
-    Z = set["Z"]
-    chirp == 0 || error("bunch_chirp ≠ 0 backfill not supported (chirp needs the p=2 |m|=2 u_rel)")
-    bunch_dz(r) = nb == 0 ? 0.0 :
-        ((1 + β) / 2) * ((r[1]^2 + r[2]^2) / (2Z) + l * atan(r[2], r[1]) / (2π) * λ / nb)
-    xμ = [[u⁰_t * τi, r..., u³_z * τi + bunch_dz(r)] for r in R₀]
-
-    u⁰ = [u⁰_t, 0.0, 0.0, u³_z]
     prob = ODEProblem{false, SciMLBase.FullSpecialize}(
         sys, [sys.x => SVector{4}(xμ[1]...), sys.u => SVector{4}(u⁰...)], (τi, τf),
         u0_constructor = SVector{8}, fully_determined = true
@@ -141,10 +150,7 @@ function backfill_run(dir, mfile)
         γmean, γmin, γmax, drain = γdrain, oversample = GAMMA_TRACE_OS,
         knots_per_period = parse(Float64, cfg["interp_saveat"])))
     @info "γ(τ)/γ₀ trace serialized" first(uuid, 8) mean_drain = sum(γdrain) / N
-
-    write_ic_products(xμ, u⁰, [bunch_dz(r) for r in R₀], dir, uuid;
-        γ0, λ, w₀, nb, l, chirp)
-    enrich_marker!(dir, uuid, [gt, ic])
+    enrich_marker!(dir, uuid, [gt])
     return uuid
 end
 
@@ -171,12 +177,15 @@ function main_backfill(dir)
     for c_ in cells
         push!(get!(groups, (c_.gamma, c_.a0, c_.iters), []), c_)
     end
+    prs = []
     for g in values(groups)
         cl = findfirst(d -> d.system == "classical", g)
         ll = findfirst(d -> d.system == "ll", g)
         (cl === nothing || ll === nothing) && continue
         gamma_drain_product(dir, g[cl], g[ll], g[cl].gamma, g[cl].a0)
+        push!(prs, (; γ = g[cl].gamma, a0 = g[cl].a0, clid = g[cl].id, llid = g[ll].id))
     end
+    drain_ladder_summary(dir, prs)
     println("backfilled $(length(done)) runs in $dir")
     return
 end
