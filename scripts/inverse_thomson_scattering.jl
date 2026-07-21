@@ -63,6 +63,7 @@ using UUIDs
 using RunManifests
 
 include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with the recovery path)
+include(joinpath(@__DIR__, "trajectory_products.jl"))   # gamma_trace + write_ic_products (shared with gammatau_backfill.jl)
 include(joinpath(@__DIR__, "gpu_telemetry.jl"))   # with_gpu_sampler + gpu_manifest_section → the manifest [gpu] section
 
 # GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
@@ -388,34 +389,6 @@ trajs = trajectory_interpolants(solution)
 # product. EDM_GAMMA_TRACE_OVERSAMPLE=0 disables the trace entirely.
 const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
 GAMMA_TRACE_OS >= 0 || error("EDM_GAMMA_TRACE_OVERSAMPLE must be ≥ 0, got $GAMMA_TRACE_OS")
-function gamma_trace(trajs, τs, c, γ0, τf)
-    # One accumulator per electron CHUNK, not per threadid: threadid() can exceed nthreads()
-    # (interactive pool) and tasks migrate, so threadid-indexed accumulators are unsound.
-    nch = max(1, min(Threads.nthreads(), length(trajs)))
-    chunks = collect(Iterators.partition(eachindex(trajs), cld(length(trajs), nch)))
-    sums = [zeros(length(τs)) for _ in chunks]
-    los = [fill(Inf, length(τs)) for _ in chunks]
-    his = [fill(-Inf, length(τs)) for _ in chunks]
-    drain = zeros(length(trajs))
-    tasks = map(enumerate(chunks)) do (ci, ch)
-        Threads.@spawn begin
-            s, lo, hi = sums[ci], los[ci], his[ci]
-            for e in ch
-                tr = trajs[e]
-                @inbounds for (k, τk) in enumerate(τs)
-                    γ = tr(τk)[2][1] / c
-                    s[k] += γ
-                    γ < lo[k] && (lo[k] = γ)
-                    γ > hi[k] && (hi[k] = γ)
-                end
-                drain[e] = 1 - tr(τf)[2][1] / (γ0 * c)
-            end
-        end
-    end
-    foreach(wait, tasks)
-    return reduce(+, sums) ./ length(trajs),
-        reduce((a, b) -> min.(a, b), los), reduce((a, b) -> max.(a, b), his), drain
-end
 if GAMMA_TRACE_OS > 0
     t_gtrace = @elapsed begin
         knot_dt = (2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)
@@ -429,45 +402,8 @@ if GAMMA_TRACE_OS > 0
     @info "γ(τ)/γ₀ trace serialized" t_gtrace n_τ = length(γτ_grid) mean_drain = sum(γdrain) / length(γdrain)
 end
 
-# ── As-run initial conditions: cache + chip. The disk and its Δz offsets are deterministic
-# from [config], but the cache pins the EXACT as-run xμ₀/u₀ (reconstruction drift becomes
-# visible instead of silent) and lets the IC chip re-render anywhere without an EDM solve —
-# the same publish-autonomy contract as the γ(τ) trace (both are enumerated in the .reduced
-# marker at reduce time). `datafile` on the sidecar ships the cache to the storagebox and
-# puts a /data download URL on the chip. Cheap (N×4 floats ≈ 64 KB at N = 2000): always on.
-function write_ic_products(xμ0, u0, dz, outdir, run_tag; γ0, λ, w₀, nb, l, chirp)
-    icfile = joinpath(outdir, "ic_$(run_tag).jls")
-    X = permutedims(reduce(hcat, xμ0))       # N×4 as-run start 4-positions (bunch_dz included)
-    serialize(icfile, (; xμ0 = X, u0 = collect(u0), dz = collect(dz), γ0, λ, w₀,
-        bunch = (; nb, l, chirp)))
-    x, y = X[:, 2] ./ λ, X[:, 3] ./ λ
-    dzλ = collect(dz) ./ λ
-    fig = Figure(size = (1080, 480))
-    ax1 = Axis(fig[1, 1]; title = "start disk, colored by bunching offset Δz",
-        xlabel = "x  [λ]", ylabel = "y  [λ]", aspect = 1)
-    sc = scatter!(ax1, x, y; color = dzλ, markersize = 5)
-    Colorbar(fig[1, 2], sc; label = "Δz  [λ]")
-    ax2 = Axis(fig[1, 3]; title = "arrival surface: lens parabola + helix spread",
-        xlabel = "(ρ/w₀)²", ylabel = "Δz  [λ]")
-    scatter!(ax2, (x .^ 2 .+ y .^ 2) .* (λ / w₀)^2, dzλ;
-        color = atan.(y, x), colormap = :twilight, markersize = 4)
-    Label(fig[0, :], @sprintf("as-run initial conditions — N = %d, γ = %g, n_b = %d, ℓ = %d",
-        length(x), γ0, nb, l), fontsize = 17)
-    out = joinpath(outdir, "inverse_thomson_ic_$(run_tag).png")
-    save(out, fig)
-    write_derived(
-        outdir; kind = "ic", label = "initial conditions (as run)",
-        run_id = run_tag, plot = basename(out), datafile = basename(icfile),
-        plot_params = Dict("N" => length(x), "bunch_nb" => nb, "bunch_l" => l,
-            "max |Δz| [λ]" => round(maximum(abs, dzλ); sigdigits = 3)),
-        description = "The exact as-run start disk: transverse sunflower positions colored by " *
-            "the longitudinal bunching offset Δz (the arrival-surface placement), and Δz against " *
-            "(ρ/w₀)² — the lens parabola, with the ℓθ helix as the azimuthal spread. The " *
-            "`ic_<id>.jls` cache stores xμ₀/u₀/Δz, so this chip re-renders without an EDM solve.",
-    )
-    println("saved → $(basename(out))")
-    return icfile
-end
+# As-run initial-conditions cache + chip (write_ic_products lives in trajectory_products.jl,
+# shared with the gammatau_backfill.jl path).
 write_ic_products(xμ, u⁰, [bunch_dz(r) for r in R₀], OUTDIR, RUN_TAG;
     γ0 = GAMMA, λ, w₀, nb = BUNCH_NB, l = BUNCH_L, chirp = BUNCH_CHIRP)
 
