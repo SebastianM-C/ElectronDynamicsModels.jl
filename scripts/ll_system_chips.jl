@@ -53,7 +53,7 @@ function main(dir)
         ll = findfirst(c -> c.system == "ll", g)
         (cl === nothing || ll === nothing) && continue
         cl, ll = g[cl], g[ll]
-        push!(pairs, (; γ, a0, it))
+        push!(pairs, (; γ, a0, it, clid = cl.id, llid = ll.id))
         w₀ = cl.h.w₀
         # Boosted pairs (n0 > 1) label bins in ω_bs = n0·ω₁ units, like the h<n> chips.
         hlabel(n) = cl.n0 == 1 ? "$(n)ω₁" : @sprintf("%.4g ω_bs", n / cl.n0)
@@ -112,7 +112,55 @@ function main(dir)
         end
         gamma_drain_product(dir, cl, ll, γ, a0)
     end
+    drain_ladder_summary(dir, pairs)
     write_system_comparisons(dir, pairs)
+    return
+end
+
+# Campaign-level drain ladder: the measured Δγ/γ of every classical|LL pair against the
+# campaign axis, with the linear small-drain law 3.5e-7·a₀²γ overlaid — the "does the law
+# bend" summary the LL probe campaigns exist for. A [summary] sidecar (axis = the varying
+# param), so it lands on the sweep card next to the plots, not buried in per-pair
+# plot_params. Needs ≥2 pairs with gammatau traces; skips quietly otherwise.
+function drain_ladder_summary(dir, pairs)
+    rows = []
+    for pr in pairs
+        f = joinpath(dir, "gammatau_$(pr.llid).jls")
+        isfile(f) || continue
+        g = deserialize(f)
+        push!(rows, (; pr.γ, pr.a0, pr.clid, pr.llid,
+            drain = sum(g.drain) / length(g.drain)))
+    end
+    length(rows) >= 2 || return println("drain ladder: <2 pairs with γ(τ) traces — skip")
+    axis = length(unique(r.a0 for r in rows)) > 1 ? "a0" : "gamma"
+    sort!(rows, by = r -> axis == "a0" ? r.a0 : r.γ)
+    xs = axis == "a0" ? [r.a0 for r in rows] : [Float64(r.γ) for r in rows]
+    meas = [r.drain for r in rows]
+    lin = [3.5e-7 * r.a0^2 * r.γ for r in rows]
+    fig = Figure(size = (760, 520))
+    ax = Axis(fig[1, 1]; xscale = log10, yscale = log10,
+        xlabel = axis == "a0" ? "a₀" : "γ", ylabel = "Δγ/γ  (disk mean)",
+        title = @sprintf("radiation-reaction drain vs the linear law  (%s)",
+            axis == "a0" ? @sprintf("γ = %g", rows[1].γ) : @sprintf("a₀ = %g", rows[1].a0)))
+    lines!(ax, xs, lin; color = :gray40, linestyle = :dash, label = "3.5×10⁻⁷ a₀² γ")
+    scatterlines!(ax, xs, meas; color = :crimson, markersize = 12, label = "measured (LL)")
+    axislegend(ax; position = :lt)
+    out = joinpath(dir, "inverse_thomson_drain_ladder_$(first(rows[1].llid, 8)).png")
+    save(out, fig)
+    write_summary(
+        dir; kind = "drain_ladder", label = "Δγ/γ drain ladder vs $(axis == "a0" ? "a₀" : "γ")",
+        run_ids = [id for r in rows for id in (r.clid, r.llid)],
+        axis, plot = basename(out),
+        plot_params = Dict(
+            (axis == "a0" ? "a₀ values" : "γ values") => xs,
+            "measured Δγ/γ" => [round(v; sigdigits = 3) for v in meas],
+            "linear law" => [round(v; sigdigits = 3) for v in lin]),
+        description = "Disk-mean radiation-reaction drain Δγ/γ per classical|LL pair (from the " *
+            "γ(τ) traces) against the linear small-drain law \$3.5\\times10^{-7} a_0^2\\gamma\$. " *
+            "Where the points fall below the dashed line, the linear law has bent — the " *
+            "operating corner the probe campaigns were sized to find.",
+    )
+    println("summary → drain ladder ($(length(rows)) pairs, axis = $axis)")
     return
 end
 
