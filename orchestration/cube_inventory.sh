@@ -35,6 +35,7 @@ while IFS=$'\t' read -r dir file bytes; do
 done
 
 mv "$tmp" "$OUT"
+chmod 644 "$OUT"   # mktemp is 600; make it world-readable so a cross-user INV_PUSH lands readable
 n=$(($(wc -l < "$OUT") - 1))
 echo "[inventory] $n cubes → $OUT"
 
