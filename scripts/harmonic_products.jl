@@ -246,6 +246,8 @@ function write_harmonic_products(
         ),
     )
     println("serialized harmonic maps → $hmapsfile  (window = $win_name)")
+    # Drain-path only (EDM_REDUCTION_MARKER set by run_cell _reduce_cell): enumerate the cache in .reduced.
+    get(ENV, "EDM_REDUCTION_MARKER", "0") == "1" && record_reduction!(outdir, run_tag, hmapsfile)
 
     # Reduce-only mode (`.reduce_only` flag in outdir, or EDM_REDUCE_ONLY=1): do ONLY the work
     # that needs the cube in RAM — hmaps + the powspec cache — and skip every plot render.
@@ -265,6 +267,8 @@ function write_harmonic_products(
     # cube pass for 24 runs solely because this array used to be discarded after plotting.
     serialize(joinpath(outdir, "powspec_$(run_tag).jls"),
         (; freqs = collect(freqs), ps, n0, harmonics = collect(harmonics), window = "none"))
+    get(ENV, "EDM_REDUCTION_MARKER", "0") == "1" &&
+        record_reduction!(outdir, run_tag, "powspec_$(run_tag).jls")
     if reduce_only
         println("reduce-only: hmaps + powspec cache serialized; renders deferred")
         return (; hmapsfile, plots, fields_h, fields_far_h, window = win_name)

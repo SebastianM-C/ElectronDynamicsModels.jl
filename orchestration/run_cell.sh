@@ -39,6 +39,10 @@ _ORCH_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # REPO defaults to the repo that CONTAINS this orchestration/ dir (so it's right on any clone —
 # your dev checkout, a cluster node, a cloud VM at $HOME/EDM). config.env's EDM_REPO overrides it.
 : "${REPO:=${EDM_REPO:-$(cd "$_ORCH_DIR/.." && pwd)}}"
+# Cloud provider for status tracking: hotaisle/runpod inject LOCAL_CLOUD_PROVIDER into config.env;
+# SLURM detected via SLURM_JOB_ID; local otherwise. Passed to the solver as EDM_CLOUD_PROVIDER.
+: "${PROVIDER:=${LOCAL_CLOUD_PROVIDER:-${SLURM_JOB_ID:+slurm}}}"
+: "${PROVIDER:=local}"
 
 # ── notifications (optional, ALL backends) ───────────────────────────────────
 # Creds come from $NTFY_ENV (set in config.env → e.g. ~/.config/ntfy/edm-campaigns.env); secrets stay
@@ -62,16 +66,30 @@ notify() {   # notify <tags> <priority> <title> <message>  — no-op unless NTFY
 # <uuid>.reduce_failed marker that reap_reduces waits on. Override with REDUCE_HOOK for a custom reducer.
 _reduce_cell() {
     local uuid=$1 manifest="$CAMP/run_${uuid}.toml" cube rc=0
-    ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} "${JL[@]}" --project=scripts scripts/harmonic_products.jl "$manifest" ) \
+    ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} EDM_REDUCTION_MARKER=1 "${JL[@]}" --project=scripts scripts/harmonic_products.jl "$manifest" ) \
         >> "$CAMP/run_${uuid}.log" 2>&1 || rc=1
     if [ "$rc" -eq 0 ]; then
         for cube in "$CAMP"/field_*_"$uuid".jls; do
             [ -e "$cube" ] || continue
-            ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} "${JL[@]}" --project=scripts scripts/plot_screen_observables.jl "$cube" ) \
+            ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} EDM_REDUCTION_MARKER=1 "${JL[@]}" --project=scripts scripts/plot_screen_observables.jl "$cube" ) \
                 >> "$CAMP/run_${uuid}.log" 2>&1 || rc=1
         done
     fi
-    [ "$rc" -eq 0 ] && touch "$CAMP/${uuid}.reduced" || touch "$CAMP/${uuid}.reduce_failed"
+    # Finalize the reduction marker. The reducers appended each cache they wrote to
+    # <uuid>.reduced.partial (via RunManifests.record_reduction!); turn that into the <uuid>.reduced
+    # sentinel the drainer waits on — but ONLY as an atomic, all-reducers-succeeded commit, so a
+    # reader never sees a half-written marker (docs/status_tracking_design.md §5, sentinel-after-data).
+    local partial="$CAMP/${uuid}.reduced.partial"
+    if [ "$rc" -eq 0 ]; then
+        if [ -f "$partial" ]; then
+            mv "$partial" "$CAMP/${uuid}.reduced"
+        else
+            touch "$CAMP/${uuid}.reduced"
+        fi
+    else
+        rm -f "$partial"
+        touch "$CAMP/${uuid}.reduce_failed"
+    fi
 }
 
 run_cell() {
@@ -103,7 +121,7 @@ run_cell() {
     echo "[$(date -u +%FT%TZ)] cell $label  [$(basename "$SCRIPT") ${BACKEND:-?}]  keep=${KEEP_CUBE:-0} overlap=${REDUCE_OVERLAP:-0}  $uuid :: ${*:-<baseline>}"
     # shellcheck disable=SC2086
     ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} ${BASE[@]+"${BASE[@]}"} $skip \
-          EDM_GPU_BACKEND="$BACKEND" EDM_OUTDIR="$CAMP" EDM_RUN_TAG="$uuid" "$@" \
+          EDM_GPU_BACKEND="$BACKEND" EDM_CLOUD_PROVIDER="$PROVIDER" EDM_OUTDIR="$CAMP" EDM_RUN_TAG="$uuid" "$@" \
           "${JL[@]}" --project=scripts "$SCRIPT" ) > "$log" 2>&1
     local rc=$?
     if [ "$rc" -eq 0 ]; then
@@ -168,4 +186,13 @@ run_cells() {
     local tag=white_check_mark pri=default
     [ "${CELLS_FAIL:-0}" -gt 0 ] && { tag=warning; pri=high; }
     notify "$tag" "$pri" "EDM campaign done" "${CAMPAIGN:-?}: ${CELLS_OK:-0}/${#CELLS[@]} ok, ${CELLS_FAIL:-0} failed (${BACKEND:-?}@$(hostname))"
+    # Campaign-complete publish hook. GENERIC mechanism (like notify / POST_HOOK): the actual publish
+    # — VPS paths, the metadata-union dir, credentials — lives in config.env's PUBLISH_HOOK, kept off
+    # this public repo. Fires once after all cells + reductions, only if a cell succeeded; the hook
+    # (with $CAMP/$CAMPAIGN in scope) publishes just the verified cells (those with a .reduced marker).
+    if [ -n "${PUBLISH_HOOK:-}" ] && [ "${CELLS_OK:-0}" -gt 0 ]; then
+        echo "[$(date -u +%FT%TZ)] publish: $CAMPAIGN → PUBLISH_HOOK"
+        eval "$PUBLISH_HOOK" \
+            || notify rotating_light high "EDM publish FAILED" "${CAMPAIGN:-?}: PUBLISH_HOOK failed on $(hostname)"
+    fi
 }

@@ -287,5 +287,7 @@ let pid = parent[1]
                 raw"The dotted line marks the peak-emission slot used for the snapshots above."
         )
         println("derived sidecars → observables (total/far) + obs_vortex + obs_temporal (parent run $pid)")
+        # Drain-path only (EDM_REDUCTION_MARKER): enumerate the obs cache in <uuid>.reduced (cf. harmonic_products).
+        get(ENV, "EDM_REDUCTION_MARKER", "0") == "1" && record_reduction!(dir, pid, cachefile)
     end
 end
