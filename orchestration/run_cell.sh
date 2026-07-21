@@ -186,4 +186,13 @@ run_cells() {
     local tag=white_check_mark pri=default
     [ "${CELLS_FAIL:-0}" -gt 0 ] && { tag=warning; pri=high; }
     notify "$tag" "$pri" "EDM campaign done" "${CAMPAIGN:-?}: ${CELLS_OK:-0}/${#CELLS[@]} ok, ${CELLS_FAIL:-0} failed (${BACKEND:-?}@$(hostname))"
+    # Campaign-complete publish hook. GENERIC mechanism (like notify / POST_HOOK): the actual publish
+    # — VPS paths, the metadata-union dir, credentials — lives in config.env's PUBLISH_HOOK, kept off
+    # this public repo. Fires once after all cells + reductions, only if a cell succeeded; the hook
+    # (with $CAMP/$CAMPAIGN in scope) publishes just the verified cells (those with a .reduced marker).
+    if [ -n "${PUBLISH_HOOK:-}" ] && [ "${CELLS_OK:-0}" -gt 0 ]; then
+        echo "[$(date -u +%FT%TZ)] publish: $CAMPAIGN → PUBLISH_HOOK"
+        eval "$PUBLISH_HOOK" \
+            || notify rotating_light high "EDM publish FAILED" "${CAMPAIGN:-?}: PUBLISH_HOOK failed on $(hostname)"
+    fi
 }
