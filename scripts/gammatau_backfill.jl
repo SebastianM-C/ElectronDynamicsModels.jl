@@ -183,6 +183,7 @@ function main_backfill(dir)
         ll = findfirst(d -> d.system == "ll", g)
         (cl === nothing || ll === nothing) && continue
         gamma_drain_product(dir, g[cl], g[ll], g[cl].gamma, g[cl].a0)
+        drain_disk_product(dir, g[cl], g[ll], g[cl].gamma, g[cl].a0)
         push!(prs, (; γ = g[cl].gamma, a0 = g[cl].a0, clid = g[cl].id, llid = g[ll].id))
     end
     drain_ladder_summary(dir, prs)

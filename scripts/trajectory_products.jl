@@ -101,3 +101,66 @@ function write_ic_products(xμ0, u0, dz, outdir, run_tag; γ0, λ, w₀, nb, l, 
     println("saved → $(basename(out))")
     return icfile
 end
+
+# Per-electron Δγ/γ₀ over the start disk — WHERE the drain happens, the spatial complement of
+# gamma_drain_product's γ(τ) view. Reads the pair's gammatau_ drains (trajectory order = disk
+# order) and the LL run's ic_ cache. The right panel tests the drain against the LOCAL drive:
+# the small-drain law 3.5e-7·a₀²γ evaluated at a₀|u_rel| per electron — points leaving the
+# dashed curve are the law bending — with the classical drains as the numerical-residual
+# control. 2 parents route the chip to the comparison card, next to the γ(τ) overlay.
+function drain_disk_product(dir, cl, ll, γ, a0)
+    fic = joinpath(dir, "ic_$(ll.id).jls")
+    fcl = joinpath(dir, "gammatau_$(cl.id).jls")
+    fll = joinpath(dir, "gammatau_$(ll.id).jls")
+    all(isfile, (fic, fcl, fll)) ||
+        return println("drain disk: missing ic/gammatau caches for the γ=$γ a₀=$a0 pair — skip")
+    ic = deserialize(fic)
+    d_cl, d_ll = deserialize(fcl).drain, deserialize(fll).drain
+    N = size(ic.xμ0, 1)
+    (length(d_ll) == N && length(d_cl) == N) ||
+        return println("drain disk: trace/disk N mismatch for the γ=$γ a₀=$a0 pair — skip")
+    x, y = ic.xμ0[:, 2] ./ ic.λ, ic.xμ0[:, 3] ./ ic.λ
+    fig = Figure(size = (1080, 480))
+    ax1 = Axis(fig[1, 1]; title = "Δγ/γ₀ over the start disk  (Landau–Lifshitz)",
+        xlabel = "x  [λ]", ylabel = "y  [λ]", aspect = 1)
+    sc = scatter!(ax1, x, y; color = d_ll, colormap = :viridis, markersize = 5)
+    Colorbar(fig[1, 2], sc; label = "Δγ/γ₀")
+    if ic.u_rel === nothing
+        ρw₀ = sqrt.(x .^ 2 .+ y .^ 2) .* (ic.λ / ic.w₀)
+        ax2 = Axis(fig[1, 3]; title = "drain against radius", xlabel = "ρ / w₀", ylabel = "Δγ/γ₀")
+        scatter!(ax2, ρw₀, d_cl; color = (:seagreen, 0.4), markersize = 4, label = "classical")
+        scatter!(ax2, ρw₀, d_ll; color = (:crimson, 0.5), markersize = 4, label = "Landau–Lifshitz")
+    else
+        ax2 = Axis(fig[1, 3]; title = "drain against the local drive",
+            xlabel = "|u_rel|", ylabel = "Δγ/γ₀")
+        us = range(0, maximum(ic.u_rel); length = 200)
+        lines!(ax2, us, 3.5e-7 .* (a0 .* us) .^ 2 .* γ; color = :gray40, linestyle = :dash,
+            label = "3.5×10⁻⁷ (a₀|u_rel|)² γ")
+        scatter!(ax2, ic.u_rel, d_cl; color = (:seagreen, 0.4), markersize = 4, label = "classical")
+        scatter!(ax2, ic.u_rel, d_ll; color = (:crimson, 0.5), markersize = 4,
+            label = "Landau–Lifshitz")
+    end
+    axislegend(ax2; position = :lt)
+    Label(fig[0, :], @sprintf(
+        "γ=%g  a₀=%g — per-electron radiation-reaction drain over the disk  (N = %d)", γ, a0, N),
+        fontsize = 17)
+    out = joinpath(dir, @sprintf("inverse_thomson_drain_disk_%s-%s.png",
+        first(ll.id, 8), first(cl.id, 8)))
+    save(out, fig)
+    write_derived(
+        dir; kind = "drain_disk", label = "Δγ/γ₀ disk map — where the drain happens",
+        run_id = [cl.id, ll.id], plot = basename(out), source = "gammatau_$(ll.id).jls",
+        plot_params = Dict(
+            "Δγ/γ (LL, disk mean)" => round(sum(d_ll) / N; sigdigits = 3),
+            "Δγ/γ (LL, max)" => round(maximum(d_ll); sigdigits = 3),
+            "classical residual (max |Δγ/γ|)" => round(maximum(abs, d_cl); sigdigits = 2),
+            "linear law at peak drive" => round(3.5e-7 * a0^2 * γ; sigdigits = 3)),
+        description = "Per-electron end-state drain Δγ/γ₀ = 1 − γ(τf)/γ₀ mapped onto the start " *
+            "disk (left) and against the local drive amplitude |u_rel| (right), with the " *
+            "small-drain law 3.5×10⁻⁷(a₀|u_rel|)²γ dashed — per-electron departure from the " *
+            "curve is the law bending; the classical drains ride along as the numerical-" *
+            "residual control. Same trajectory splines as the γ(τ) overlay.",
+    )
+    println("saved → $(basename(out))")
+    return
+end
