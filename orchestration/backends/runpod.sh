@@ -60,7 +60,8 @@ rp()      { curl -fsS -H "Authorization: Bearer $TOK" -H "Content-Type: applicat
 ssh_vm()  { /usr/bin/ssh $SSHOPTS -p "$PORT" root@"$IP" "$@"; }
 log()     { echo "[$(date -u +%FT%TZ)] $*"; }
 
-# Persistent cost ledger (shared with hotaisle.sh; reported by orchestration/cost_report.sh).
+# Persistent cost ledger (shared with hotaisle.sh; reported by the private results-dashboard
+# repo's scripts/cost_report.sh — only the appends live here, 2026-07-22).
 # rate_cents_h = the pod's costPerHr (converted to cents) captured at grab time — rates vary per
 # GPU type and drift. balance_usd = live account balance via pod_balance() (GraphQL myself{clientBalance};
 # REST v1 + MCP get-billing expose spend, NOT balance), recorded on provision + teardown so

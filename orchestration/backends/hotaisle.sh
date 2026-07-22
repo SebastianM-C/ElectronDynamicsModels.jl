@@ -49,7 +49,8 @@ min_resv()  { api GET /virtual_machines/available/ | jq -r --argjson g "$GPUS" \
 price()     { api GET /virtual_machines/available/ | jq -r --argjson g "$GPUS" \
               '[.[]|select(.Specs.gpus[0].model=="MI300X" and .Specs.gpus[0].count==$g)|.OnDemandPrice*$g][0]//empty'; }
 
-# Persistent cost ledger (shared with runpod.sh; reported by orchestration/cost_report.sh).
+# Persistent cost ledger (shared with runpod.sh; reported by the private results-dashboard
+# repo's scripts/cost_report.sh — only the appends live here, 2026-07-22).
 # Append-only TSV; rate_cents_h = the VM's $/h in CENTS captured at provision (list prices drift;
 # top-up reconciliation 2026-07-17 confirmed a VM bills its provision-time list price for life).
 # A ledger write must NEVER break a campaign ⇒ every append is best-effort.

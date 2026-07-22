@@ -17,27 +17,10 @@ verification:
   sets `KEEP_CUBE=1` (copied to the VM's `$HOME` first, so a branch sync can't yank it).
 - **Teardown gate** — both cloud backends refuse `teardown` while any drain-eligible cube
   lacks its `.drained_` sentinel (the VM disk is the only copy). `FORCE_TEARDOWN=1` overrides.
-- **Archive side** — `cube_pull_r2.sh`: downloads each cube, verifies against the VM-computed
-  sha256, and only then frees the bucket slot (`purge`). R2 egress is free, so a failed
-  verify re-pulls at zero cost.
-
-### Archive-box setup (once)
-
-1. Credentials: write `~/.config/edm-r2.env` (same file the drain side ships to VMs) with the
-   `RCLONE_CONFIG_R2_*` exports for a bucket-scoped R2 API token — see the header of
-   `cube_drain_r2.sh` for the exact variables. Bucket-scoped tokens can't `ListBuckets`,
-   which is why every rclone call in these scripts carries `--s3-no-check-bucket`.
-2. rclone: any install works; `~/bin/rclone` is found even from non-interactive shells, or
-   point `RCLONE=/path/to/rclone` at it.
-3. Destination: pick `PULL_DEST` (e.g. `/storage/pool/smc/edm_cubes`).
-4. Run the puller as a systemd user service:
-
-   ```sh
-   mkdir -p ~/.config/systemd/user
-   cp orchestration/cube_pull_r2.service ~/.config/systemd/user/
-   systemctl --user daemon-reload
-   systemctl --user edit cube_pull_r2      # override PULL_DEST / ExecStart repo path if needed
-   systemctl --user enable --now cube_pull_r2
-   loginctl enable-linger "$USER"          # keep it running with no login session
-   journalctl --user -u cube_pull_r2 -f    # watch it work
-   ```
+- **Archive side** — `cube_pull_r2.sh` (+ its systemd unit), `cube_pull.sh` and
+  `cube_inventory.sh` moved to the private results-dashboard repo 2026-07-22: they run only
+  on the trusted archive box and feed the dashboard's status pipeline, so they live next to
+  their consumer. Archive-box setup instructions moved with them. The credentials contract
+  is unchanged: `~/.config/edm-r2.env` with the `RCLONE_CONFIG_R2_*` exports for a
+  bucket-scoped R2 API token — see the header of `cube_drain_r2.sh` for the exact variables
+  (bucket-scoped tokens can't `ListBuckets`, hence `--s3-no-check-bucket` everywhere).
