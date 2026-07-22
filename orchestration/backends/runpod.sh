@@ -134,6 +134,15 @@ ensure_volume() {   # opt-in: only called when RUNPOD_VOLUME_GB > 0; must match 
     VOLID="$(rp -X POST "$API/networkvolumes" \
         -d "$(jq -n --arg n "$VOLNAME" --argjson s "$VOLGB" --arg dc "$DC" '{name:$n,size:$s,dataCenterId:$dc}')" | jq -r .id)"
     [ -n "$VOLID" ] && [ "$VOLID" != null ] || { log "[ERROR] volume create failed"; return 1; }
+    # Storage ledger row (volumes outlive pods, billed per GB-month — invisible to the
+    # provision/teardown spans). rate col = the volume's whole cost in CENTS PER HOUR at its
+    # creation size (gb × RUNPOD_STORAGE_CENTS_GB_MO / 730; default 7 ¢/GB-month = RunPod's
+    # $0.07 list price) — the ledger's universal rate unit. Volume deletion is manual
+    # (console/API), so the closing `volume_delete` row is hand-seeded on the hub ledger
+    # when that happens; the reporter bills an open volume to now.
+    local rate_ch
+    rate_ch=$(awk -v g="$VOLGB" -v r="${RUNPOD_STORAGE_CENTS_GB_MO:-7}" 'BEGIN { printf "%.2f", g * r / 730 }')
+    ledger "$VOLNAME" volume_create "id=$VOLID size_gb=$VOLGB dc=$DC" "$rate_ch"
 }
 
 grab_pod() {
