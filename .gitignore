@@ -21,6 +21,7 @@
 # local only, superseded by orchestration/{run_cell.sh,backends/,campaigns/}; recipes migrated to campaigns/.
 /orchestration/smalla0_floor/
 /orchestration/floor_probe/
+/orchestration/lowa0_maps/
 # Legacy infra-specific ops scripts (superseded by orchestration/backends/*; kept local until migrated)
 /scripts/hotaisle_campaign.sh
 /scripts/balance_monitor.sh
