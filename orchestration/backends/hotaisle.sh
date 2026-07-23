@@ -189,8 +189,11 @@ run_campaign() {
         # push_orchestration, but scripts/ + lib/ come from the VM's clone). Cheap no-op
         # when already current; instantiate tops up any dep drift.
         log "syncing VM clone to $BRANCH…"
+        # -f + reset: push_orchestration overlays driver-side files onto the clone, so a reused
+        # VM's tree is routinely "dirty" with changes that get re-pushed right after this sync —
+        # a plain checkout aborts on them (bit the lpwa_boundary relaunch 2026-07-23).
         ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && git fetch --quiet origin '$BRANCH' \
-            && git checkout --quiet '$BRANCH' && git merge --quiet --ff-only \"origin/$BRANCH\" \
+            && git checkout --quiet -f '$BRANCH' && git reset --quiet --hard \"origin/$BRANCH\" \
             && julia --startup=no --project=scripts -e 'using Pkg; Pkg.instantiate()' > /dev/null 2>&1 \
             && git log --oneline -1" | sed 's/^/[vm-clone] /'
     else
