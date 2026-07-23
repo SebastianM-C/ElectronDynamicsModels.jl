@@ -96,6 +96,9 @@ mkdir -p /root/.ssh /run/sshd
 printf '%s\n' "$PUBLIC_KEY" > /root/.ssh/authorized_keys
 chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+# 24.04-era images ship without in-container host keys (postinst skips them) and sshd -D
+# exits without any — crash-loop, "sshd never came up" (H200 NVL pod, 2026-07-23).
+ssh-keygen -A
 exec /usr/sbin/sshd -D -e
 EOF
 
