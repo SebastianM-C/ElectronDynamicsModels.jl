@@ -36,6 +36,16 @@
 #      R2_CONCURRENCY (default 16), R2_CHUNK (default 128M), RCLONE (default rclone from PATH).
 set -u
 PATH="$HOME/bin:$PATH"   # non-interactive shells miss ~/bin, where the ad-hoc rclone lives
+# Self-bootstrap a current static rclone into ~/bin when absent: fresh Hot Aisle VMs ship
+# none, and some pod images ship one too old to know provider=Cloudflare (both bit
+# 2026-07-23, stranding every cube of the boundary batch). Explicit RCLONE= overrides skip it.
+if [ ! -x "$HOME/bin/rclone" ] && [ -z "${RCLONE:-}" ]; then
+    mkdir -p "$HOME/bin" \
+        && curl -fsSL https://downloads.rclone.org/rclone-current-linux-amd64.zip -o /tmp/rclone.zip \
+        && python3 -m zipfile -e /tmp/rclone.zip /tmp/rclone-x \
+        && mv /tmp/rclone-x/rclone-*/rclone "$HOME/bin/rclone" && chmod +x "$HOME/bin/rclone" \
+        || echo "[drain-r2] rclone self-bootstrap failed — trying PATH rclone" >&2
+fi
 RCLONE="${RCLONE:-rclone}"
 command -v "$RCLONE" >/dev/null 2>&1 || { echo "[drain-r2] $RCLONE not found (PATH=$PATH) — install rclone or set RCLONE=/path/to/rclone"; exit 1; }
 ENVF="${CUBE_R2_ENV:-$HOME/.config/edm-r2.env}"
