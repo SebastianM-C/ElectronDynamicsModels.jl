@@ -352,6 +352,15 @@ monitor_and_download() {   # poll for DONE (crash = 3 consecutive dead liveness 
     else
         log "campaign done; rsync skipped (RUNPOD_RSYNC_DOWNLOAD=0) — drain from the volume later: orchestration/drain.sh $CAMPAIGN"
     fi
+    # Auto-publish fires DRIVER-side for cloud campaigns: the pod's generated config.env carries
+    # no PUBLISH_HOOK (and the pod has no dashboard repo/keys), so run_cell.sh's hook never
+    # covers this path. Same contract as run_cell.sh: only if ≥1 cell left a manifest (also
+    # skips the RUNPOD_RSYNC_DOWNLOAD=0 volume path, where nothing lands in $OUT).
+    if [ -n "${PUBLISH_HOOK:-}" ] && ls "$OUT/$CAMPAIGN"/run_*.toml >/dev/null 2>&1; then
+        log "publish: $CAMPAIGN → PUBLISH_HOOK"
+        ( CAMP="$OUT/$CAMPAIGN"; eval "$PUBLISH_HOOK" ) \
+            || notify rotating_light high "EDM publish FAILED" "$CAMPAIGN: PUBLISH_HOOK failed on $(hostname)"
+    fi
     notify white_check_mark default "EDM runpod done" "$CAMPAIGN → $OUT/$CAMPAIGN ; pod $POD KEPT — run teardown."
     ledger "$POD" campaign_done "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"
     log "products → $OUT/$CAMPAIGN ; pod $POD KEPT (state $STATE). More: $0 run <campaign>. Finish: $0 teardown"
