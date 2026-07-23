@@ -96,6 +96,9 @@ mkdir -p /root/.ssh /run/sshd
 printf '%s\n' "$PUBLIC_KEY" > /root/.ssh/authorized_keys
 chmod 700 /root/.ssh; chmod 600 /root/.ssh/authorized_keys
 sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin prohibit-password/' /etc/ssh/sshd_config
+# 24.04-era images ship without in-container host keys (postinst skips them) and sshd -D
+# exits without any — crash-loop, "sshd never came up" (H200 NVL pod, 2026-07-23).
+ssh-keygen -A
 exec /usr/sbin/sshd -D -e
 EOF
 
@@ -165,8 +168,9 @@ grab_pod() {
                         --arg dc "$DC" --arg start "$START_CMD" --argjson disk "$DISK" \
                     '{name:"edm-runpod",imageName:$img,gpuTypeIds:[$gpu],cloudType:"SECURE",gpuCount:1,
                       containerDiskInGb:$disk,
-                      ports:["22/tcp"],supportPublicIp:true,env:{PUBLIC_KEY:$pub},
-                      dockerEntrypoint:["/bin/bash","-c"],dockerStartCmd:[$start]}
+                      ports:["22/tcp"],supportPublicIp:true,env:{PUBLIC_KEY:$pub}}
+                     + (if ($img|startswith("runpod/")) then {}
+                        else {dockerEntrypoint:["/bin/bash","-c"],dockerStartCmd:[$start]} end)
                      + (if $dc != "" then {dataCenterIds:[$dc]} else {} end)
                      + (if $vol != "" then {networkVolumeId:$vol,volumeMountPath:"/workspace"} else {} end)')" 2>&1)" || {
                 # --fail-with-body keeps the API's reason; stay quiet on the two EXPECTED capacity-poll
@@ -212,6 +216,10 @@ wait_ready() {   # public IP + 22 mapping appear only once the container is stab
 
 warm() {
     log "warm: clone $BRANCH + instantiate ($BACKEND depot on pod-local disk; cache: ${DEPOT_CACHE:-none})"
+    # runpod/* images run their NATIVE entrypoint (PUBLIC_KEY → sshd, no bootstrap override —
+    # the override left 24.04-era CUDA pods without working sshd, 2026-07-23), so ensure the
+    # tools the depot cache + downloads need; no-op where the bootstrap already installed them.
+    ssh_vm 'command -v rsync >/dev/null 2>&1 && command -v zstd >/dev/null 2>&1 || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync zstd; }'
     if [ -n "$DEPOT_CACHE" ]; then
         if [ -f "$DEPOT_CACHE_KEY" ]; then   # jailed key — the pod can ONLY rsync inside the archive store
             ssh_vm 'mkdir -p /root/.ssh && cat > /root/.ssh/depot_key && chmod 600 /root/.ssh/depot_key' < "$DEPOT_CACHE_KEY"
@@ -351,6 +359,15 @@ monitor_and_download() {   # poll for DONE (crash = 3 consecutive dead liveness 
         download_verify "$OUT/$CAMPAIGN" || log "[verify] issues — products still on the pod${VOLID:+ and volume /workspace/runs/$CAMPAIGN}"
     else
         log "campaign done; rsync skipped (RUNPOD_RSYNC_DOWNLOAD=0) — drain from the volume later: orchestration/drain.sh $CAMPAIGN"
+    fi
+    # Auto-publish fires DRIVER-side for cloud campaigns: the pod's generated config.env carries
+    # no PUBLISH_HOOK (and the pod has no dashboard repo/keys), so run_cell.sh's hook never
+    # covers this path. Same contract as run_cell.sh: only if ≥1 cell left a manifest (also
+    # skips the RUNPOD_RSYNC_DOWNLOAD=0 volume path, where nothing lands in $OUT).
+    if [ -n "${PUBLISH_HOOK:-}" ] && ls "$OUT/$CAMPAIGN"/run_*.toml >/dev/null 2>&1; then
+        log "publish: $CAMPAIGN → PUBLISH_HOOK"
+        ( CAMP="$OUT/$CAMPAIGN"; eval "$PUBLISH_HOOK" ) \
+            || notify rotating_light high "EDM publish FAILED" "$CAMPAIGN: PUBLISH_HOOK failed on $(hostname)"
     fi
     notify white_check_mark default "EDM runpod done" "$CAMPAIGN → $OUT/$CAMPAIGN ; pod $POD KEPT — run teardown."
     ledger "$POD" campaign_done "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"

@@ -1,4 +1,5 @@
 using LinearAlgebra
+using Random
 using HypergeometricFunctions: pochhammer, _₁F₁
 using SpecialFunctions
 using StaticArrays
@@ -129,6 +130,7 @@ K = q_e / (4π * ε₀ * c)
 τf = 8τ
 
 # verify trajectory
+Random.seed!(20260723)   # the assert must not be a dice roll (cost 2/6 ladder cells, 2026-07-23)
 for f in (0.0, 11, 120)
     tau = f * λ / c
     δtau = 1.0e-6 * λ / c
@@ -136,12 +138,16 @@ for f in (0.0, 11, 120)
 
     t2 = trajectory(tau + δtau, 𝔯)
     t1 = trajectory(tau, 𝔯)
+    t0 = trajectory(tau - δtau, 𝔯)
 
-    t′ = (t2 - t1) / δtau
+    # CENTRAL difference: forward-diff truncation grows with the local acceleration (∝ a₀) and
+    # blew the tolerance stochastically from a₀ ≈ 0.5 up — measured over 36k draws: 0.2–2.6%
+    # failures, worst 15× tol at a₀=10; central diff never failed, worst 0.01× tol.
+    t′ = (t2 - t0) / 2δtau
 
     # atol floors the finite-diff resolution: differencing absolute positions (x₀ ~ w₀ ~ 1e6)
-    # caps accuracy near eps(w₀)/δτ, and forward-diff truncation peaks ~3e-5 at a0=0.1; an
-    # rtol-only check fails once the velocity (∝ a0) drops below that at small a0.
+    # caps accuracy near eps(w₀)/δτ; an rtol-only check fails once the velocity (∝ a0) drops
+    # below that floor at small a0.
     @assert all(isapprox.(t′[1:4], t1[5:8], rtol = 1.0e-4, atol = 1.0e-4))
 end
 
