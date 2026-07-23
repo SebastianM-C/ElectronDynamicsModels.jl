@@ -168,8 +168,9 @@ grab_pod() {
                         --arg dc "$DC" --arg start "$START_CMD" --argjson disk "$DISK" \
                     '{name:"edm-runpod",imageName:$img,gpuTypeIds:[$gpu],cloudType:"SECURE",gpuCount:1,
                       containerDiskInGb:$disk,
-                      ports:["22/tcp"],supportPublicIp:true,env:{PUBLIC_KEY:$pub},
-                      dockerEntrypoint:["/bin/bash","-c"],dockerStartCmd:[$start]}
+                      ports:["22/tcp"],supportPublicIp:true,env:{PUBLIC_KEY:$pub}}
+                     + (if ($img|startswith("runpod/")) then {}
+                        else {dockerEntrypoint:["/bin/bash","-c"],dockerStartCmd:[$start]} end)
                      + (if $dc != "" then {dataCenterIds:[$dc]} else {} end)
                      + (if $vol != "" then {networkVolumeId:$vol,volumeMountPath:"/workspace"} else {} end)')" 2>&1)" || {
                 # --fail-with-body keeps the API's reason; stay quiet on the two EXPECTED capacity-poll
@@ -215,6 +216,10 @@ wait_ready() {   # public IP + 22 mapping appear only once the container is stab
 
 warm() {
     log "warm: clone $BRANCH + instantiate ($BACKEND depot on pod-local disk; cache: ${DEPOT_CACHE:-none})"
+    # runpod/* images run their NATIVE entrypoint (PUBLIC_KEY → sshd, no bootstrap override —
+    # the override left 24.04-era CUDA pods without working sshd, 2026-07-23), so ensure the
+    # tools the depot cache + downloads need; no-op where the bootstrap already installed them.
+    ssh_vm 'command -v rsync >/dev/null 2>&1 && command -v zstd >/dev/null 2>&1 || { apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq rsync zstd; }'
     if [ -n "$DEPOT_CACHE" ]; then
         if [ -f "$DEPOT_CACHE_KEY" ]; then   # jailed key — the pod can ONLY rsync inside the archive store
             ssh_vm 'mkdir -p /root/.ssh && cat > /root/.ssh/depot_key && chmod 600 /root/.ssh/depot_key' < "$DEPOT_CACHE_KEY"
