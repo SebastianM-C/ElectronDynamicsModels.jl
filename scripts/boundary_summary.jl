@@ -104,16 +104,21 @@ write_summary(
         "rel-L2 h2" => [round(r.dF[2] / max(r.aT[2], eps()); sigdigits = 3) for r in rows],
         "Δφ h1 [deg]" => [round(r.dφ[1]; sigdigits = 3) for r in rows],
         "Δφ h2 [deg]" => [round(r.dφ[2]; sigdigits = 3) for r in rows]),
-    description = "Complex L2 of the screen-field difference LPWA − numeric per harmonic, " *
-        "against a₀ (log–log; dashed = ∝a₀ guide anchored at the smallest a₀). Where the " *
-        "curve leaves the linear guide, the analytic LPWA description has bent — the " *
-        "operating boundary the emission chapter's R3 figure reads off — after optimal global " *
-        "phase alignment per pair (the measured convention offset Δφ is in the plot " *
-        "parameters). rel-L2 per point " *
-        "(vs the numeric amplitude) is in the plot parameters." *
-        (full ? " Spans BOTH eras: the June split-mode Ns=6000 ladder and the 2026-07 " *
-        "total-mode Ns=12160 one — relative metrics compare cleanly across the seam; " *
-        "absolute values carry the sampling difference." : ""),
+    description = (full ?
+        "RELATIVE complex L2 |ΔF̃|/|F̃_num| per pair, LPWA − numeric per harmonic vs a₀ " *
+        "(log–log), after optimal global phase alignment (the measured convention offset Δφ " *
+        "is in the plot parameters). Circles = the June split-mode Ns=6000 era, squares = " *
+        "the 2026-07 total-mode Ns=12160 era — the pair-internal relative metric is the one " *
+        "quantity that stitches across the eras' different DFT amplitude conventions. The " *
+        "h2 disagreement peaks at a₀ ≈ 0.1–0.2 and falls toward ~2.6× by a₀ = 10; h1 holds " *
+        "below 10⁻³ under a₀ ≈ 0.1 and crosses 10% at a₀ ≈ 1–2 — the emission chapter's R3 " *
+        "boundary, read off one figure." :
+        "Complex L2 of the screen-field difference LPWA − numeric per harmonic, against a₀ " *
+        "(log–log; dashed = ∝a₀ guide anchored at the smallest a₀). Where the curve leaves " *
+        "the linear guide, the analytic LPWA description has bent — the operating boundary " *
+        "the emission chapter's R3 figure reads off — after optimal global phase alignment " *
+        "per pair (the measured convention offset Δφ is in the plot parameters). rel-L2 per " *
+        "point (vs the numeric amplitude) is in the plot parameters."),
 )
 println("summary → boundary_dF ($(length(rows)) pairs)")
 
