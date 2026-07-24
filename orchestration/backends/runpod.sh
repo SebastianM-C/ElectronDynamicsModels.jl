@@ -351,7 +351,7 @@ monitor_and_download() {   # poll for DONE (crash = 3 consecutive dead liveness 
     if [ "$dl" = 1 ]; then
         log "campaign done; downloading products via rsync…"
         mkdir -p "$OUT/$CAMPAIGN"
-        local -a excl=(--exclude='field_*.jls')
+        local -a excl=(--include='*_obscache.jls' --exclude='field_*.jls')
         if [ "${KEEP_CUBE:-0}" = 1 ] && [ -z "${VOLID:-}" ] && ! drainer_active; then
             excl=(); log "  KEEP_CUBE=1, no volume, no drainer ⇒ cubes included in the download (bulky!)"
         fi

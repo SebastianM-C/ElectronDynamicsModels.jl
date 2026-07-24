@@ -224,7 +224,7 @@ run_campaign() {
     done
     log "campaign done; downloading reduced products (cubes excluded)…"
     mkdir -p "$OUT/$CAMPAIGN"
-    /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS" --exclude='field_*.jls' \
+    /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS" --include='*_obscache.jls' --exclude='field_*.jls' \
         hotaisle@"$IP":"EDM/runs/$CAMPAIGN/" "$OUT/$CAMPAIGN/"
     download_verify "$OUT/$CAMPAIGN" || log "[verify] integrity problems — products also remain on VM:EDM/runs/$CAMPAIGN"
     # Auto-publish fires DRIVER-side for cloud campaigns: the VM's generated config.env carries
