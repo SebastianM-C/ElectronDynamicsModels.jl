@@ -8,7 +8,7 @@ BASE=(
   EDM_NX=400 EDM_FIELD_MODE=total
   EDM_N=10000
   EDM_NSAMPLES=12160 EDM_SPP=32          # matches newton_a0_high (Nyquist h16)
-  EDM_INITIAL_PHASE=-1.5707963267948966  # phi0 = -pi/2, matches numeric side
+  EDM_INITIAL_PHASE=-1.5707963267948966  # φ0 = -π/2: corpus continuity with pre-PR#62 runs (arbitrary since #62 unified the φ₀ convention)
 )
 CELLS=(
     "a5em1|EDM_A0=0.5"
