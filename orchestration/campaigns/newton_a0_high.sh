@@ -12,7 +12,7 @@ BASE=(
   EDM_N=10000 EDM_RELTOL=1e-12
   EDM_INTERP_SAVEAT=16                 # uniform trajectory output (the floor fix)
   EDM_POL=circular_minus
-  EDM_INITIAL_PHASE=-1.5707963267948966   # φ0 = -π/2 (published convention)
+  EDM_INITIAL_PHASE=-1.5707963267948966   # φ0 = -π/2: corpus continuity with pre-PR#62 runs (arbitrary since #62 unified the φ₀ convention)
   EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=3
   EDM_NSAMPLES=12160 EDM_SPP=32         # UNIFORM across cells (Nyquist h16, 380-period window):
                                         # keeps the a0 sweep 1-D on the dashboard and the maps

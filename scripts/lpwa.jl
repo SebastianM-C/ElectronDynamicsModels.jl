@@ -62,7 +62,12 @@ A(ρ) = A₀ * (√2 * ρ / w₀)^abs(m) * _₁F₁(-p, abs(m) + 1, 2 * (ρ / w�
 function trajectory(τ, ℜ₀)
     x₀, y₀, z₀ = ℜ₀
     ρ₀ = norm(ℜ₀)
-    φ = -m * atan(y₀, x₀) + ϕ₀
+    # φ₀ CONVENTION: EDM_INITIAL_PHASE means the E-FIELD carrier phase (external_fields.jl's
+    # laser: E ∝ e^{i(ωt+ϕ₀)}). This closed form phases the VELOCITY carrier — v ∝ A ∝ ∫E dt
+    # lags E by π/2 (the sin ↔ cos quarter turn) — so map the E convention onto it here.
+    # History: the June 2026 configs compensated implicitly (lpwa ϕ₀=0 vs thomson −π/2);
+    # undocumented, that resurfaced as a global −π/2 offset in the 2026-07 pairs.
+    φ = -m * atan(y₀, x₀) + ϕ₀ + π / 2
 
     k = ω / c
     u⁰ = c

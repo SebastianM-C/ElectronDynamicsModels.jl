@@ -29,6 +29,9 @@ using JET
     @testset "GPU Interpolation" begin
         include("gpu_interp.jl")
     end
+    @testset "Interpolant acceleration under saveat" begin
+        include("interp_saveat_acceleration.jl")
+    end
     @testset "GPU Radiation Accumulation" begin
         include("gpu_radiation.jl")
     end

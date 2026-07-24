@@ -24,7 +24,14 @@ function TrajectoryInterpolant(sol::SciMLBase.AbstractODESolution, x_syms, u_sym
     # model-consistent — more accurate than differentiating `itp` afterwards,
     # which would amplify the cubic spline's interpolation error. Storing them in
     # a dedicated spline keeps evaluation a cheap, thread-safe lookup.
-    a_knots = [SVector{4}(sol(t, Val{1})[u_idxs]) for t in sol.t]
+    # ONLY valid for dense solutions: with `saveat` the solution interpolation is the
+    # stored-value LINEAR fallback, and `Val{1}` returns left-segment slopes ≈ a(t − h/2) —
+    # a half-knot delay that stamped a −n·π/16 global phase on every saveat-era harmonic
+    # map (root-caused 2026-07-24). On non-dense solutions differentiate the cubic spline
+    # instead: zero phase bias, mirroring lpwa.jl's a_itp construction.
+    a_knots = sol.dense ?
+        [SVector{4}(sol(t, Val{1})[u_idxs]) for t in sol.t] :
+        [SVector{4}(DataInterpolations.derivative(itp, t)[u_idxs]) for t in sol.t]
     a_itp = CubicSpline(a_knots, sol.t; extrapolation = ExtrapolationType.Extension)
     sys = sol.prob.f.sys
     _world = _find_world(sys)
