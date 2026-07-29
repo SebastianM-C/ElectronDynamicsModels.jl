@@ -6,6 +6,7 @@
 #
 # ENV knobs (defaults = full production): EDM_GPU_BACKEND (rocm|cuda), EDM_A0,
 # EDM_INITIAL_PHASE, EDM_NX, EDM_N, EDM_NSAMPLES, EDM_SPP, EDM_NSUBSTEPS,
+# EDM_OMEGA_SCALE (Doppler-equivalent ω upshift) + EDM_SCREEN_HALFW (screen half-extent, w₀ units),
 # EDM_GPU_SOLVER (rk4|newton) + EDM_NEWTON_ITERS,
 # EDM_POL (linear|circular[_plus]|circular_minus),
 # EDM_SYNC_PER_ELECTRON, EDM_OUTDIR. Writes the field .jls + per-harmonic PNGs +
@@ -73,14 +74,21 @@ FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"t
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
-@info "Thomson (field) run config" RUN_TAG GPU_BACKEND GPU_SOLVER ϕ₀ A0 SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS NEWTON_ITERS
+@info "Thomson (field) run config" RUN_TAG GPU_BACKEND GPU_SOLVER ϕ₀ A0 SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS NEWTON_ITERS OMEGA_SCALE HALFW
 const T_START = time()   # wall-clock start → [timing].total in the manifest
 
 # Laser parameters
-ω = 0.057
+# EDM_OMEGA_SCALE: Doppler-equivalent runs — upshift ω by γ(1+β) = γ+√(γ²−1), the frequency a
+# counter-propagating electron of that γ sees. The pulse keeps its cycle count (τ·ω = 150, phase
+# is boost-invariant) while the transverse/detector geometry stays pinned to the lab λ₀ = 2πc/0.057
+# layout (transverse lengths are boost-invariant). 1.0 ⇒ byte-identical to the production setup.
+const OMEGA_SCALE = parse(Float64, get(ENV, "EDM_OMEGA_SCALE", "1.0"))
+const ω₀_lab = 0.057
+ω = ω₀_lab * OMEGA_SCALE
 τ = 150 / ω
 λ = 2π * c / ω
-w₀ = 75λ
+const λ_lab = 2π * c / ω₀_lab
+w₀ = 75λ_lab
 Rmax = 3.25w₀
 
 a₀ = A0
@@ -184,11 +192,19 @@ t_trajectories = @elapsed solution = solve(
 trajs = trajectory_interpolants(solution)
 
 # Screen parameters
-const Z = 2.0e5λ
+# EDM_SCREEN_HALFW: screen half-extent in w₀ units (default 25 = production). Do NOT zoom
+# scaled-ω cells ∝ 1/OMEGA_SCALE: with the geometry pinned, the source Fraunhofer distance
+# a²/λ′ grows with the scale (≳Z beyond γ≈2), the screen enters the Fresnel zone, and the
+# pattern shrinks slower than 1/scale. Zoom only when the sampling window demands it — the
+# corner-anchored x⁰_start sits ~11λ_lab after the center-pixel arrival, so once that spread
+# (in scaled periods, ∝scale) exceeds the 8τ pulse half-span (γ≳10 at full frame) the window
+# would open after the peak passed the central pixels; ±8 w₀ suffices at γ=10 (gamma_equiv).
+const HALFW = parse(Float64, get(ENV, "EDM_SCREEN_HALFW", "25.0"))
+const Z = 2.0e5λ_lab
 const samples_per_period = SPP
 const δt = 2π / ω / samples_per_period
 const N_samples = NSAMPLES
-const x⁰_start = c * τi + hypot(Z, 25w₀ + Rmax)
+const x⁰_start = c * τi + hypot(Z, HALFW * w₀ + Rmax)
 
 Nx = NX
 Ny = NX
@@ -196,8 +212,8 @@ Ny = NX
 x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
 
 screen = ObserverScreen(
-    LinRange(-25w₀, 25w₀, Nx),
-    LinRange(-25w₀, 25w₀, Ny),
+    LinRange(-HALFW * w₀, HALFW * w₀, Nx),
+    LinRange(-HALFW * w₀, HALFW * w₀, Ny),
     Z,
     x⁰_samples;
     c,
@@ -288,6 +304,8 @@ config = Dict{String, Any}(
     "mode" => string(FIELD_MODE),      # :split → (E,B,E_far,B_far) | :total → (E,B); mirrors lpwa.jl
     "sync_per_electron" => SYNC,       # replay input: run_spec_from_manifest reads this
     "observable" => "field",          # distinguishes this run from the 4-potential (_A) runs
+    "omega_scale" => OMEGA_SCALE,      # Doppler-equivalent ω upshift (1.0 = lab λ₀ production)
+    "screen_halfw" => HALFW,           # screen half-extent in w₀ units (25 = production framing)
 )
 
 outputs = Dict{String, Any}(
