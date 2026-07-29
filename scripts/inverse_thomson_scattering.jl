@@ -99,7 +99,13 @@ const INTERP_SAVEAT = get(ENV, "EDM_INTERP_SAVEAT", "4")         # trajectory-sp
 #   non-uniformity is the h2/h1 floor source). The reference period is the Doppler-shifted carrier
 #   the electron actually sees (~2γω in τ), NOT the lab period T — see the note at the ensemble solve.
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
-const GAMMA = parse(Float64, get(ENV, "EDM_GAMMA", "10.0"))      # electron Lorentz factor (counter-propagating, +z)
+# γ comes either directly (EDM_GAMMA) or as the departure from rest ε = γ−1 (EDM_GAMMA_EPS —
+# the natural sweep axis for γ→1 ladders, where 1+ε would drown in the float's integer part).
+haskey(ENV, "EDM_GAMMA") && haskey(ENV, "EDM_GAMMA_EPS") &&
+    error("set EDM_GAMMA or EDM_GAMMA_EPS, not both")
+const GAMMA_EPS = haskey(ENV, "EDM_GAMMA_EPS") ? parse(Float64, ENV["EDM_GAMMA_EPS"]) : nothing
+(GAMMA_EPS === nothing || GAMMA_EPS >= 0.0) || error("EDM_GAMMA_EPS must be ≥ 0, got $GAMMA_EPS")
+const GAMMA = GAMMA_EPS === nothing ? parse(Float64, get(ENV, "EDM_GAMMA", "10.0")) : 1.0 + GAMMA_EPS      # electron Lorentz factor (counter-propagating, +z)
 GAMMA >= 1.0 || error("EDM_GAMMA must be ≥ 1, got $GAMMA")
 const TSPAN_TAU = parse(Float64, get(ENV, "EDM_TSPAN_TAU", "8")) # proper-time span per side, in units of τ.
 #   The interaction occupies only ~τ/γ of PROPER time around τ=0 (lab window = ±TSPAN_TAU·γ·τ; the
@@ -546,6 +552,10 @@ config = Dict{String, Any}(
     #   pool otherwise turns newton_iters into a sweep axis whose rk4 members lack the key, and the
     #   dashboard builder's _build_sweep KeyErrors on it (found by the Hot Aisle kernel-A/B session).
 )
+# gamma_eps is recorded ONLY when EDM_GAMMA_EPS drives the run: the key's presence selects the
+# dashboard axis representation (ε-driven pools sweep ε; γ-driven ladders never carry the key,
+# so their axis stays γ — the builder can't pick an axis a pool's runs lack).
+GAMMA_EPS === nothing || (config["gamma_eps"] = GAMMA_EPS)
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
