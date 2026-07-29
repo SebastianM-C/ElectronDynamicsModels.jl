@@ -23,7 +23,9 @@
 # config.env: RUNPOD_DC, RUNPOD_ROCM_IMAGE/RUNPOD_CUDA_IMAGE, RUNPOD_VOLUME_NAME/GB,
 # RUNPOD_REPO_URL/BRANCH, RUNPOD_DEPOT_CACHE/RUNPOD_DEPOT_KEY. Secrets external: API token at
 # ~/.config/runpod/token; ntfy via NTFY_ENV. The pod authorizes $RUNPOD_SSH_PUBKEY (a key you can
-# auth as — e.g. your YubiKey pubkey; ControlMaster ⇒ one touch/run).
+# auth as, e.g. served by your ssh agent; ControlMaster ⇒ one auth/run). RUNPOD_SSH_KEY (optional)
+# pins the matching PRIVATE key via -i/IdentitiesOnly — required for headless drivers (no ssh
+# agent): key files outside the default names are never offered unless pinned.
 set -Eeuo pipefail
 ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."; ORCH="$(cd "$ORCH" && pwd)"
 # Caller-env overrides must survive config.env (sourced via run_cell.sh below, where a plain
@@ -54,7 +56,7 @@ STATE="${RUNPOD_STATE:-$HOME/.config/runpod/campaign_pod}"; OUT="${RUNPOD_OUT:-$
 POLL="${RUNPOD_POLL_SEC:-120}"; MAXTRIES="${RUNPOD_MAX_TRIES:-240}"
 PUBKEY="$(cat "${RUNPOD_SSH_PUBKEY:-$HOME/.config/runpod/ssh_pubkey}" 2>/dev/null || ssh-add -L 2>/dev/null | head -1)"
 CM="$HOME/.ssh/cm-runpod-$(basename "$STATE").sock"   # per-STATE: concurrent drivers must not remux onto one socket
-SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600"
+SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600${RUNPOD_SSH_KEY:+ -i $RUNPOD_SSH_KEY -o IdentitiesOnly=yes}"
 
 rp()      { curl -fsS -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" "$@"; }
 ssh_vm()  { /usr/bin/ssh $SSHOPTS -p "$PORT" root@"$IP" "$@"; }
