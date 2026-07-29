@@ -25,6 +25,7 @@ export git_state, assert_committed, run_provenance, run_spec_from_manifest, expa
 export find_parent_manifest, find_parent_run, spp_from_manifest
 export write_derived, write_comparison, write_summary, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
 export record_reduction!
+export units_section, units_from_manifest
 export MANIFEST_SCHEMA_VERSION, manifest_schema_version, check_schema_version
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -576,6 +577,93 @@ function write_solver_manifest(
     path = joinpath(dir, "run_$(run_id).toml")
     open(io -> TOML.print(io, m; sorted = true), path, "w")
     return path
+end
+
+# ───────────────────────── [units] — display-unit declarations ─────────────────────────
+# The manifest's raw numbers stay in the solver's NATIVE units; [units] is a declaration
+# layer beside them so consumers (chip renderers, the dashboard) can label axes without
+# run-type-specific knowledge (the `backscatter_n0` special case, "is ω₁ scaled?", …).
+# Additive optional section — no MANIFEST_SCHEMA_VERSION bump (stale readers ignore it).
+
+# Speed of light in Hartree atomic units — used only to SYNTHESIZE [units] for legacy
+# manifests (all of which are :atomic runs); new manifests carry their scales explicitly.
+const C_HARTREE = 137.03599908330932
+
+"""
+    units_section(ω, λ, w₀; system = "hartree_atomic", n0 = 1, omega_scale = 1.0,
+        transverse_length = "w0", extra_defs...) -> Dict
+
+Build the `[units]` manifest section: `defs` names scales (each a `value` in raw solver
+units + a `tex` display label); `preferred` picks which named scale each quantity kind is
+displayed in (`frequency`, `transverse_length`, and `wavelength_display = "si"` — the
+raw→SI anchor is fixed by `system`, e.g. hartree_atomic lengths are Bohr radii
+a₀ = 0.052917721 nm, so no numeric anchor is stored).
+
+Always defines `omega_laser`/`lambda_laser`/`w0` from this run's carrier. `n0 > 1`
+(backscatter runs) adds `omega_bs = n0·ω` and prefers it for frequencies — the [units]
+generalization of the legacy `backscatter_n0` key. `omega_scale ≠ 1` (Doppler-equivalent
+runs) adds the unscaled `omega_lab`/`lambda_lab` reference scales. Additional named scales
+append via keyword pairs: `moat = (value = …, tex = "r_F")`.
+
+Raw values in [config]/[laser]/[setup] are NEVER converted. Read back (with the legacy
+fallback) via [`units_from_manifest`](@ref).
+"""
+function units_section(ω::Real, λ::Real, w₀::Real; system = "hartree_atomic",
+        n0::Integer = 1, omega_scale::Real = 1.0, transverse_length = "w0", extra_defs...)
+    def(value, tex) = Dict{String, Any}("value" => Float64(value), "tex" => String(tex))
+    defs = Dict{String, Any}(
+        "omega_laser" => def(ω, "ω₁"),
+        "lambda_laser" => def(λ, "λ₁"),
+        "w0" => def(w₀, "w₀"),
+    )
+    frequency = "omega_laser"
+    if n0 > 1
+        defs["omega_bs"] = def(n0 * ω, "ω_bs")
+        frequency = "omega_bs"
+    end
+    if !isapprox(omega_scale, 1.0)
+        defs["omega_lab"] = def(ω / omega_scale, "ω₀")
+        defs["lambda_lab"] = def(λ * omega_scale, "λ₀")
+    end
+    for (k, v) in pairs(extra_defs)
+        defs[string(k)] = def(v.value, v.tex)
+    end
+    return Dict{String, Any}(
+        "system" => String(system),
+        "defs" => defs,
+        "preferred" => Dict{String, Any}(
+            "frequency" => frequency,
+            "transverse_length" => String(transverse_length),
+            "wavelength_display" => "si",
+        ),
+    )
+end
+
+"""
+    units_from_manifest(m::AbstractDict) -> (; system, defs, preferred, n0)
+
+Read a manifest's `[units]` section; for manifests that predate it, synthesize the same
+structure from what they do record (`[laser] wavelength/w0`, `[config] backscatter_n0/
+omega_scale`) so consumers have ONE code path. `n0` is the derived integer ratio
+preferred-frequency-scale / ω₁ (1 when frequencies are ω₁-preferred) — exactly the legacy
+`backscatter_n0` contract the powspec axis and harmonic-map labels consume.
+"""
+function units_from_manifest(m::AbstractDict)
+    u = get(m, "units", nothing)
+    if u === nothing
+        las = get(m, "laser", Dict{String, Any}())
+        cfg = get(m, "config", Dict{String, Any}())
+        λ = Float64(get(las, "wavelength", NaN))
+        u = units_section(
+            2π * C_HARTREE / λ, λ, Float64(get(las, "w0", NaN));
+            n0 = round(Int, get(cfg, "backscatter_n0", 1)),
+            omega_scale = Float64(get(cfg, "omega_scale", 1.0)),
+        )
+    end
+    defs, pref = u["defs"], u["preferred"]
+    fscale = get(defs, get(pref, "frequency", "omega_laser"), defs["omega_laser"])
+    n0 = round(Int, Float64(fscale["value"]) / Float64(defs["omega_laser"]["value"]))
+    return (; system = u["system"], defs, preferred = pref, n0)
 end
 
 end # module RunManifests

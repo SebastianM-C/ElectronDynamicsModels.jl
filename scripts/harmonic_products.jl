@@ -277,7 +277,10 @@ function write_harmonic_products(
     # machine without the multi-GB cube — the 2026-07-19 ω_bs restyle needed a full workstation
     # cube pass for 24 runs solely because this array used to be discarded after plotting.
     serialize(joinpath(outdir, "powspec_$(run_tag).jls"),
-        (; freqs = collect(freqs), ps, n0, harmonics = collect(harmonics), window = "none"))
+        (; freqs = collect(freqs), ps, n0, harmonics = collect(harmonics), window = "none",
+            # [units]-style name of the axis scale n0 encodes (future data-driven renderers
+            # relabel from this instead of guessing from n0):
+            freq_unit = n0 > 1 ? "omega_bs" : "omega_laser"))
     get(ENV, "EDM_REDUCTION_MARKER", "0") == "1" &&
         record_reduction!(outdir, run_tag, "powspec_$(run_tag).jls")
     if reduce_only
@@ -410,9 +413,10 @@ function recover_from_manifest(toml)
     # Envelope view geometry (inverse runs only): the blur grain needs the screen distance +
     # disk radius; both live in [setup]. `nothing` ⇒ no envelope chips (rest-electron runs).
     st = get(m, "setup", Dict())
-    # On-axis backscattered fundamental ω_bs = n0·ω₁ (≈4γ²): frequency unit for boosted runs'
-    # powspec axis + harmonic-map labels, and the envelope blur-grain wavelength.
-    n0 = round(Int, get(cfg, "backscatter_n0", 1))
+    # Preferred frequency scale from [units] (legacy manifests: synthesized from
+    # [config].backscatter_n0 by units_from_manifest). n0 = preferred-scale/ω₁ — the ω_bs
+    # unit for boosted runs' powspec axis + harmonic-map labels and the envelope blur grain.
+    n0 = units_from_manifest(m).n0
     envgeo = (inverse && haskey(st, "Z") && haskey(st, "Rmax")) ?
         (; Z = st["Z"], Rmax = st["Rmax"], λ = las["wavelength"], n0) : nothing
     envelope!(fields_h, harmonics, x_grid, y_grid, w₀) = envgeo === nothing ? nothing :

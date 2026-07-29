@@ -285,6 +285,9 @@ setup = Dict{String, Any}(
 )   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is just the integration window + screen depth
 
 manifestfile = write_solver_manifest(
-    OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs
+    OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs,
+    extra = Dict{String, Any}(
+        "units" => units_section(ω, λ, w₀),   # display-unit declarations (RunManifests.units_section)
+    ),
 )
 println("manifest → $manifestfile")

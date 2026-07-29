@@ -591,7 +591,12 @@ sharding = Dict{String, Any}("electrons" => ndev)
 # GPU telemetry → [gpu] (static device snapshot + power/util/VRAM stats over the field window).
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
 gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
-extra = Dict{String, Any}("timing" => timing, "sharding" => sharding)
+extra = Dict{String, Any}(
+    "timing" => timing, "sharding" => sharding,
+    # [units]: n0 = N0 declares ω_bs = N0·ω₁ as the preferred frequency scale — the
+    # declaration-layer generalization of [config].backscatter_n0 (kept for legacy readers).
+    "units" => units_section(ω, λ, w₀; n0 = N0),
+)
 gpu === nothing || (extra["gpu"] = gpu)
 manifestfile = write_solver_manifest(
     OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs, extra,

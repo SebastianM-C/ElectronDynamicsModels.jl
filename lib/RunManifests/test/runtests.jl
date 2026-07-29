@@ -158,3 +158,52 @@ end
     # fewer than two sides is a hard error (a comparison needs something to compare).
     @test_throws ErrorException write_comparison(dir; label = "x", sides = [("a", "dirA")])
 end
+
+@testset "units_section ↔ units_from_manifest" begin
+    ω, λ, w₀ = 0.057, 2π * 137.03599908330932 / 0.057, 75 * 2π * 137.03599908330932 / 0.057
+
+    # plain rest-frame run: ω₁-preferred, roundtrips through TOML
+    u = units_section(ω, λ, w₀)
+    io = IOBuffer(); TOML.print(io, Dict("units" => u))
+    m = TOML.parse(String(take!(io)))
+    r = units_from_manifest(m)
+    @test r.n0 == 1
+    @test r.preferred["frequency"] == "omega_laser"
+    @test r.defs["lambda_laser"]["value"] ≈ λ
+    @test r.system == "hartree_atomic"
+
+    # backscatter run: ω_bs = n0·ω₁ preferred
+    ub = units_section(ω, λ, w₀; n0 = 398)
+    @test ub["preferred"]["frequency"] == "omega_bs"
+    @test ub["defs"]["omega_bs"]["value"] ≈ 398ω
+    @test units_from_manifest(Dict{String, Any}("units" => ub)).n0 == 398
+
+    # Doppler-equivalent run: scaled carrier + unscaled lab reference
+    s = 19.949874371066196
+    us = units_section(s * ω, λ / s, w₀; omega_scale = s)
+    @test us["defs"]["omega_lab"]["value"] ≈ ω
+    @test us["defs"]["lambda_lab"]["value"] ≈ λ
+    @test units_from_manifest(Dict{String, Any}("units" => us)).n0 == 1
+
+    # extra named scales pass through
+    ue = units_section(ω, λ, w₀; moat = (value = 22.4 * λ, tex = "r_F"))
+    @test ue["defs"]["moat"]["tex"] == "r_F"
+
+    # LEGACY manifests (no [units]): synthesized from laser/config — the backscatter_n0
+    # and omega_scale contracts consumers already rely on.
+    legacy = Dict{String, Any}(
+        "laser" => Dict{String, Any}("wavelength" => λ, "w0" => w₀),
+        "config" => Dict{String, Any}("backscatter_n0" => 398),
+    )
+    rl = units_from_manifest(legacy)
+    @test rl.n0 == 398
+    @test rl.defs["omega_laser"]["value"] ≈ ω
+    @test rl.preferred["frequency"] == "omega_bs"
+    legacy2 = Dict{String, Any}(
+        "laser" => Dict{String, Any}("wavelength" => λ / s, "w0" => w₀),
+        "config" => Dict{String, Any}("omega_scale" => s),
+    )
+    rl2 = units_from_manifest(legacy2)
+    @test rl2.n0 == 1
+    @test rl2.defs["omega_lab"]["value"] ≈ ω
+end

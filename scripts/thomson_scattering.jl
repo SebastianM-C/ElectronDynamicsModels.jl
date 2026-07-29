@@ -349,7 +349,12 @@ sharding = Dict{String, Any}("electrons" => ndev)
 # GPU telemetry → [gpu] (static device snapshot + power/util/VRAM stats over the field window).
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
 gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
-extra = Dict{String, Any}("timing" => timing, "sharding" => sharding)
+extra = Dict{String, Any}(
+    "timing" => timing, "sharding" => sharding,
+    # [units]: display-unit declarations beside the raw atomic-unit values (ω₁/λ₁/w₀ scales;
+    # omega_scale ≠ 1 adds the unscaled ω₀/λ₀ lab reference) — see RunManifests.units_section.
+    "units" => units_section(ω, λ, w₀; omega_scale = OMEGA_SCALE),
+)
 gpu === nothing || (extra["gpu"] = gpu)
 manifestfile = write_solver_manifest(
     OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs, extra,
