@@ -18,20 +18,22 @@ function TrajectoryInterpolant(sol::SciMLBase.AbstractODESolution, x_syms, u_sym
     x_idxs = SVector{4, Int}(variable_index.((sol,), collect(x_syms)))
     u_idxs = SVector{4, Int}(variable_index.((sol,), collect(u_syms)))
     itp = CubicSpline(sol.u, sol.t; extrapolation = ExtrapolationType.Extension)
-    # 4-acceleration 𝔞μ = duμ/dτ, sampled from the solver's OWN derivative
-    # interpolant at the knots (`sol(t, Val{1})`). Vern9's continuous extension is
-    # built to match the RHS D(u) = F_total/m, so these knot values are
-    # model-consistent — more accurate than differentiating `itp` afterwards,
-    # which would amplify the cubic spline's interpolation error. Storing them in
-    # a dedicated spline keeps evaluation a cheap, thread-safe lookup.
-    # ONLY valid for dense solutions: with `saveat` the solution interpolation is the
-    # stored-value LINEAR fallback, and `Val{1}` returns left-segment slopes ≈ a(t − h/2) —
-    # a half-knot delay that stamped a −n·π/16 global phase on every saveat-era harmonic
-    # map (root-caused 2026-07-24). On non-dense solutions differentiate the cubic spline
-    # instead: zero phase bias, mirroring lpwa.jl's a_itp construction.
-    a_knots = sol.dense ?
-        [SVector{4}(sol(t, Val{1})[u_idxs]) for t in sol.t] :
-        [SVector{4}(DataInterpolations.derivative(itp, t)[u_idxs]) for t in sol.t]
+    # 4-acceleration 𝔞μ = duμ/dτ: evaluate the model's OWN RHS at the saved states, so
+    # every knot is exact to the solver's state accuracy — for dense AND saveat solutions
+    # alike. Sampling AT the knot is phase-bias-free by construction (unlike the linear-
+    # fallback `Val{1}` slopes, whose half-knot delay stamped a −n·π/16 global phase on
+    # the saveat-era harmonic maps, root-caused 2026-07-24). This supersedes both earlier
+    # sources: `sol(t, Val{1})` (dense-only) and the cubic-spline derivative — the latter
+    # is one order below the state spline (O(h³) vs O(h⁴)) and its error was implicated
+    # in the small-a0 2ω floor's phase-locked aᶻ component. A spline through exact RHS
+    # samples restores O(h⁴), matching the state interpolant, and keeps evaluation a
+    # cheap, thread-safe lookup (the GPU path ships these coefficients unchanged).
+    f, p = sol.prob.f, sol.prob.p
+    a_knots = if SciMLBase.isinplace(sol.prob)
+        [SVector{4}((du = similar(u); f(du, u, p, t); du)[u_idxs]) for (u, t) in zip(sol.u, sol.t)]
+    else
+        [SVector{4}(f(u, p, t)[u_idxs]) for (u, t) in zip(sol.u, sol.t)]
+    end
     a_itp = CubicSpline(a_knots, sol.t; extrapolation = ExtrapolationType.Extension)
     sys = sol.prob.f.sys
     _world = _find_world(sys)
