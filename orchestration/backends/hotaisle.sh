@@ -234,8 +234,7 @@ run_campaign() {
     # covers this path. Same contract as run_cell.sh: only if ≥1 cell left a manifest.
     if [ -n "${PUBLISH_HOOK:-}" ] && ls "$OUT/$CAMPAIGN"/run_*.toml >/dev/null 2>&1; then
         log "publish: $CAMPAIGN → PUBLISH_HOOK"
-        ( CAMP="$OUT/$CAMPAIGN"; eval "$PUBLISH_HOOK" ) \
-            || notify rotating_light high "EDM publish FAILED" "$CAMPAIGN: PUBLISH_HOOK failed on $(hostname)"
+        ( CAMP="$OUT/$CAMPAIGN"; _run_publish_hook )
     fi
     notify white_check_mark default "EDM hotaisle done" "$CAMPAIGN → $OUT/$CAMPAIGN ; VM $NAME KEPT WARM — run teardown."
     ledger "$NAME" campaign_done "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"

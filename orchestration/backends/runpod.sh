@@ -368,8 +368,7 @@ monitor_and_download() {   # poll for DONE (crash = 3 consecutive dead liveness 
     # skips the RUNPOD_RSYNC_DOWNLOAD=0 volume path, where nothing lands in $OUT).
     if [ -n "${PUBLISH_HOOK:-}" ] && ls "$OUT/$CAMPAIGN"/run_*.toml >/dev/null 2>&1; then
         log "publish: $CAMPAIGN → PUBLISH_HOOK"
-        ( CAMP="$OUT/$CAMPAIGN"; eval "$PUBLISH_HOOK" ) \
-            || notify rotating_light high "EDM publish FAILED" "$CAMPAIGN: PUBLISH_HOOK failed on $(hostname)"
+        ( CAMP="$OUT/$CAMPAIGN"; _run_publish_hook )
     fi
     notify white_check_mark default "EDM runpod done" "$CAMPAIGN → $OUT/$CAMPAIGN ; pod $POD KEPT — run teardown."
     ledger "$POD" campaign_done "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"
