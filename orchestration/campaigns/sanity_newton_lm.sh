@@ -20,6 +20,7 @@ BASE=(
   EDM_DIRECT_READ=1
 )
 CELLS=(
-  "g1_newton_lm|EDM_GAMMA_EPS=0 EDM_HARMONICS=1,0.992,2"
+  # g1 rung dropped (2026-07-30): its original h1 map is already on-line (0.8% off, inside
+  # the ~4% linewidth) — only the shifted ε rung needs the anchor rerun.
   "e1em3_newton_lm|EDM_GAMMA_EPS=1e-3 EDM_HARMONICS=1,1.0936,1.0853"
 )
