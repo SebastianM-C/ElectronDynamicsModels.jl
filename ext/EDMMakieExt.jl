@@ -92,8 +92,11 @@ function ElectronDynamicsModels.plot_power_spectrum(
     fig = with_theme(theme_latexfonts()) do
         f = Figure(size = (1150, 560))
         ax = Axis(f[1, 1]; xlabel = xlab, ylabel = "Σ_pixels |Â_μ|²", yscale = log10, title)
-        # Explicit guides only where the run extracted harmonic bins (`marks`, in ω₁ units).
-        marks === nothing || vlines!(ax, collect(marks) ./ n0; color = (:gray, 0.6), linewidth = 1)
+        # Explicit guides only where the run extracted harmonic-map bins (`marks`, in ω₁ units) —
+        # styled to be READ against the peaks (an off-line bin means the h-map is a wing map),
+        # with a legend entry, instead of grid-gray wallpaper.
+        marks === nothing || vlines!(ax, collect(marks) ./ n0; color = (:crimson, 0.55),
+            linestyle = :dash, linewidth = 1.4, label = "harmonic-map bins")
         for c in axes(power_spec, 2)
             lines!(ax, xh, max.(power_spec[:, c], yfloor); label = labels[c],
                 color = colors[(c - 1) % length(colors) + 1],
