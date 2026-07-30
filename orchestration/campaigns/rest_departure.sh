@@ -1,7 +1,9 @@
 # campaigns/rest_departure.sh — inverse-Thomson γ→1⁺ ladder: departure from the rest case.
 # Reference config: bunched_resolved run b35964ec (γ=10, a0=0.3, LG p=2 m=−2, screen ±0.4 w₀
-# @401²) — but that screen was sized for the γ=10 boosted cone; near rest the emission is not
-# beam-collimated, so the screen here is 3× wider (±1.2 w₀) at 601².
+# @401²) — but that screen was sized for the γ=10 boosted cone; near rest the pattern fills
+# the PRODUCTION direct-scattering frame, so the screen is ±25 w₀ at 601² (finer pitch than
+# production 400², directly comparable to every thomson chip). Screen size is VRAM-free —
+# only Nx² counts; earlier ±1.2 w₀ variants were a boosted-cone-anchored over-zoom.
 # Physics: backscatter line at ω′/ω₀ = (1+β)/(1−β), β=√(1−γ⁻²) ⇒ shifts vs rest of
 #   +2.9% / +9.4% / +13.5% / +22.1% / +32.7% for ε = 1e-4 / 1e-3 / 2e-3 / 5e-3 / 1e-2 (γ = 1+ε).
 # Spectral resolution ≈ 1/(Ns/SPP = 375 periods) ≈ 0.27% ⇒ all rungs well separated; the
@@ -25,7 +27,7 @@ BASE=(
   EDM_INTERP_SAVEAT=16
   EDM_INITIAL_PHASE=-1.5707963267948966
   EDM_TSPAN_TAU=8 EDM_WINDOW=full
-  EDM_SCREEN_HW=1.2
+  EDM_SCREEN_HW=25
   EDM_DIRECT_READ=1
 )
 CELLS=(
