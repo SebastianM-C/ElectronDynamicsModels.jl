@@ -355,11 +355,11 @@ The first call writes the header (`run_id`/`reduced_at`/`host`/`reduce_commit` +
 `reduction` array); later calls append. The orchestration renames `.partial` →
 `<run_id>.reduced` atomically once every reducer for the cell succeeds, so the marker's PRESENCE
 is the drainer's "reduce complete" handshake and its CONTENTS enumerate the caches that must land
-durably on the storagebox for the run to be re-renderable WITHOUT the cube (publish-autonomy).
+durably on the archive store for the run to be re-renderable WITHOUT the cube (publish-autonomy).
 
 Invariant: every product a drain-path reducer emits must be re-renderable from a cache recorded
 here. A plot rendered directly from the cube with NO cache is invisible to this marker and breaks
-publish-autonomy — add a cache instead of relying on the cube (which is only on the workstation).
+publish-autonomy — add a cache instead of relying on the cube (which only exists where it was produced/archived).
 Today's drain-path reducers (harmonic_products, plot_screen_observables) cache every product.
 """
 function record_reduction!(dir::AbstractString, run_id, file::AbstractString)

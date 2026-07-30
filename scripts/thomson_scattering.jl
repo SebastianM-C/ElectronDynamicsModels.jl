@@ -31,7 +31,7 @@ include(joinpath(@__DIR__, "manifest.jl"))   # RunManifests: run_provenance, wri
 include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with the recovery path)
 include(joinpath(@__DIR__, "gpu_telemetry.jl"))   # with_gpu_sampler + gpu_manifest_section → the manifest [gpu] section
 
-# GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
+# GPU backend selected via ENV: "rocm" (default) or "cuda" (e.g. an H200 cluster node).
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
 if GPU_BACKEND == "cuda"
     using CUDA

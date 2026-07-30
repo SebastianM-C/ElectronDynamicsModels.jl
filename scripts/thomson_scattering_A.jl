@@ -15,7 +15,7 @@ using UUIDs
 
 include(joinpath(@__DIR__, "manifest.jl"))   # RunManifests: run_provenance, write_solver_manifest
 
-# GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
+# GPU backend selected via ENV: "rocm" (default) or "cuda" (e.g. an H200 cluster node).
 # The `using` for the unused backend never executes, so each platform only needs its own.
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
 if GPU_BACKEND == "cuda"

@@ -274,7 +274,7 @@ function write_harmonic_products(
     # raw leakage floor (apodizing it would hide the very thing it diagnoses).
     ps = power_spectrum(fld; window = nothing)
     # Cache the spectrum (~640 KB) next to the hmaps: the PNG is then re-renderable on any
-    # machine without the multi-GB cube — the 2026-07-19 ω_bs restyle needed a full workstation
+    # machine without the multi-GB cube — the 2026-07-19 ω_bs restyle needed a full local
     # cube pass for 24 runs solely because this array used to be discarded after plotting.
     serialize(joinpath(outdir, "powspec_$(run_tag).jls"),
         (; freqs = collect(freqs), ps, n0, harmonics = collect(harmonics), window = "none",

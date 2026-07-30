@@ -2,7 +2,7 @@
 # DRAIN — pull a campaign's reduced products (and optionally the big field cubes) from a RunPod
 # network VOLUME to THIS machine over the S3 API. Data-plane only: needs the [runpod] S3 profile in
 # ~/.aws + awscli — NOT the RunPod API token, a pod, or SSH — so it runs from ANY configured box
-# (poincare / workstation / VPS). The volume persists after teardown, so drain any time, repeatedly.
+# (any driving or archive machine). The volume persists after teardown, so drain any time, repeatedly.
 #
 #   bash orchestration/drain.sh <campaign> [dest] [--cubes]
 #     --cubes   also download field_*.jls cubes (present only if the run used KEEP_CUBE=1)
