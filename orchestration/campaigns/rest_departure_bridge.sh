@@ -23,13 +23,14 @@ BASE=(
   EDM_WINDOW=narrow
   EDM_DIRECT_READ=1
 )
-# Screen shrinks with the boost (per-cell): the forward cone narrows ∝ 1/γ, so hw = 25/γ w₀
-# keeps the pattern envelope filling the frame — continuous with segment 1/2's production
-# ±25 w₀ at γ→1, and still 6× wider than the γ=10 reference's ±0.4 detail zoom at the top.
+# Screen shrinks with the boost (per-cell), bounded by SPECKLE RESOLUTION, not just the cone:
+# the smallest screen feature is the disk-aperture grain at the UPSHIFTED wavelength,
+# grain′ = λZ/(2Rmax)/n0 = 5.47 w₀/n0 — so hw = min(25/γ, 60·grain′) keeps ≥5 px/grain at
+# 601². The γ=10 reference's ±0.4 w₀ was exactly this constraint in disguise (6.9 px/grain).
 CELLS=(
   "e5em1|EDM_GAMMA_EPS=0.5 EDM_SPP=32 EDM_TSPAN_TAU=10.666666666666666 EDM_SCREEN_HW=16.7"
   "e1e0|EDM_GAMMA_EPS=1 EDM_SPP=64 EDM_TSPAN_TAU=8 EDM_SCREEN_HW=12.5"
   "e2e0|EDM_GAMMA_EPS=2 EDM_SPP=128 EDM_TSPAN_TAU=5.333333333333333 EDM_SCREEN_HW=8.3"
-  "e4e0|EDM_GAMMA_EPS=4 EDM_SPP=512 EDM_TSPAN_TAU=3.2 EDM_SCREEN_HW=5"
-  "e9e0|EDM_GAMMA_EPS=9 EDM_SPP=2048 EDM_TSPAN_TAU=1.6 EDM_SCREEN_HW=2.5"
+  "e4e0|EDM_GAMMA_EPS=4 EDM_SPP=512 EDM_TSPAN_TAU=3.2 EDM_SCREEN_HW=3.3"
+  "e9e0|EDM_GAMMA_EPS=9 EDM_SPP=2048 EDM_TSPAN_TAU=1.6 EDM_SCREEN_HW=0.8"
 )
