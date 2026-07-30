@@ -148,3 +148,23 @@ if isfile(psa) && isfile(psb)
 else
     println("powspec caches not found beside both manifests — skipping the spectrum overlay")
 end
+
+# ── comparison-tab declaration: the [comparison] sidecar groups the pair and labels the
+# entry in the dashboard's comparison view (the 2-parent mirror_* chips above are routed
+# there automatically; this adds the human-readable framing, mirroring compare_lpwa's). ──
+using RunManifests: write_comparison
+let script_of(m) = get(m["provenance"], "script", "?"),
+        out = write_comparison(
+        OUTDIR; label = "mirror crosscheck: $(first(A.id, 8)) vs $(first(B.id, 8))",
+        differs = "propagation direction + screen side (z-mirror pair)",
+        sides = [
+            (label = "A: $(script_of(A.m))", dir = basename(dirname(toml_a)),
+                script = script_of(A.m), where = Dict("run" => first(A.id, 8))),
+            (label = "B: $(script_of(B.m))", dir = basename(dirname(toml_b)),
+                script = script_of(B.m), where = Dict("run" => first(B.id, 8))),
+        ],
+        filename = "comparison_mirror_$(first(A.id, 8))-$(first(B.id, 8)).toml",
+    )
+
+    println("comparison → ", basename(out))
+end
