@@ -20,6 +20,10 @@ BASE=(
   EDM_INITIAL_PHASE=-1.5707963267948966
   EDM_SCREEN_HW=25
   EDM_DIRECT_READ=1
+  # lpwa.jl's assert_committed refuses the VM's tree: the DRIVER rsyncs its orchestration/
+  # over the clone on every launch, and a driver checkout on an older branch leaves
+  # orchestration files modified (solver code untouched — provenance still records dirty).
+  EDM_ALLOW_DIRTY=1
 )
 CELLS=(
   "a1em2|EDM_A0=1e-2"
