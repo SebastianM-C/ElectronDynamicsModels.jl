@@ -142,6 +142,11 @@ end
     run_provenance(; run_id, gpu_backend, repo_dir, script=abspath(PROGRAM_FILE),
                    gpu_device=nothing) -> Dict{String,Any}
 
+Timestamps: `timestamp` is machine-LOCAL wall clock (legacy, timezone-less — cloud VMs
+stamp UTC, the workstation its own zone) and stays for back-compat; `timestamp_utc`
+(with an explicit `Z`) is the unambiguous instant — consumers that compare times across
+machines (e.g. the dashboard's known-issue cutoffs) should prefer it.
+
 The standard solver-run `[provenance]` block. `gpu_device` (e.g. `CUDA.name(CUDA.device())`)
 is recorded only when supplied — kept as an argument so this package stays free of any GPU
 backend dependency.
@@ -162,7 +167,7 @@ function run_provenance(;
         "cloud_provider" => get(ENV, "EDM_CLOUD_PROVIDER", "local"),
         "gpu_backend" => gpu_backend,
         "julia_version" => string(VERSION),
-        "timestamp" => string(now()),
+        "timestamp" => string(now()), "timestamp_utc" => string(now(UTC)) * "Z",
     )
     gpu_device === nothing || (prov["gpu_device"] = string(gpu_device))
     return prov
@@ -345,7 +350,7 @@ function write_derived(
         "schema_version" => MANIFEST_SCHEMA_VERSION,
         "provenance" => Dict{String, Any}(
             "script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
-            "host" => gethostname(), "timestamp" => string(now()),
+            "host" => gethostname(), "timestamp" => string(now()), "timestamp_utc" => string(now(UTC)) * "Z",
             (_script_repo_dirty() ? ("repo_dirty" => true,) : ())...,
         ),
         "derived" => d,
@@ -449,7 +454,7 @@ function write_comparison(
         "schema_version" => MANIFEST_SCHEMA_VERSION,
         "provenance" => Dict(
             "script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
-            "host" => gethostname(), "timestamp" => string(now())
+            "host" => gethostname(), "timestamp" => string(now()), "timestamp_utc" => string(now(UTC)) * "Z"
         ),
         "comparison" => comp,
     )
@@ -498,7 +503,7 @@ function write_summary(
         "schema_version" => MANIFEST_SCHEMA_VERSION,
         "provenance" => Dict(
             "script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
-            "host" => gethostname(), "timestamp" => string(now())
+            "host" => gethostname(), "timestamp" => string(now()), "timestamp_utc" => string(now(UTC)) * "Z"
         ),
         "summary" => d,
     )
@@ -525,7 +530,7 @@ function write_run_manifest(
     )
     prov = Dict{String, Any}(
         "run_id" => run_id, "script" => script, "repo_commit" => _script_repo_commit(),
-        "host" => gethostname(), "timestamp" => string(now())
+        "host" => gethostname(), "timestamp" => string(now()), "timestamp_utc" => string(now(UTC)) * "Z"
     )
     _script_repo_dirty() && (prov["repo_dirty"] = true)
     derived_from === nothing || (prov["derived_from"] = derived_from)
