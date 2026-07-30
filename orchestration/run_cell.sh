@@ -60,6 +60,29 @@ notify() {   # notify <tags> <priority> <title> <message>  — no-op unless NTFY
         || echo "[warn] ntfy post failed: $3" >&2
 }
 
+# Runs PUBLISH_HOOK with stdout+stderr captured to $CAMP/publish.log (appended — the log
+# travels with the campaign, the same way run_<uuid>.log does for reduces). On failure the
+# ntfy body carries the log tail so the alert says WHY, not just that it failed. Always
+# returns 0: a publish failure must not abort the campaign flow (backends run under set -e).
+# The name publish.log sits outside campaign-publish's metadata copy set
+# (run_*.toml/derived_*/comparison_*/summary_*/*.reduced/cells.tsv), so it never rides to
+# the union. Requires CAMP, CAMPAIGN, PUBLISH_HOOK in scope.
+_run_publish_hook() {
+    local plog="$CAMP/publish.log" tail3
+    # The eval runs in a SUBSHELL so a hook that calls `exit` cannot take the campaign
+    # shell down with it (the hook is untrusted config, not code we control).
+    if { echo "==== [$(date -u +%FT%TZ)] publish attempt: ${CAMPAIGN:-?} on $(hostname) ===="
+         ( eval "$PUBLISH_HOOK" ); } >>"$plog" 2>&1; then
+        return 0
+    fi
+    tail3=$(tail -n 3 "$plog" 2>/dev/null | cut -c1-400)   # size-capped; multi-line OK in the -d body
+    notify rotating_light high "EDM publish FAILED" \
+"${CAMPAIGN:-?}: PUBLISH_HOOK failed on $(hostname)
+log: $plog — last lines:
+${tail3:-<no output captured>}"
+    return 0
+}
+
 # Default reducer for overlap mode: turn a finished field cube into its products (the step the
 # solver does inline when EDM_SKIP_POSTPROCESS is unset). Runs BACKGROUNDED; appends to the cell's
 # run_<uuid>.log (so the reduce output travels with the run) and drops a <uuid>.reduced /
@@ -130,11 +153,10 @@ run_cell() {
         if [ "${REDUCE_OVERLAP:-0}" = 1 ]; then
             echo "  field done $label ($uuid) — reduce backgrounded (overlaps next cell)"
             rm -f "$CAMP/${uuid}.reduced" "$CAMP/${uuid}.reduce_failed"
-            # Cube policy applies the moment THIS cell's backgrounded reduce succeeds. Deferring
-            # it to reap_reduces (campaign end) accumulates every cell's cube on disk —
-            # n_cells × cube, not the ~2-cube steady state the overlap design intends (ENOSPC'd
-            # a 6 × 97 GiB campaign on a 200 GB container disk before this). reap_reduces keeps
-            # its rm as a no-op backstop; a FAILED reduce still keeps its cube for recovery.
+            # Cube policy applies the moment THIS cell's backgrounded reduce succeeds (deferring
+            # to reap accumulates n_cells × cube on disk — ENOSPC'd a 6 × 97 GiB campaign on a
+            # 200 GB container disk). reap keeps its rm as a no-op backstop; failed reduces
+            # still keep their cube for recovery.
             ( eval "${REDUCE_HOOK:-_reduce_cell \"$uuid\"}"
               [ -f "$CAMP/${uuid}.reduced" ] && [ "${KEEP_CUBE:-0}" != 1 ] &&
                   rm -f "$CAMP"/field_*_"$uuid".jls ) &
@@ -199,7 +221,6 @@ run_cells() {
     # (with $CAMP/$CAMPAIGN in scope) publishes just the verified cells (those with a .reduced marker).
     if [ -n "${PUBLISH_HOOK:-}" ] && [ "${CELLS_OK:-0}" -gt 0 ]; then
         echo "[$(date -u +%FT%TZ)] publish: $CAMPAIGN → PUBLISH_HOOK"
-        eval "$PUBLISH_HOOK" \
-            || notify rotating_light high "EDM publish FAILED" "${CAMPAIGN:-?}: PUBLISH_HOOK failed on $(hostname)"
+        _run_publish_hook
     fi
 }
