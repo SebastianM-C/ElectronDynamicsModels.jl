@@ -29,7 +29,6 @@ function ElectronDynamicsModels.plot_harmonic_grid(
     # Scope the LaTeX theme to this figure (no global set_theme! side effect).
     fig = with_theme(theme_latexfonts()) do
         f = Figure()
-        isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
         for c in 1:ncomp
             cmap_c = @view maps[c, :, :]
             data = transform.(cmap_c)
@@ -64,6 +63,9 @@ function ElectronDynamicsModels.plot_harmonic_grid(
                 Colorbar(gl[1, 2], hm; width = 10, height = panelsize)
             end
         end
+        # Title LAST: `f[0, :]`'s colon span resolves against the CURRENT layout extent — created
+        # before the panels it pins to the then-only column and bloats the gap after column 1.
+        isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
         # Breathing room between columns so each colorbar's tick labels clear the neighbouring panel.
         min(ncols, ncomp) > 1 && colgap!(f.layout, 26)
         resize_to_layout!(f)
@@ -154,7 +156,6 @@ function ElectronDynamicsModels.plot_phase_with_rings(
     end
     fig = with_theme(theme_latexfonts()) do
         f = Figure()
-        isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
         for c in 1:ncomp
             cmap_c = @view maps[c, :, :]
             ph = angle.(cmap_c)
@@ -198,6 +199,8 @@ function ElectronDynamicsModels.plot_phase_with_rings(
             c ≤ ntr && (fits[c] = (slope = sl, b = bb))
             c == 1 && !isempty(live) && axislegend(axr; labelsize = 8, position = :lt)
         end
+        # Title LAST — same span-freeze reason as plot_harmonic_grid.
+        isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
         resize_to_layout!(f)
         f
     end
@@ -220,7 +223,6 @@ function ElectronDynamicsModels.plot_phase_polar(
     end
     fig = with_theme(theme_latexfonts()) do
         f = Figure()
-        isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
         handles = Any[]; leglabels = String[]
         for c in 1:ncomp
             ph = angle.(@view maps[c, :, :])
@@ -234,6 +236,8 @@ function ElectronDynamicsModels.plot_phase_polar(
         end
         # PolarAxis has no `axislegend`; build one from the first panel's ring handles.
         isempty(handles) || Legend(f[1, ncomp + 1], handles, leglabels; labelsize = 8)
+        # Title LAST — same span-freeze reason as plot_harmonic_grid.
+        isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
         resize_to_layout!(f)
         f
     end

@@ -122,16 +122,19 @@ t_solve = @elapsed sol = solve(
 )
 @info "endpoints solved" t_solve N
 
-xμf = [s[sys.x][end] for s in sol]                 # final 4-position (layout-agnostic indexing)
+xμf = [s[sys.x][end] for s in sol.u]               # final 4-position (layout-agnostic indexing)
 ρ0 = [hypot(r[1], r[2]) for r in R₀] ./ w₀
 ρf = [hypot(x[2], x[3]) for x in xμf] ./ w₀
 pct_out = 100 * count(>(RHO_OUT), ρf) / N
-@info "expulsion" pct_out RHO_OUT maximum(ρf)
+Δρ = ρf .- ρ0
+maxΔρ = maximum(abs, Δρ)
+@info "expulsion" pct_out RHO_OUT maximum(ρf) maxΔρ
 
 # Closed-form LG transverse intensity |u_rel|² — p = 2, |m| = 2 only (the production mode;
-# same expression as inverse_thomson_scattering.jl's u_rel2 / write_ic_products' urel).
+# same expression as inverse_thomson_scattering.jl's u_rel2). ARGS IN w₀ UNITS: σ = ρ²/w₀²
+# is just x²+y² here — the plotting grid below is already normalized.
 u_rel2 = (p_radial == 2 && abs(m_azim) == 2) ?
-    (x, y) -> (σ = (x^2 + y^2) / w₀^2; (√12 * 2σ * (1 - 4σ / 3 + σ^2 / 3) * exp(-σ))^2) :
+    (x, y) -> (σ = x^2 + y^2; (√12 * 2σ * (1 - 4σ / 3 + σ^2 / 3) * exp(-σ))^2) :
     nothing
 
 # ── PNG 1: start disk over the LG intensity ──
@@ -155,11 +158,14 @@ println("saved → $png1")
 
 # ── PNG 2: final radius per starting point + histogram with the expulsion fraction ──
 fig2 = Figure(size = (1150, 520))
-ax1 = Axis(fig2[1, 1]; title = "final ρ by starting point",
+ax1 = Axis(fig2[1, 1]; title = "radial displacement Δρ by starting point",
     xlabel = "x₀ / w₀", ylabel = "y₀ / w₀", aspect = 1)
-sc = scatter!(ax1, x0w, y0w; color = ρf, colormap = :viridis, markersize = 5)
-Colorbar(fig2[1, 2], sc; label = "ρ_final / w₀")
-ax2 = Axis(fig2[1, 3]; title = @sprintf("final radii — %.1f%% beyond %.2f w₀", pct_out, RHO_OUT),
+crange = maxΔρ > 0 ? (-maxΔρ, maxΔρ) : (-1e-12, 1e-12)
+sc = scatter!(ax1, x0w, y0w; color = Δρ, colormap = :RdBu, colorrange = crange,
+    markersize = 5)
+Colorbar(fig2[1, 2], sc; label = "Δρ = (ρ_f − ρ₀) / w₀")
+ax2 = Axis(fig2[1, 3]; title = @sprintf("final radii — %.1f%% beyond %.2f w₀ (max |Δρ| = %.2g w₀)",
+        pct_out, RHO_OUT, maxΔρ),
     xlabel = "ρ_final / w₀", ylabel = "electrons")
 hist!(ax2, ρf; bins = 60, color = (:steelblue, 0.8))
 vlines!(ax2, [RHO_OUT]; color = :crimson, linestyle = :dash, linewidth = 1.5)
@@ -192,7 +198,8 @@ for (kind, label, png, pp, desc) in (
         ("finalpos", "final radii + expulsion fraction", basename(png2),
             Dict{String, Any}("N" => N, "gamma_eps" => γ - 1, "rho_out_w0" => RHO_OUT,
                 "pct_out" => round(pct_out; sigdigits = 3),
-                "max_rho_f_w0" => round(maximum(ρf); sigdigits = 4)),
+                "max_rho_f_w0" => round(maximum(ρf); sigdigits = 4),
+                "max_abs_drho_w0" => round(maxΔρ; sigdigits = 3)),
             "Endpoint-only trajectory re-solve: final transverse radius ρ_f = √(x²+y²) per " *
             "starting point, and the ρ_f/w₀ histogram with the fraction beyond " *
             "$(RHO_OUT) w₀ — the ponderomotive-expulsion estimate for whether electrons " *
