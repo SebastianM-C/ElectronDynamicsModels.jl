@@ -89,9 +89,12 @@ set -e
 [ -x "$HOME/.juliaup/bin/julia" ] || curl -fsSL https://install.julialang.org | sh -s -- --yes
 export PATH="$HOME/.juliaup/bin:$PATH"   # no JULIA_PKG_SERVER: the VM uses Julia's public default (registries also ride the depot cache)
 rm -rf EDM && git clone --quiet --branch "$BRANCH" "$REPO_URL" EDM
-# VM-local config.env (gitignored ⇒ not cloned): rocm local backend, no ntfy on the VM, and
+# VM-local config.env in ~/edm-orch — orchestration lives OUTSIDE the repo (driver-pushed)
+# so the clone stays pristine and cloud runs stop tripping the repo-dirty advisory;
+# EDM_REPO points run_cell back at the clone. rocm local backend, no ntfy on the VM, and
 # REDUCE_OVERLAP=1 so each cell's reduction overlaps the next cell's GPU compute (paid-time win).
-printf 'LOCAL_BACKEND=rocm\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=hotaisle\n' > EDM/orchestration/config.env
+mkdir -p "$HOME/edm-orch"
+printf 'LOCAL_BACKEND=rocm\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=hotaisle\nEDM_REPO=%s\n' "$HOME/EDM" > "$HOME/edm-orch/config.env"
 BK=rocm REPO_DIR="$HOME/EDM"; . EDM/orchestration/depot_cache.sh   # julia-actions/cache semantics (default ~/.julia depot)
 depot_cache_restore   # → DC_RESTORED = exact | prefix (instantiate tops it up) | miss (fresh build)
 ok=0; for i in 1 2 3; do
@@ -108,8 +111,8 @@ vm_reachable() { [ -f "$STATE" ] && read -r NAME IP PROV_TS MIN_MIN < "$STATE" &
 
 # Overlay the driver's current orchestration/ onto the VM clone (keeping the VM's own config.env),
 # so the VM runs THIS machine's framework + campaign files — even ones not yet pushed to BRANCH.
-push_orchestration() {
-    /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS" --exclude='config.env' "$ORCH/" hotaisle@"$IP":EDM/orchestration/
+push_orchestration() {   # the driver's orchestration/ → ~/edm-orch (outside the repo; VM's config.env kept)
+    /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS" --exclude='config.env' "$ORCH/" hotaisle@"$IP":edm-orch/
 }
 
 # Integrity-check the downloaded reduced products: md5 each non-cube file VM-vs-local; alert on any
@@ -212,7 +215,7 @@ run_campaign() {
     # juliaup's PATH lives in .bashrc/.profile, which a non-interactive ssh shell never sources — export
     # it here or every julia invocation dies rc=127. The { …; } grouping keeps the pidfile write INSIDE
     # the cd (a bare `A && B & C` backgrounds A&&B and runs C in the ssh cwd = $HOME).
-    ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && { nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
+    ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && { nohup bash \$HOME/edm-orch/backends/local.sh \$HOME/edm-orch/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
     start_drainer || notify warning high "EDM drainer NOT started" "$CAMPAIGN on $NAME: cubes stay on the VM only; teardown gate will hold them"
     log "polling for completion (DONE marker, or driver-death = crash so we don't poll forever while billing)…"
     until ssh_vm "grep -q '\\] ${CAMPAIGN} DONE' EDM/runs/${CAMPAIGN}.out 2>/dev/null"; do
