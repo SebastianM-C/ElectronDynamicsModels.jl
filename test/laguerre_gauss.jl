@@ -391,7 +391,7 @@ end
     # k = −ẑ beam violate ∇·B at the longitudinal-correction order (~2e-3 of the local
     # B-gradient scale) while +ẑ sat at the finite-difference floor (~1e-5). Central
     # differences, normalized by the max |∂B| over the stencil — dimensionless.
-    for kd in ([0, 0, 1], [0, 0, -1]), pol in (:circular_minus, :circular_plus)
+    for kd in ([0, 0, 1], [0, 0, -1]), pol in (:circular_minus, :circular_plus, :linear)
         @named world_mx = Worldline(:τ, :atomic)
         @named laser_mx = LaguerreGaussLaser(;
             wavelength = 1.0, a0 = 0.5, beam_waist = 75.0,
