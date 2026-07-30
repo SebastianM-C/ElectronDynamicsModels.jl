@@ -34,6 +34,9 @@ BASE=(
 # may sit — γ = 2.5, 3.5, 4. Same per-cell discipline: SPP ≳ 2.5× the line (h2 inside
 # Nyquist), TSPAN·γ = 16, hw = min(25/γ, 60·grain′), exact fractional anchors.
 CELLS=(
+  # γ=3 rerun: the original bridge cell tripped the hard Nyquist guard (default harmonics
+  # include 2n0=68; 2·68 > SPP 128). SPP=256 clears it with the exact anchors.
+  "e2e0_fix|EDM_GAMMA_EPS=2 EDM_SPP=256 EDM_TSPAN_TAU=5.333333333333333 EDM_SCREEN_HW=8.3 EDM_HARMONICS=33,33.9706,35,67.9412"
   "e1p5e0|EDM_GAMMA_EPS=1.5 EDM_SPP=128 EDM_TSPAN_TAU=6.4 EDM_SCREEN_HW=10 EDM_HARMONICS=22,22.9564,24,45.9128"
   "e2p5e0|EDM_GAMMA_EPS=2.5 EDM_SPP=256 EDM_TSPAN_TAU=4.571428571428571 EDM_SCREEN_HW=7.0 EDM_HARMONICS=46,46.9788,48,93.9576"
   "e3e0|EDM_GAMMA_EPS=3 EDM_SPP=256 EDM_TSPAN_TAU=4 EDM_SCREEN_HW=5.3 EDM_HARMONICS=61,61.9843,63,123.9686"
