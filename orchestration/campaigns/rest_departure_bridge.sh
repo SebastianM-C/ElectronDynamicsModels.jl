@@ -27,9 +27,12 @@ BASE=(
 # the smallest screen feature is the disk-aperture grain at the UPSHIFTED wavelength,
 # grain′ = λZ/(2Rmax)/n0 = 5.47 w₀/n0 — so hw = min(25/γ, 60·grain′) keeps ≥5 px/grain at
 # 601². The γ=10 reference's ±0.4 w₀ was exactly this constraint in disguise (6.9 px/grain).
+# The two lowest rungs carry exact fractional line anchors: the :narrow integer default
+# (n0±1, 2n0) rounds 2.1% / 0.5% off their lines — half a linewidth at γ=1.5. γ ≥ 2's
+# integers are ≤0.1% off; defaults suffice there. (Extraction is lab-frame n·ω₁ throughout.)
 CELLS=(
-  "e5em1|EDM_GAMMA_EPS=0.5 EDM_SPP=32 EDM_TSPAN_TAU=10.666666666666666 EDM_SCREEN_HW=16.7"
-  "e1e0|EDM_GAMMA_EPS=1 EDM_SPP=64 EDM_TSPAN_TAU=8 EDM_SCREEN_HW=12.5"
+  "e5em1|EDM_GAMMA_EPS=0.5 EDM_SPP=32 EDM_TSPAN_TAU=10.666666666666666 EDM_SCREEN_HW=16.7 EDM_HARMONICS=6,6.8542,8,13.7084"
+  "e1e0|EDM_GAMMA_EPS=1 EDM_SPP=64 EDM_TSPAN_TAU=8 EDM_SCREEN_HW=12.5 EDM_HARMONICS=13,13.9282,15,27.8564"
   "e2e0|EDM_GAMMA_EPS=2 EDM_SPP=128 EDM_TSPAN_TAU=5.333333333333333 EDM_SCREEN_HW=8.3"
   "e4e0|EDM_GAMMA_EPS=4 EDM_SPP=512 EDM_TSPAN_TAU=3.2 EDM_SCREEN_HW=3.3"
   "e9e0|EDM_GAMMA_EPS=9 EDM_SPP=2048 EDM_TSPAN_TAU=1.6 EDM_SCREEN_HW=0.8"
