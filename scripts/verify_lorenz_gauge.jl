@@ -447,7 +447,7 @@ end
 
 main()
 
-# ── derived-artifact metadata for the results dashboard (research.314159265.dev) ──
+# ── derived-artifact metadata for the results dashboard ──
 # Standalone analysis node: the N=2000 screens are recomputed (not read from a run), so the
 # parent run it verifies is passed via EDM_DERIVED_FROM to draw the lineage link. The run_id
 # is deterministic in the verification's params, so re-runs overwrite rather than duplicate.

@@ -77,6 +77,18 @@ function _script_repo_commit()
     end
 end
 
+# Dirty-tree marker for the same repo — write_run_manifest/write_derived record it so
+# standalone analysis nodes carry the SAME honesty flag as solver runs (a verifier node
+# produced from an uncommitted tree used to look clean while the solver runs beside it
+# were repo_dirty = true; spotted 2026-07-30 during the γ=1 crosscheck).
+function _script_repo_dirty()
+    return try
+        !isempty(readchomp(Cmd(["git", "-C", @__DIR__, "status", "--porcelain"])))
+    catch
+        false
+    end
+end
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Git provenance + clean-tree guard (shared by thomson_scattering.jl / _A / lpwa.jl,
 # which each previously carried their own copy). The model/laser parameter dict stays
@@ -331,9 +343,10 @@ function write_derived(
     description === nothing || (d["description"] = description)
     m = Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION,
-        "provenance" => Dict(
+        "provenance" => Dict{String, Any}(
             "script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
-            "host" => gethostname(), "timestamp" => string(now())
+            "host" => gethostname(), "timestamp" => string(now()),
+            (_script_repo_dirty() ? ("repo_dirty" => true,) : ())...,
         ),
         "derived" => d,
     )
@@ -355,11 +368,11 @@ The first call writes the header (`run_id`/`reduced_at`/`host`/`reduce_commit` +
 `reduction` array); later calls append. The orchestration renames `.partial` →
 `<run_id>.reduced` atomically once every reducer for the cell succeeds, so the marker's PRESENCE
 is the drainer's "reduce complete" handshake and its CONTENTS enumerate the caches that must land
-durably on the storagebox for the run to be re-renderable WITHOUT the cube (publish-autonomy).
+durably on the archive store for the run to be re-renderable WITHOUT the cube (publish-autonomy).
 
 Invariant: every product a drain-path reducer emits must be re-renderable from a cache recorded
 here. A plot rendered directly from the cube with NO cache is invisible to this marker and breaks
-publish-autonomy — add a cache instead of relying on the cube (which is only on the workstation).
+publish-autonomy — add a cache instead of relying on the cube (which only exists where it was produced/archived).
 Today's drain-path reducers (harmonic_products, plot_screen_observables) cache every product.
 """
 function record_reduction!(dir::AbstractString, run_id, file::AbstractString)
@@ -514,6 +527,7 @@ function write_run_manifest(
         "run_id" => run_id, "script" => script, "repo_commit" => _script_repo_commit(),
         "host" => gethostname(), "timestamp" => string(now())
     )
+    _script_repo_dirty() && (prov["repo_dirty"] = true)
     derived_from === nothing || (prov["derived_from"] = derived_from)
     outs = Dict{String, Any}("plots" => collect(plots))
     datafile === nothing || (outs["datafile"] = datafile)

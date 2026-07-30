@@ -66,7 +66,7 @@ include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products 
 include(joinpath(@__DIR__, "trajectory_products.jl"))   # gamma_trace + write_ic_products (shared with gammatau_backfill.jl)
 include(joinpath(@__DIR__, "gpu_telemetry.jl"))   # with_gpu_sampler + gpu_manifest_section → the manifest [gpu] section
 
-# GPU backend selected via ENV: "rocm" (workstation default) or "cuda" (issaf H200).
+# GPU backend selected via ENV: "rocm" (default) or "cuda" (e.g. an H200 cluster node).
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
 if GPU_BACKEND == "cuda"
     using CUDA
@@ -125,6 +125,13 @@ FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"t
 # cube (VRAM ∝ N_samples). Pair :narrow with EDM_SPP≈2048.
 const WINDOW = Symbol(get(ENV, "EDM_WINDOW", "full"))
 WINDOW in (:full, :narrow) || error("EDM_WINDOW must be \"full\" or \"narrow\", got \"$WINDOW\"")
+# Screen side: +1 = +Z (backscatter side, the production default); −1 = −Z (transmission
+# side). Only the ObserverScreen z-coordinate is signed — every timing/window formula uses
+# Z as a DISTANCE (arrival ≈ Z, hypot, corner spread), which is side-independent.
+# −1 exists for the γ=1 crosscheck against thomson_scattering.jl (laser +z, screen +Z):
+# with this laser reversed to −z, the transmission-side screen is the direct-run analogue.
+const SCREEN_ZSIGN = parse(Int, get(ENV, "EDM_SCREEN_ZSIGN", "1"))
+SCREEN_ZSIGN in (-1, 1) || error("EDM_SCREEN_ZSIGN must be 1 or -1, got $SCREEN_ZSIGN")
 const SCREEN_HW = parse(Float64, get(ENV, "EDM_SCREEN_HW", "25"))   # screen half-width in w₀; shrink (e.g. 5)
 #   in :narrow mode to cut the flat-screen geometric arrival spread (∝ hw²/Z) ⇒ shorter window ⇒ less VRAM.
 const WINDOW_LEAD = parse(Float64, get(ENV, "EDM_WINDOW_LEAD", "0.5"))   # :narrow lead-in before the burst (λ units)
@@ -151,7 +158,7 @@ BUNCH_NB >= 0 || error("EDM_BUNCH_NB must be ≥ 0, got $BUNCH_NB")
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
-@info "Inverse-Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 GAMMA TSPAN_TAU WINDOW SCREEN_HW WINDOW_LEAD WINDOW_TAIL BUNCH_NB BUNCH_L SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
+@info "Inverse-Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 GAMMA TSPAN_TAU WINDOW SCREEN_HW SCREEN_ZSIGN WINDOW_LEAD WINDOW_TAIL BUNCH_NB BUNCH_L SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
 const T_START = time()   # wall-clock start → [timing].total in the manifest
 
 # Laser parameters
@@ -438,7 +445,7 @@ x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
 screen = ObserverScreen(
     LinRange(-screen_hw, screen_hw, Nx),
     LinRange(-screen_hw, screen_hw, Ny),
-    Z,
+    SCREEN_ZSIGN * Z,   # signed coordinate; Z stays a distance in every window formula
     x⁰_samples;
     c,
 )
@@ -547,6 +554,7 @@ config = Dict{String, Any}(
     "bunch_chirp" => BUNCH_CHIRP,      # EDM_BUNCH_CHIRP knob (ponderomotive pre-compensation scale)
     "harmonics" => collect(HARMONICS), # harmonic bins the maps extract (≈4γ²ω for :narrow)
     "backscatter_n0" => N0,            # on-axis backscatter fundamental ω_s/ω = (1+β)/(1−β) ≈ 4γ²
+    "screen_zsign" => SCREEN_ZSIGN,    # screen side: +1 backscatter (+Z), −1 transmission (−Z)
     "accumulation_alg" => (ACCUM_ALG == "newton" ? "GPUKernelNewton" : "GPUKernelRK4"),   # dashboard canonical name
     "newton_iters" => NEWTON_ITERS,    # recorded UNCONDITIONALLY (rk4 runs too): a mixed rk4/newton
     #   pool otherwise turns newton_iters into a sweep axis whose rk4 members lack the key, and the
@@ -584,7 +592,7 @@ setup = Dict{String, Any}(
     "τi" => τi,
     "τf" => τf,
     "Rmax" => Rmax,
-    "Z" => Z,
+    "Z" => SCREEN_ZSIGN * Z,   # signed screen z-coordinate (the distance is |Z|)
     "screen_hw" => screen_hw,          # screen half-width (a.u.); = SCREEN_HW·w₀
     "x0_start" => x⁰_start,            # observer-time window start (a.u.); Z-relative offset ⇒ [config].window
 )   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is the integration window + screen geometry

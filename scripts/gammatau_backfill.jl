@@ -8,7 +8,7 @@
 #   • the classical|LL γ(τ)/γ₀ comparison chips (ll_system_chips.gamma_drain_product)
 # and enrich each run's .reduced marker with the new caches (atomic tmp+mv; these runs'
 # reduce already finished, so appending to the final marker is safe), so stage_products
-# ships them to the storagebox and build_status tracks them.
+# ships them to the archive store and build_status tracks them.
 #
 #   julia +release --project=scripts -t auto scripts/gammatau_backfill.jl <campaign_dir>
 #

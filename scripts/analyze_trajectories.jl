@@ -31,8 +31,7 @@
 #
 # ENV knobs (all optional):
 #   EDM_ANALYSIS         "trajectories" (default) or "spline-error"
-#   EDM_SOURCE_CAMPAIGN  dir of run_*.toml to take parameters from
-#                        (default /storage/pool/smc/thomson_runs/field_campaign_cm_phi0)
+#   EDM_SOURCE_CAMPAIGN  dir of run_*.toml to take parameters from (required)
 #   EDM_SOURCE_RUN       substring of the manifest filename to select specific run(s); "" = all.
 #                        Useful for spline-error on campaigns like floor_probe whose manifests
 #                        differ only in [config].interp_saveat (ignored on reconstruction).
@@ -94,7 +93,7 @@ const c = 137.03599908330932
 # ── Configuration (ENV-overridable) ──
 const ANALYSIS = get(ENV, "EDM_ANALYSIS", "trajectories")      # "trajectories" | "spline-error"
 ANALYSIS in ("trajectories", "spline-error") || error("EDM_ANALYSIS must be \"trajectories\" or \"spline-error\", got \"$ANALYSIS\"")
-const SOURCE_CAMPAIGN = get(ENV, "EDM_SOURCE_CAMPAIGN", "/storage/pool/smc/thomson_runs/field_campaign_cm_phi0")
+const SOURCE_CAMPAIGN = get(ENV, "EDM_SOURCE_CAMPAIGN", "")   # campaign dir of run_*.toml (required)
 const SOURCE_RUN = get(ENV, "EDM_SOURCE_RUN", "")              # manifest-filename substring filter; "" = all
 const PHASE_SPEC = get(ENV, "EDM_INITIAL_PHASE", "manifest")   # "manifest" ⇒ each run's own φ₀; or a numeric override
 const COORDS = get(ENV, "EDM_COORDS", "absolute")                  # "absolute" | "displacement"
@@ -878,6 +877,7 @@ function analyze_spline_error(mfile)
 end
 
 # ── Drive over the source campaign ──
+isempty(SOURCE_CAMPAIGN) && error("set EDM_SOURCE_CAMPAIGN to the campaign dir holding the run_*.toml manifests")
 isdir(SOURCE_CAMPAIGN) || error("EDM_SOURCE_CAMPAIGN is not a directory: $SOURCE_CAMPAIGN")
 manifests = sort([joinpath(SOURCE_CAMPAIGN, f) for f in readdir(SOURCE_CAMPAIGN)
                   if startswith(f, "run_") && endswith(f, ".toml") && contains(f, SOURCE_RUN)])

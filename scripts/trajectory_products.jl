@@ -42,7 +42,7 @@ end
 # from [config], but the cache pins the EXACT as-run xμ₀/u₀ (reconstruction drift becomes
 # visible instead of silent) and lets the IC chip re-render anywhere without an EDM solve —
 # the same publish-autonomy contract as the γ(τ) trace (both are enumerated in the .reduced
-# marker at reduce time). `datafile` on the sidecar ships the cache to the storagebox and
+# marker at reduce time). `datafile` on the sidecar ships the cache to the archive store and
 # puts a /data download URL on the chip. Cheap (N×6 floats ≈ 100 KB at N = 2000): always on.
 #
 # The chip is MODE-AWARE, because unbunched runs (nb = 0, most campaigns) have Δz ≡ 0 and a
