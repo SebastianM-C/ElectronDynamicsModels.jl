@@ -45,30 +45,59 @@ ti = argmin(scores)
 tname, tf = transforms[ti]
 TB = tf(B.M)
 
-D = abs.(A.M .- TB)                      # per-component |F_A − T(F_B)|
-relL2 = [sqrt(sum(abs2, D[c, :, :]) / max(sum(abs2, A.M[c, :, :]), eps())) for c in 1:6]
+# June-convention presentation (compare_lpwa_vs_thomson.jl): per-panel |Δ| normalized to the
+# numeric side's own peak (dimensionless colorbar), panel titles carry ‖Δ‖₂/‖F‖₂ — norms,
+# not per-pixel ratios, so vortex nodal lines can't blow the display up. This script is the
+# MIRROR-AWARE sibling: T is applied to side B before differencing.
+using LinearAlgebra: norm
+
+function describe(mfile)
+    m = TOML.parsefile(mfile)
+    s = basename(get(m["provenance"], "script", "?"))
+    cfg = m["config"]
+    base = startswith(s, "lpwa") ? "LPWA analytic" :
+        "inverse " * (get(cfg, "accumulation_alg", "GPUKernelRK4") == "GPUKernelNewton" ? "Newton" : "RK4")
+    a0 = get(cfg, "a0", nothing)
+    eps = get(cfg, "gamma_eps", Float64(get(cfg, "gamma", 1.0)) - 1.0)
+    d = base * (a0 === nothing ? "" : " a₀=$(a0)")
+    eps == 0 || (d *= " ε=$(eps)")
+    return d
+end
+descA, descB = describe(abspath(ARGS[1])), describe(abspath(ARGS[2]))
 
 pair = "$(first(A.id, 8))-$(first(B.id, 8))"
-out = joinpath(A.dir, "xchk_dmap_$(pair).png")
-plot_harmonic_grid(
-    D, A.x, A.y;
-    w₀ = A.w₀, labels = COMPLABELS, transform = identity,
-    title = @sprintf("|Δ field| at %gω₁ — %s vs %s (T = %s)", Float64(A.n), first(A.id, 8), first(B.id, 8), tname),
-    outfile = out,
-)
+xw, yw = A.x ./ A.w₀, A.y ./ A.w₀
+fig = Figure(size = (1080, 680))
+Label(fig[0, 1:3], @sprintf("%s vs %s — |ΔF| at %gω₁  (T = %s)", descA, descB, Float64(A.n), tname); fontsize = 17)
+relL2 = Float64[]
+for comp in 1:6
+    a = A.M[comp, :, :]
+    b = TB[comp, :, :]
+    d = norm(a .- b)
+    nrm = norm(a)
+    push!(relL2, nrm == 0 ? 0.0 : d / nrm)
+    r, c = fldmod1(comp, 3)
+    max_a = maximum(abs, a)
+    scale = iszero(max_a) ? 1.0 : max_a
+    ax = Axis(fig[r, c][1, 1]; title = @sprintf("%s   ‖Δ‖/‖F‖=%.3g", COMPLABELS[comp], relL2[comp]),
+        xlabel = "x/w₀", ylabel = "y/w₀", aspect = DataAspect())
+    hm = heatmap!(ax, xw, yw, abs.(a .- b) ./ scale; colormap = :inferno)
+    Colorbar(fig[r, c][1, 2], hm; label = "|Δ| / peak|F_A|")
+end
+out = joinpath(A.dir, @sprintf("compare_xchk_h%g_%s.png", Float64(A.n), pair))
+save(out, fig)
 println("saved → $out   transform=$tname   relL2=", join([@sprintf("%s:%.3g", COMPLABELS[c], relL2[c]) for c in 1:6], " "))
 
 open(joinpath(A.dir, "derived_xchk_dmap_$(pair).toml"), "w") do io
     TOML.print(io, Dict(
         "schema_version" => 1,
         "derived" => Dict(
-            "depends_on" => [A.id, B.id], "kind" => "xchk_dmap",
-            "label" => "|Δ field| maps at $(A.n)ω₁",
+            "depends_on" => [A.id, B.id], "kind" => "comparison",
+            "label" => "$(descA) vs $(descB) |ΔF|",
             "plot" => basename(out), "source" => basename(ARGS[1]),
-            "description" => "Per-component complex-difference magnitude |F_A − T(F_B)| at the " *
-                "shared harmonic bin, best transform T = $(tname) (L2 on |E⊥|). The map-level " *
-                "view of the crosscheck's powspec verdicts: structure in these panels is WHERE " *
-                "the two runs disagree.",
+            "description" => "Per-component |F_A − T(F_B)| at the shared $(A.n)ω₁ bin, each panel " *
+                "normalized to that component's own peak (June compare_lpwa_vs_thomson convention); " *
+                "panel titles carry ‖Δ‖₂/‖F‖₂. Best transverse transform T = $(tname).",
         ),
         "plot_params" => Dict("transform" => tname, "n" => Float64(A.n),
             ["relL2_$(COMPLABELS[c])" => round(relL2[c]; sigdigits = 3) for c in 1:6]...),
