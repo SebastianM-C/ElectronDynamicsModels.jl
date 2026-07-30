@@ -69,6 +69,16 @@ function write_ic_products(xμ0, u0, dz, outdir, run_tag; γ0, λ, w₀, nb, l, 
         xlabel = "x  [λ]", ylabel = "y  [λ]", aspect = 1)
     sc = scatter!(ax1, x, y; color = urel === nothing ? dzλ : urel, markersize = 5,
         colormap = urel === nothing ? :viridis : :inferno)
+    if urel !== nothing
+        # LG mode intensity contours over the disk — the continuous field the points sample
+        # (same closed form as the point coloring; axes are in λ, σ wants w₀).
+        ext = 1.08 * max(maximum(abs, x), maximum(abs, y))
+        gr = range(-ext, ext, length = 301)
+        amp = (xx, yy) -> (σ = (xx^2 + yy^2) * λ^2 / w₀^2;
+            abs(√12 * 2σ * (1 - 4σ / 3 + σ^2 / 3) * exp(-σ)))
+        contour!(ax1, gr, gr, [amp(xx, yy) for xx in gr, yy in gr];
+            levels = 6, color = (:gray40, 0.6), linewidth = 0.8)
+    end
     Colorbar(fig[1, 2], sc; label = urel === nothing ? "Δz  [λ]" : "|u_rel|")
     if nb != 0
         ax2 = Axis(fig[1, 3]; title = "arrival surface: lens parabola + helix spread",
