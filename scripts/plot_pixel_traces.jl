@@ -143,8 +143,12 @@ traj_of = Dict(zip(solve_idx, trajs))
 
 # ── Mini-screen: the requested pixels along +x (center first), production time window ──
 xs = [f * HALFW * w₀ for f in RADII]
+# Prefer the RECORDED window start (setup.x0_start, present on current manifests): exact for
+# both :full and :narrow (burst-centred) windows — the corner-anchor formula is the pre-knob
+# reconstruction fallback and is wrong for narrow runs.
 x⁰_samples = range(
-    start = c * τi + hypot(Z, HALFW * w₀ + Rmax), step = c * (2π / ω / spp),
+    start = haskey(m["setup"], "x0_start") ? Float64(m["setup"]["x0_start"]) :
+        c * τi + hypot(Z, HALFW * w₀ + Rmax), step = c * (2π / ω / spp),
     length = N_samples,
 )
 screen = ObserverScreen(xs, [0.0], Z, x⁰_samples; c)   # Ny = 1: one y = 0 row of pixels
