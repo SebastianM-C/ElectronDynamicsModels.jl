@@ -341,14 +341,17 @@ end
         @test rd.B ≈ rp.B
     end
 
-    # Sign-flip relations between +ẑ and −ẑ propagation.
-    # The substitution z → kz_sign·z + overall sign on E_z, B_x, B_y, B_z gives:
+    # Sign-flip relations between +ẑ and −ẑ propagation: the PARITY image of the +ẑ
+    # beam. E is a polar vector, B is axial, so under z → −z:
     #   E_x_neg(x,y,z,t) =  E_x_pos(x,y,−z,t)
     #   E_y_neg(x,y,z,t) =  E_y_pos(x,y,−z,t)
     #   E_z_neg(x,y,z,t) = −E_z_pos(x,y,−z,t)
     #   B_x_neg(x,y,z,t) = −B_x_pos(x,y,−z,t)
     #   B_y_neg(x,y,z,t) = −B_y_pos(x,y,−z,t)
-    #   B_z_neg(x,y,z,t) = −B_z_pos(x,y,−z,t)
+    #   B_z_neg(x,y,z,t) = +B_z_pos(x,y,−z,t)   # axial: NO flip (∇·B = 0 fixes it)
+    # This test previously pinned B_z_neg = −B_z_pos — a parity error that made the
+    # reversed beam non-Maxwellian (∇·B ≠ 0 at the longitudinal-correction order);
+    # caught by the γ=1 direct/inverse crosscheck 2026-07-30.
     # Use circular polarization so E_y is nontrivial → exercises the B_x sign too.
     @named world_pc = Worldline(:τ, :atomic)
     @named laser_pos_c = LaguerreGaussLaser(;
@@ -379,6 +382,35 @@ end
         @test r_neg.E[3] ≈ -r_pos_at_neg.E[3] atol = 1e-10
         @test r_neg.B[1] ≈ -r_pos_at_neg.B[1] atol = 1e-10
         @test r_neg.B[2] ≈ -r_pos_at_neg.B[2] atol = 1e-10
-        @test r_neg.B[3] ≈ -r_pos_at_neg.B[3] atol = 1e-10
+        @test r_neg.B[3] ≈ +r_pos_at_neg.B[3] atol = 1e-10
+    end
+end
+
+@testset "beam is Maxwellian: ∇·B = 0 numerically, both k̂ and helicities" begin
+    # Guard for the 2026-07-30 Bz parity bug class: an overall kz_sign on B[3] made every
+    # k = −ẑ beam violate ∇·B at the longitudinal-correction order (~2e-3 of the local
+    # B-gradient scale) while +ẑ sat at the finite-difference floor (~1e-5). Central
+    # differences, normalized by the max |∂B| over the stencil — dimensionless.
+    for kd in ([0, 0, 1], [0, 0, -1]), pol in (:circular_minus, :circular_plus)
+        @named world_mx = Worldline(:τ, :atomic)
+        @named laser_mx = LaguerreGaussLaser(;
+            wavelength = 1.0, a0 = 0.5, beam_waist = 75.0,
+            radial_index = 2, azimuthal_index = -2, world = world_mx,
+            temporal_profile = :constant, polarization = pol, k_direction = kd)
+        fe_mx = FieldEvaluator(laser_mx)
+        h = 0.02
+        for (x0, x, y, z) in ((0.1, 52.5, 22.5, 0.2), (0.5, 30.0, 67.5, -1.5))
+            divB = 0.0
+            scale = 0.0
+            for i in 1:3
+                dp = zeros(4)
+                dp[i + 1] = h
+                rp = fe_mx([x0, x, y, z] .+ dp)
+                rm = fe_mx([x0, x, y, z] .- dp)
+                divB += (rp.B[i] - rm.B[i]) / 2h
+                scale = max(scale, maximum(abs.(rp.B .- rm.B)) / 2h)
+            end
+            @test abs(divB) / scale < 5e-4
+        end
     end
 end

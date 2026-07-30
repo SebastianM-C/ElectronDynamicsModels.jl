@@ -558,9 +558,16 @@ Reference: Allen et al., Phys. Rev. A 45, 8185 (1992)
         B[1] ~ -kz_sign * E[2] / c
         B[2] ~ kz_sign * E[1] / c
 
-        # Bz component: longitudinal magnetic field along k̂; lab z-component
-        # picks up an overall kz_sign analogously to Ez.
-        B[3] ~ kz_sign * real(
+        # Bz component: longitudinal magnetic field. Unlike Ez (polar vector — its lab
+        # z-component flips under k̂ → −ẑ), B is an AXIAL vector: the parity image keeps
+        # +Bz while (Bx, By) flip via k̂ × E above, and ∇·B = 0 then fixes Bz's sign with
+        # NO overall kz_sign. The former overall kz_sign here made the reversed beam
+        # non-Maxwellian (|∇·B| ~ 2e-3 of the local gradient scale vs ~1e-5 for +ẑ,
+        # measured 2026-07-30) — caught by the γ=1 direct/inverse crosscheck, where the
+        # radiated Ez/Bz maps disagreed at O(1) while every transverse channel matched.
+        # The internal z → kz_sign·z curvature/Gouy substitutions below stay — they ARE
+        # the correct mirroring of the beam structure.
+        B[3] ~ real(
             -im / ω * (
                 # Term 1: m-dependent term
                 -(
