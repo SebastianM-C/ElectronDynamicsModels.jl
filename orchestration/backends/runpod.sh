@@ -238,8 +238,12 @@ export PATH="$HOME/.juliaup/bin:$PATH"   # no JULIA_PKG_SERVER: fresh pod uses J
 rm -rf ~/EDM && git clone --quiet --branch "$BRANCH" "$REPO_URL" ~/EDM   # fresh clone = always current
 if [ -n "$HAS_VOL" ]; then mkdir -p /workspace/runs && ln -sfn /workspace/runs ~/EDM/runs   # cubes persist on the volume
 else mkdir -p ~/EDM/runs; fi
-printf 'LOCAL_BACKEND=%s\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=JULIA_DEPOT_PATH=%s\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=runpod\n' \
-    "$BK" "$JULIA_DEPOT_PATH" > ~/EDM/orchestration/config.env
+# Orchestration lives OUTSIDE the repo (~/edm-orch, driver-pushed) so the clone stays
+# pristine and cloud runs stop tripping the repo-dirty advisory; EDM_REPO points run_cell
+# back at the clone (config.env's documented override).
+mkdir -p ~/edm-orch
+printf 'LOCAL_BACKEND=%s\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=JULIA_DEPOT_PATH=%s\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=runpod\nEDM_REPO=%s\n' \
+    "$BK" "$JULIA_DEPOT_PATH" "$HOME/EDM" > ~/edm-orch/config.env
 REPO_DIR=~/EDM; . ~/EDM/orchestration/depot_cache.sh   # julia-actions/cache semantics over the rsync store
 depot_cache_restore   # → DC_RESTORED = exact | prefix (instantiate tops it up) | miss (fresh build)
 ok=0; for i in 1 2 3; do
@@ -261,8 +265,8 @@ pod_reachable() {
     ssh_vm true 2>/dev/null
 }
 
-push_orchestration() {   # overlay the driver's orchestration/ (keeping the pod's config.env)
-    /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS -p $PORT" --exclude='config.env' "$ORCH/" root@"$IP":EDM/orchestration/
+push_orchestration() {   # the driver's orchestration/ → ~/edm-orch (outside the repo; pod's config.env kept)
+    /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS -p $PORT" --exclude='config.env' "$ORCH/" root@"$IP":edm-orch/
 }
 
 download_verify() {   # md5 each non-cube product pod-vs-local (subdirs included); alert on mismatch/missing
@@ -408,7 +412,7 @@ run_campaign() {
         notify hourglass_flowing_sand default "EDM runpod started" "$CAMPAIGN on $POD ($BACKEND @$DC)"
         ledger "$POD" campaign_start "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"
         log "launching $CAMPAIGN on the pod via the local backend ($BACKEND), detached…"
-        ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && rm -f runs/${CAMPAIGN}.out runs/${CAMPAIGN}.pid && { nohup bash orchestration/backends/local.sh orchestration/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
+        ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && rm -f runs/${CAMPAIGN}.out runs/${CAMPAIGN}.pid && { nohup bash \$HOME/edm-orch/backends/local.sh \$HOME/edm-orch/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
     fi
     start_drainer || notify warning high "EDM drainer NOT started" "$CAMPAIGN on $POD: cubes stay on the pod only; teardown gate will hold them"
     monitor_and_download

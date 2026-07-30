@@ -1,6 +1,7 @@
 using Test
 using RunManifests
 using TOML
+using Dates
 
 @testset "expand_sweep — run matrix" begin
     # single axis: NX fixed, A0 swept over two values
@@ -206,4 +207,20 @@ end
     rl2 = units_from_manifest(legacy2)
     @test rl2.n0 == 1
     @test rl2.defs["omega_lab"]["value"] ≈ ω
+end
+
+@testset "timestamp_utc in every provenance block" begin
+    prov = run_provenance(; run_id = "ts", gpu_backend = "rocm", repo_dir = pkgdir(RunManifests))
+    @test haskey(prov, "timestamp_utc")
+    @test endswith(prov["timestamp_utc"], "Z")
+    # parseable after stripping the explicit-UTC suffix, and within a minute of now(UTC)
+    t = DateTime(chop(prov["timestamp_utc"]))
+    @test abs(Dates.value(now(UTC) - t)) < 60_000
+    dir = mktempdir()
+    write_run_manifest(dir; run_id = "ts", script = "x.jl")
+    m = TOML.parsefile(joinpath(dir, "run_ts.toml"))
+    @test endswith(m["provenance"]["timestamp_utc"], "Z")
+    write_derived(dir; kind = "k", label = "l", run_id = "ts", plot = "p.png", source = "s")
+    d = TOML.parsefile(joinpath(dir, only(filter(f -> startswith(f, "derived_"), readdir(dir)))))
+    @test endswith(d["provenance"]["timestamp_utc"], "Z")
 end
