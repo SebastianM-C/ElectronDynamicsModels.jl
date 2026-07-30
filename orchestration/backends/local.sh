@@ -12,6 +12,12 @@ CAMPAIGN_FILE="${1:?usage: local.sh <campaign.sh>}"
 . "$CAMPAIGN_FILE"                                      # sets CAMPAIGN, SCRIPT, BASE, CELLS
 
 BACKEND="${LOCAL_BACKEND:-cuda}"
+# Local runs keep their cubes by default: the cube enables post-hoc analysis (new harmonic
+# bins, forensics) without a GPU rerun, and the only cost is local disk — archive big ones
+# to a bulk store outside runs/ (a PUBLISH_HOOK, if configured, should cap oversized
+# uploads). Campaigns and the environment can still override (KEEP_CUBE=0); the cloud
+# backends keep their drain-gated retention flow.
+KEEP_CUBE="${KEEP_CUBE:-1}"
 JL=(julia +"${JULIA_CHANNEL:-release}" --startup=no -t "${LOCAL_JL_THREADS:-auto}")
 PREENV=(); [ -n "${LOCAL_PREENV:-}" ] && read -r -a PREENV <<< "$LOCAL_PREENV"
 CAMP="$REPO/runs/$CAMPAIGN"

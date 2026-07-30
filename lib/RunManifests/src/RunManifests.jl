@@ -77,6 +77,18 @@ function _script_repo_commit()
     end
 end
 
+# Dirty-tree marker for the same repo — write_run_manifest/write_derived record it so
+# standalone analysis nodes carry the SAME honesty flag as solver runs (a verifier node
+# produced from an uncommitted tree used to look clean while the solver runs beside it
+# were repo_dirty = true; spotted 2026-07-30 during the γ=1 crosscheck).
+function _script_repo_dirty()
+    return try
+        !isempty(readchomp(Cmd(["git", "-C", @__DIR__, "status", "--porcelain"])))
+    catch
+        false
+    end
+end
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Git provenance + clean-tree guard (shared by thomson_scattering.jl / _A / lpwa.jl,
 # which each previously carried their own copy). The model/laser parameter dict stays
@@ -331,9 +343,10 @@ function write_derived(
     description === nothing || (d["description"] = description)
     m = Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION,
-        "provenance" => Dict(
+        "provenance" => Dict{String, Any}(
             "script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
-            "host" => gethostname(), "timestamp" => string(now())
+            "host" => gethostname(), "timestamp" => string(now()),
+            (_script_repo_dirty() ? ("repo_dirty" => true,) : ())...,
         ),
         "derived" => d,
     )
@@ -514,6 +527,7 @@ function write_run_manifest(
         "run_id" => run_id, "script" => script, "repo_commit" => _script_repo_commit(),
         "host" => gethostname(), "timestamp" => string(now())
     )
+    _script_repo_dirty() && (prov["repo_dirty"] = true)
     derived_from === nothing || (prov["derived_from"] = derived_from)
     outs = Dict{String, Any}("plots" => collect(plots))
     datafile === nothing || (outs["datafile"] = datafile)
