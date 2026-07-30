@@ -557,7 +557,10 @@ config = Dict{String, Any}(
     "bunch_l" => BUNCH_L,
     "bunch_chirp" => BUNCH_CHIRP,      # EDM_BUNCH_CHIRP knob (ponderomotive pre-compensation scale)
     "harmonics" => collect(HARMONICS), # harmonic bins the maps extract (≈4γ²ω for :narrow)
-    "backscatter_n0" => N0,            # on-axis backscatter fundamental ω_s/ω = (1+β)/(1−β) ≈ 4γ²
+    # EXACT ratio, not the rounded N0: near-rest ladders have ω_s/ω ∈ (1, 3.5) where the
+    # integer round collapses distinct rungs onto "1" (γ≫1 rounding was harmless: 397.99→398).
+    # N0 stays integer for the :narrow defaults; this key is the dashboard/display value.
+    "backscatter_n0" => (1 + β) / (1 - β),   # on-axis backscatter fundamental ω_s/ω ≈ 4γ²
     "screen_zsign" => SCREEN_ZSIGN,    # screen side: +1 backscatter (+Z), −1 transmission (−Z)
     "accumulation_alg" => (ACCUM_ALG == "newton" ? "GPUKernelNewton" : "GPUKernelRK4"),   # dashboard canonical name
     "newton_iters" => NEWTON_ITERS,    # recorded UNCONDITIONALLY (rk4 runs too): a mixed rk4/newton
