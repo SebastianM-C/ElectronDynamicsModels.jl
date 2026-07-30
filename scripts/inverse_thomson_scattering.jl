@@ -191,8 +191,12 @@ const DTMAX = τ / (2 * GAMMA)
 # fundamental ±1 + its 2nd (narrow) or the legacy (1,2,3,4) (full — the ω-harmonics of the drive laser).
 const N0 = round(Int, (1 + β) / (1 - β))
 const HARMONICS = let h = get(ENV, "EDM_HARMONICS", "")
-    isempty(h) ? (WINDOW == :narrow ? (N0 - 1, N0, N0 + 1, 2N0) : (1, 2, 3, 4)) :
-        Tuple(parse.(Int, split(h, ",")))
+    # Fractional n is allowed: near-rest boosted lines sit BETWEEN laser harmonics
+    # ((1+β)/(1−β) = 1.33 at ε = 1e-2) — extraction is nearest-rfft-bin of n·ω₁ either way
+    # (grid resolves ω₁/(Ns/SPP)). Integer-valued entries keep their integer display/filenames.
+    vals = isempty(h) ? (WINDOW == :narrow ? (N0 - 1, N0, N0 + 1, 2N0) : (1, 2, 3, 4)) :
+        Tuple(parse.(Float64, split(h, ",")))
+    Tuple(isinteger(n) ? Int(n) : Float64(n) for n in vals)
 end
 # Guard the aliasing trap — in ANY window mode: `harmonic_bins` would otherwise locate a
 # super-Nyquist harmonic on the nearest in-range rfft bin and the maps would be published labeled
