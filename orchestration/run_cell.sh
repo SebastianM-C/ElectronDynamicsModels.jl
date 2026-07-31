@@ -153,7 +153,13 @@ run_cell() {
         if [ "${REDUCE_OVERLAP:-0}" = 1 ]; then
             echo "  field done $label ($uuid) — reduce backgrounded (overlaps next cell)"
             rm -f "$CAMP/${uuid}.reduced" "$CAMP/${uuid}.reduce_failed"
-            ( eval "${REDUCE_HOOK:-_reduce_cell \"$uuid\"}" ) &
+            # Cube policy applies the moment THIS cell's backgrounded reduce succeeds (deferring
+            # to reap accumulates n_cells × cube on disk — ENOSPC'd a 6 × 97 GiB campaign on a
+            # 200 GB container disk). reap keeps its rm as a no-op backstop; failed reduces
+            # still keep their cube for recovery.
+            ( eval "${REDUCE_HOOK:-_reduce_cell \"$uuid\"}"
+              [ -f "$CAMP/${uuid}.reduced" ] && [ "${KEEP_CUBE:-0}" != 1 ] &&
+                  rm -f "$CAMP"/field_*_"$uuid".jls ) &
             REDUCE_PIDS+=("$!"); PENDING_REDUCE+=("$uuid|$label")
         else
             echo "  done $label ($uuid)"

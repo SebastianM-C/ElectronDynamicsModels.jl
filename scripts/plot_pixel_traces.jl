@@ -64,6 +64,19 @@ interp_saveat = string(get(cfg, "interp_saveat", "adaptive"))
 ω = 2π * c / λ
 RUN_TAG = m["provenance"]["run_id"]
 
+# Inverse-Thomson manifests (scattering=inverse): reversed laser + boosted electrons, the
+# meet-at-origin timing of inverse_thomson_scattering.jl. Thomson manifests: γ=1, β=0 — all
+# expressions below collapse to the original rest-electron forms.
+γboost = Float64(get(cfg, "gamma", 1.0))
+inverse = get(cfg, "scattering", "") == "inverse"
+inverse && string(get(cfg, "window", "full")) != "full" &&
+    @warn "narrow-window inverse manifest: mini-screen uses the FULL-window corner anchor"
+u⁰_t = (inverse ? γboost : 1.0) * c
+u³_z = inverse ? c * sqrt(γboost^2 - 1) : 0.0
+βz = u³_z / u⁰_t
+dtmax_cfg = Float64(get(cfg, "dtmax", Inf))
+dtmax_kw = isfinite(dtmax_cfg) ? (; dtmax = dtmax_cfg) : (;)
+
 # k = N·f² ⇒ r/Rmax ≈ f: radially uniform picks from the √k sunflower spiral.
 sel = if isempty(get(ENV, "EDM_TRACE_ELECTRONS", ""))
     unique(clamp.([max(1, round(Int, N * f^2)) for f in (0.0, 0.25, 0.5, 0.75, 1.0)], 1, N))
@@ -81,12 +94,13 @@ all(1 .<= sel .<= N) || error("EDM_TRACE_ELECTRONS out of 1:$N")
     world, temporal_profile = Symbol(laser_p["profile"]), temporal_width = τ0,
     focus_position = Float64(laser_p["focus_position"]), polarization = pol,
     initial_phase = φ₀,
+    (inverse ? (; k_direction = [0, 0, -1]) : (;))...,
 )
 @named elec = ClassicalElectron(; laser)
 sys = mtkcompile(elec)
 
 prob = ODEProblem{false, SciMLBase.FullSpecialize}(
-    sys, [sys.x => [τi * c, 0.0, 0.0, 0.0], sys.u => [c, 0.0, 0.0, 0.0]], (τi, τf);
+    sys, [sys.x => [u⁰_t * τi, 0.0, 0.0, u³_z * τi], sys.u => [u⁰_t, 0.0, 0.0, u³_z]], (τi, τf);
     u0_constructor = SVector{8}, fully_determined = true
 )
 
@@ -102,7 +116,7 @@ function sunflower(n, α)
 end
 
 R₀ = Rmax * sunflower(N, 2)
-xμ = [[τi * c, r..., 0.0] for r in R₀]
+xμ = [[u⁰_t * τi, r..., u³_z * τi] for r in R₀]
 r0 = [hypot(x[2], x[3]) for x in xμ]
 
 # Solve only what the traces need: the full ensemble when the coherent sum is on,
@@ -111,14 +125,16 @@ solve_idx = TRACE_TOTAL ? collect(1:N) : sel
 set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
 function prob_func(prob, ctx)
     i = solve_idx[ctx.sim_id]
-    u0, p = set_x(prob, SVector{8}(SVector{4}(xμ[i]...)..., SVector{4}(c, 0.0, 0.0, 0.0)...))
+    u0, p = set_x(prob, SVector{8}(SVector{4}(xμ[i]...)..., SVector{4}(u⁰_t, 0.0, 0.0, u³_z)...))
     return remake(prob; u0, p)
 end
+# Knots divide the PROPER-TIME carrier period T/(γ(1+β)) — the inverse script's convention;
+# γ=1, β=0 (thomson) reduces to the original T/knots spacing.
 saveat_kw = interp_saveat == "adaptive" ? (;) :
-    (; saveat = collect(τi:((2π / ω) / parse(Float64, interp_saveat)):τf))
+    (; saveat = collect(τi:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τf))
 t_traj = @elapsed sol = solve(
     EnsembleProblem(prob; prob_func, safetycopy = false), Vern9(), EnsembleThreads();
-    reltol, abstol, trajectories = length(solve_idx), saveat_kw...
+    reltol, abstol, trajectories = length(solve_idx), saveat_kw..., dtmax_kw...
 )
 @info "trajectories solved" t_traj length(solve_idx)
 
@@ -127,8 +143,12 @@ traj_of = Dict(zip(solve_idx, trajs))
 
 # ── Mini-screen: the requested pixels along +x (center first), production time window ──
 xs = [f * HALFW * w₀ for f in RADII]
+# Prefer the RECORDED window start (setup.x0_start, present on current manifests): exact for
+# both :full and :narrow (burst-centred) windows — the corner-anchor formula is the pre-knob
+# reconstruction fallback and is wrong for narrow runs.
 x⁰_samples = range(
-    start = c * τi + hypot(Z, HALFW * w₀ + Rmax), step = c * (2π / ω / spp),
+    start = haskey(m["setup"], "x0_start") ? Float64(m["setup"]["x0_start"]) :
+        c * τi + hypot(Z, HALFW * w₀ + Rmax), step = c * (2π / ω / spp),
     length = N_samples,
 )
 screen = ObserverScreen(xs, [0.0], Z, x⁰_samples; c)   # Ny = 1: one y = 0 row of pixels

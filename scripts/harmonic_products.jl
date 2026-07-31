@@ -74,7 +74,7 @@ function write_field_products(
         (("total", fields_h), ("far", fields_far_h))
     for (k, n) in enumerate(harmonics), (ftype, fh) in fieldsets
         tag = ftype == "far" ? "fieldfar" : "field"
-        out = joinpath(outdir, @sprintf("%s_%s_h%d_%s.png", fileprefix, tag, n, run_tag))
+        out = joinpath(outdir, @sprintf("%s_%s_h%g_%s.png", fileprefix, tag, n, run_tag))
         # Boosted runs (n0 > 1) label bins as multiples of the on-axis backscattered line
         # ω_bs = n0·ω₁ — the physically meaningful unit there; ω₁ multiples stay for n0 = 1.
         # `kind`/filenames keep the raw bin number n (stable chip URLs across the rescale).
@@ -82,16 +82,16 @@ function write_field_products(
             fh[k, :, :, :], x_grid, y_grid;
             w₀, labels = COMPLABELS, style...,
             title = n0 == 1 ?
-                @sprintf("%s (%s field) — %dω₁ (%.3f× fundamental)",
+                @sprintf("%s (%s field) — %gω₁ (%.3f× fundamental)",
                 title_prefix, ftype, n, ffund[k]) :
-                @sprintf("%s (%s field) — %dω₁ = %.4g ω_bs (ω_bs = %dω₁)",
+                @sprintf("%s (%s field) — %gω₁ = %.4g ω_bs (ω_bs = %dω₁)",
                 title_prefix, ftype, n, ffund[k] / n0, n0),
             outfile = out,
         )
         println("saved → $out")
         write_derived(
             outdir; kind = "h$n",
-            label = n0 == 1 ? @sprintf("%dω₁ field maps", n) :
+            label = n0 == 1 ? @sprintf("%gω₁ field maps", n) :
                 @sprintf("%.4g ω_bs field maps", n / n0),
             run_id = run_tag,
             plot = basename(out), source = source_datafile,
@@ -141,7 +141,7 @@ function write_envelope_products(
         I_E_raw = dropdims(sum(abs2, fields_h[k, 1:3, :, :]; dims = 1); dims = 1)
         I_E = _gaussian_blur(I_E_raw, σ / px)
         I_B = _gaussian_blur(dropdims(sum(abs2, fields_h[k, 4:6, :, :]; dims = 1); dims = 1), σ / px)
-        out = joinpath(outdir, @sprintf("%s_envelope_h%d_%s.png", fileprefix, n, run_tag))
+        out = joinpath(outdir, @sprintf("%s_envelope_h%g_%s.png", fileprefix, n, run_tag))
         fig = Figure(size = (1550, 500))
         for (j, (lbl, I)) in enumerate((("⟨|E|²⟩", I_E), ("⟨|B|²⟩", I_B)))
             ax = Axis(fig[1, j], title = lbl, xlabel = "x / w₀", ylabel = "y / w₀", aspect = 1)
@@ -166,7 +166,7 @@ function write_envelope_products(
         axp = Axis(fig[1, 3], title = "⟨|E|²⟩(r) azimuthal mean", xlabel = "r / w₀",
             ylabel = "intensity", yscale = log10)
         lines!(axp, rs, max.(prof, 1e-300))
-        Label(fig[0, :], @sprintf("%s — intensity envelope at %dω₁ (blur σ = %.2g w₀ = %.3g grains)",
+        Label(fig[0, :], @sprintf("%s — intensity envelope at %gω₁ (blur σ = %.2g w₀ = %.3g grains)",
             title_prefix, n, σ / w₀, grain_mult), fontsize = 18)
         save(out, fig)
         println("saved → $out")
@@ -343,11 +343,11 @@ function write_phase_products(
     plots = String[]
     for (fld_tag, comps) in (("E", 1:3), ("B", 4:6)), (k, n) in enumerate(harmonics)
         lbls = COMPLABELS[comps]
-        out = joinpath(outdir, @sprintf("%s_phase%s_h%d_%s.png", fileprefix, fld_tag, n, run_tag))
+        out = joinpath(outdir, @sprintf("%s_phase%s_h%g_%s.png", fileprefix, fld_tag, n, run_tag))
         res = plot_phase_with_rings(
             fields_h[k, comps, :, :], x_grid, y_grid;
             w₀, labels = lbls, radii = ringradii, tol = ringtol,
-            title = @sprintf("%s — ∠F %s-field at %dω₁", title_prefix, fld_tag, n), outfile = out,
+            title = @sprintf("%s — ∠F %s-field at %gω₁", title_prefix, fld_tag, n), outfile = out,
         )
         println("saved → $out")
         # Per-(field, harmonic) plot_params: the shared ring geometry + the per-component winding

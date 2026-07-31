@@ -34,6 +34,21 @@ function load_side(path)
 end
 A, B = load_side(toml_a), load_side(toml_b)
 
+# Human-readable side descriptor — physics identity, not run-id hex (which reads like a
+# commit hash on the dashboard): "LPWA analytic a₀=0.3" / "inverse Newton a₀=0.3 ε=0.001".
+function describe(m)
+    s = basename(get(m["provenance"], "script", "?"))
+    cfg = m["config"]
+    base = startswith(s, "lpwa") ? "LPWA analytic" :
+        "inverse " * (get(cfg, "accumulation_alg", "GPUKernelRK4") == "GPUKernelNewton" ?
+            "Newton" : "RK4")
+    a0 = get(cfg, "a0", nothing)
+    ε = get(cfg, "gamma_eps", Float64(get(cfg, "gamma", 1.0)) - 1.0)
+    d = base * (a0 === nothing ? "" : " a₀=$(a0)")
+    ε == 0 || (d *= " ε=$(ε)")
+    return d
+end
+
 size(A.h.fields_h) == size(B.h.fields_h) ||
     error("grid/harmonic mismatch: $(size(A.h.fields_h)) vs $(size(B.h.fields_h))")
 collect(A.h.harmonics) == collect(B.h.harmonics) ||
@@ -121,7 +136,7 @@ if isfile(psa) && isfile(psb)
     pa, pb = deserialize(psa), deserialize(psb)
     fig = Figure(size = (1400, 700))
     ax = Axis(fig[1, 1]; xlabel = "frequency / ω₁", ylabel = "Σ_pixels |Â|²", yscale = log10,
-        title = "power spectra — $(first(A.id, 8)) (solid) vs $(first(B.id, 8)) (dashed)")
+        title = "power spectra — $(describe(A.m)) (solid) vs $(describe(B.m)) (dashed)")
     # Nyquist = spp/2 in ω₁ multiples ⇒ n(f) = f/fmax · spp/2 (same normalization as the
     # peak-finding convention; robust to the cache's raw frequency units).
     spp = Int(A.m["config"]["samples_per_period"])
@@ -155,12 +170,12 @@ end
 using RunManifests: write_comparison
 let script_of(m) = get(m["provenance"], "script", "?"),
         out = write_comparison(
-        OUTDIR; label = "mirror crosscheck: $(first(A.id, 8)) vs $(first(B.id, 8))",
+        OUTDIR; label = "mirror crosscheck: $(describe(A.m)) vs $(describe(B.m))",
         differs = "propagation direction + screen side (z-mirror pair)",
         sides = [
-            (label = "A: $(script_of(A.m))", dir = basename(dirname(toml_a)),
+            (label = describe(A.m), dir = basename(dirname(toml_a)),
                 script = script_of(A.m), where = Dict("run" => first(A.id, 8))),
-            (label = "B: $(script_of(B.m))", dir = basename(dirname(toml_b)),
+            (label = describe(B.m), dir = basename(dirname(toml_b)),
                 script = script_of(B.m), where = Dict("run" => first(B.id, 8))),
         ],
         filename = "comparison_mirror_$(first(A.id, 8))-$(first(B.id, 8)).toml",

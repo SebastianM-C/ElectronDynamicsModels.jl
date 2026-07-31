@@ -191,8 +191,12 @@ const DTMAX = τ / (2 * GAMMA)
 # fundamental ±1 + its 2nd (narrow) or the legacy (1,2,3,4) (full — the ω-harmonics of the drive laser).
 const N0 = round(Int, (1 + β) / (1 - β))
 const HARMONICS = let h = get(ENV, "EDM_HARMONICS", "")
-    isempty(h) ? (WINDOW == :narrow ? (N0 - 1, N0, N0 + 1, 2N0) : (1, 2, 3, 4)) :
-        Tuple(parse.(Int, split(h, ",")))
+    # Fractional n is allowed: near-rest boosted lines sit BETWEEN laser harmonics
+    # ((1+β)/(1−β) = 1.33 at ε = 1e-2) — extraction is nearest-rfft-bin of n·ω₁ either way
+    # (grid resolves ω₁/(Ns/SPP)). Integer-valued entries keep their integer display/filenames.
+    vals = isempty(h) ? (WINDOW == :narrow ? (N0 - 1, N0, N0 + 1, 2N0) : (1, 2, 3, 4)) :
+        Tuple(parse.(Float64, split(h, ",")))
+    Tuple(isinteger(n) ? Int(n) : Float64(n) for n in vals)
 end
 # Guard the aliasing trap — in ANY window mode: `harmonic_bins` would otherwise locate a
 # super-Nyquist harmonic on the nearest in-range rfft bin and the maps would be published labeled
@@ -553,7 +557,10 @@ config = Dict{String, Any}(
     "bunch_l" => BUNCH_L,
     "bunch_chirp" => BUNCH_CHIRP,      # EDM_BUNCH_CHIRP knob (ponderomotive pre-compensation scale)
     "harmonics" => collect(HARMONICS), # harmonic bins the maps extract (≈4γ²ω for :narrow)
-    "backscatter_n0" => N0,            # on-axis backscatter fundamental ω_s/ω = (1+β)/(1−β) ≈ 4γ²
+    # EXACT ratio, not the rounded N0: near-rest ladders have ω_s/ω ∈ (1, 3.5) where the
+    # integer round collapses distinct rungs onto "1" (γ≫1 rounding was harmless: 397.99→398).
+    # N0 stays integer for the :narrow defaults; this key is the dashboard/display value.
+    "backscatter_n0" => (1 + β) / (1 - β),   # on-axis backscatter fundamental ω_s/ω ≈ 4γ²
     "screen_zsign" => SCREEN_ZSIGN,    # screen side: +1 backscatter (+Z), −1 transmission (−Z)
     "accumulation_alg" => (ACCUM_ALG == "newton" ? "GPUKernelNewton" : "GPUKernelRK4"),   # dashboard canonical name
     "newton_iters" => NEWTON_ITERS,    # recorded UNCONDITIONALLY (rk4 runs too): a mixed rk4/newton
