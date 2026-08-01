@@ -2486,10 +2486,10 @@ uuid = "5eaf0fd0-dfba-4ccb-bf02-d820a40db705"
 version = "0.2.1"
 
 [[deps.RunManifests]]
-deps = ["Dates", "TOML"]
+deps = ["Dates", "Downloads", "JSON", "Scratch", "Serialization", "TOML"]
 path = "../lib/RunManifests"
 uuid = "0ceb0180-3879-49c5-80aa-5670d4da308b"
-version = "0.1.0"
+version = "0.2.0"
 
 [[deps.RuntimeGeneratedFunctions]]
 deps = ["ExprTools", "SHA", "Serialization"]

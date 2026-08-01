@@ -209,6 +209,122 @@ end
     @test rl2.defs["omega_lab"]["value"] ≈ ω
 end
 
+@testset "dashboard client — browse + lazy load" begin
+    # A file:// dashboard fixture: index.json + data/<uuid>/<file>, the same layout the
+    # live hosts serve — libcurl's file protocol stands in for Caddy.
+    function fileurl(dir)
+        p = replace(abspath(dir), '\\' => '/')
+        return "file://" * (startswith(p, "/") ? "" : "/") * p
+    end
+    J = RunManifests.JSON
+    S = RunManifests.Serialization
+
+    @testset "fat index: campaigns, selection, caches, integrity" begin
+        mktempdir() do dir
+            u1 = "aaaa0000-0000-4000-8000-000000000001"
+            u2 = "bbbb0000-0000-4000-8000-000000000002"
+            payload = (; freqs = [1.0, 2.0, 3.0], ps = [0.1, 0.2, 0.3], n0 = 398)
+            mkpath(joinpath(dir, "data", u1))
+            S.serialize(joinpath(dir, "data", u1, "powspec_$(u1).jls"), payload)
+            nb = filesize(joinpath(dir, "data", u1, "powspec_$(u1).jls"))
+            index = Dict(
+                "generated" => "2026-08-01T00:00:00",
+                "runs" => [
+                    Dict("id" => u1, "label" => "#001", "script" => "thomson_scattering.jl",
+                        "commit" => "abc123", "host" => "", "backend" => "rocm",
+                        "provider" => "hotaisle", "timestamp" => "2026-07-18T10:00:00",
+                        "params" => Dict("a0" => 0.1, "N_electrons" => 2000),
+                        "plots" => Dict(), "data" => "/data/$(u1)/field_401_$(u1).jls",
+                        "dir" => "camp_a", "repo_dirty" => false, "julia_version" => "1.12.6",
+                        "config" => Dict("a0" => 0.1, "gamma" => 10.0),
+                        "laser" => Dict("wavelength" => 110.21),
+                        "setup" => Dict("Z" => 2.0e5),
+                        "caches" => [
+                            Dict("file" => "powspec_$(u1).jls", "bytes" => nb,
+                                "url" => "/data/$(u1)/powspec_$(u1).jls"),
+                            Dict("file" => "hmaps_$(u1).jls", "bytes" => 999,
+                                "url" => nothing),      # recorded, not yet published
+                        ]),
+                    Dict("id" => u2, "label" => "#002", "params" => Dict("a0" => 0.5),
+                        "plots" => Dict(), "data" => nothing, "dir" => "camp_a",
+                        "caches" => Any[]),
+                ],
+                "sweeps" => [Dict("dir" => "camp_a",
+                    "axes" => [Dict("param" => "a0", "values" => [0.1, 0.5])],
+                    "cells" => [Dict("coord" => [1], "run" => u1),
+                                Dict("coord" => [2], "run" => u2)])],
+                "standalone" => Any[], "comparisons" => Any[])
+            write(joinpath(dir, "index.json"), J.json(index))
+
+            dash = dashboard(url = fileurl(dir))
+            @test campaigns(dash) == ["camp_a"]
+            c = dash["camp_a"]
+            @test length(runs(c)) == 2 && length(sweeps(c)) == 1
+            r = only(runs(c; a0 = 0.1))                 # sweep-coordinate selection
+            @test r.id == u1
+            @test c["#001"].id == u1                    # gallery label …
+            @test c["aaaa"].id == u1                    # … and uuid prefix
+            @test_throws ErrorException c["zzzz"]       # no match
+            @test isempty(runs(c; a0 = 7.7))
+
+            @test Set(x.key for x in caches(r)) == Set([:powspec, :hmaps, :field])
+
+            p = cachepath(r, :powspec)                  # lazy fetch → scratch store
+            @test isfile(p) && startswith(p, data_store_dir())
+            got = loadcache(r, :powspec)
+            @test got.freqs == payload.freqs && got.n0 == 398
+            write(p, "junk")                            # corrupt copy → size-check refetch
+            @test loadcache(r, :powspec).ps == payload.ps
+            @test_throws ErrorException cachepath(r, :hmaps)   # no URL yet → clear error
+            @test_throws ErrorException cachepath(r, :nope)    # unknown key
+
+            m = manifest(r)
+            @test m.config["gamma"] == 10.0 && m.setup["Z"] == 2.0e5
+            @test m.provenance.repo_commit == "abc123"
+            @test m.provenance.julia_version == "1.12.6"
+
+            # an explicit token becomes the dashboard's auth cookie
+            @test dashboard(url = fileurl(dir), token = "sekrit").headers ==
+                  ["Cookie" => "research=sekrit"]
+
+            rm(joinpath(data_store_dir(), u1); recursive = true, force = true)
+        end
+    end
+
+    @testset "legacy index: sweep attribution + download-link fallback" begin
+        mktempdir() do dir
+            u = "cccc0000-0000-4000-8000-000000000003"
+            mkpath(joinpath(dir, "data", u))
+            S.serialize(joinpath(dir, "data", u, "powspec_$(u).jls"), (; x = 1))
+            index = Dict(
+                "runs" => [Dict("id" => u, "label" => "#001",
+                    "params" => Dict("a0" => 1.0),
+                    "data" => "/data/$(u)/hmaps_$(u).jls",
+                    "plots" => Dict("powspec" => Dict("label" => "power spectrum",
+                        "url" => "/plots/$(u)/powspec_$(u).png",
+                        "data" => "/data/$(u)/powspec_$(u).jls")))],
+                "sweeps" => [Dict("dir" => "camp_legacy",
+                    "cells" => [Dict("coord" => [1], "run" => u)])])
+            write(joinpath(dir, "index.json"), J.json(index))
+
+            dash = dashboard(url = fileurl(dir))
+            @test campaigns(dash) == ["camp_legacy"]    # attributed via the sweep's cells
+            r = only(runs(campaign(dash, "camp_legacy")))
+            ks = Set(x.key for x in caches(r))
+            @test :powspec in ks && :hmaps in ks        # run data + plot-entry data links
+            @test loadcache(r, :powspec).x == 1         # bytes unknown on legacy → no check
+            rm(joinpath(data_store_dir(), u); recursive = true, force = true)
+        end
+    end
+
+    @testset "auth configuration errors" begin
+        withenv("EDM_DASHBOARD_URL" => nothing, "EDM_DASHBOARD_TOKEN" => nothing) do
+            @test_throws ErrorException dashboard(:private)
+        end
+        @test_throws ErrorException dashboard(:elsewhere)
+    end
+end
+
 @testset "timestamp_utc in every provenance block" begin
     prov = run_provenance(; run_id = "ts", gpu_backend = "rocm", repo_dir = pkgdir(RunManifests))
     @test haskey(prov, "timestamp_utc")
