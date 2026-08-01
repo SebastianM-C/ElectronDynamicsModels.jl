@@ -1,6 +1,6 @@
 name = "ElectronDynamicsModels"
 uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
-version = "0.1.0-DEV"
+version = "0.1.0"
 authors = ["Sebastian Micluța-Câmpeanu <sebastian.mc95@proton.me> and contributors"]
 
 [workspace]
