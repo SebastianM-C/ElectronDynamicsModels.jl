@@ -46,6 +46,33 @@ jobs:
           files: lcov.info
           token: ${{ secrets.CODECOV_TOKEN }}
           fail_ci_if_error: false
+  # lib/RunManifests is its own package (manifests, sweep declarations, the dashboard
+  # client, ThomsonScatteringSpec) — the root runtest above never touches it, so it gets
+  # its own job. Registry deps only (JSON/Scratch + stdlibs): fast, no GPU stack.
+  runmanifests:
+    name: RunManifests - Julia ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+        with:
+          project: lib/RunManifests
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          project: lib/RunManifests
   docs:
     name: Documentation
     runs-on: ubuntu-latest
