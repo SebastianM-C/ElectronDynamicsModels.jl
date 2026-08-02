@@ -1,10 +1,11 @@
 # ───────────────────────── dashboard client (read-only browse + lazy data) ──────────────
 # Read-only client for the results dashboard's static API: `index.json` (the catalogue the
 # dashboard builder emits) and `/data/<uuid>/<basename>` (a plain file server over the
-# archive store). Browse campaigns → runs → caches, and lazily fetch cache files into a
-# local Scratch.jl store keyed by run uuid. Run products are IMMUTABLE — a uuid's files
-# never change — so a downloaded file needs no invalidation and is shared across remotes;
-# integrity is checked against the `bytes` the run's `.reduced` marker recorded.
+# archive store). Browse sweeps → runs → caches (plus summaries and comparisons), and
+# lazily fetch data files into a local Scratch.jl store keyed by run uuid. Run products
+# are IMMUTABLE — a uuid's files never change — so a downloaded file needs no
+# invalidation and is shared across remotes; integrity is checked against the `bytes`
+# the run's `.reduced` marker recorded.
 #
 # The client prefers the fat-index fields (`dir`, `config`/`laser`/`setup`, `caches`) and
 # degrades on older indexes: campaign attribution falls back to sweep cells, and the cache
@@ -25,8 +26,9 @@ Connect to a results dashboard and fetch its `index.json` catalogue.
   * `dashboard(url = "file:///…")` — any origin serving the same layout (used by tests).
 
 The returned [`Dashboard`](@ref) holds the parsed index; everything else
-([`campaigns`](@ref), [`campaign`](@ref), [`runs`](@ref), [`caches`](@ref),
-[`loadcache`](@ref)) works off it, downloading data files only on demand.
+([`sweeps`](@ref), [`sweep`](@ref), [`runs`](@ref), [`caches`](@ref),
+[`loadcache`](@ref), [`summaries`](@ref), [`comparisons`](@ref)) works off it,
+downloading data files only on demand.
 """
 function dashboard(host::Symbol = :public; url = nothing, token = nothing)
     host in (:public, :private) ||
@@ -84,27 +86,36 @@ Base.propertynames(r::RemoteRun) =
     (fieldnames(RemoteRun)..., Symbol.(collect(keys(getfield(r, :entry))))...)
 
 """
-    Campaign
+    Sweep
 
-All runs of one campaign dir (plus the sweeps detected there). Select runs with
-[`runs`](@ref)`(c; param = value, …)`, by uuid prefix / gallery label via `c["6d8652a2"]`
-/ `c["#003"]`, or list them all with `runs(c)`.
+One catalogue view: a results dir (every run attributed to it, plus the index's sweep
+entries there), or — selected by a stable declared id `"<dir>:<name>"` — just that
+declaration's members (cells + extras). Select runs with
+[`runs`](@ref)`(s; param = value, …)`, by uuid prefix / gallery label via
+`s["6d8652a2"]` / `s["#003"]`, or list them all with `runs(s)`;
+[`summaries`](@ref) lists the campaign-level plots.
 """
-struct Campaign
+struct Sweep
     dash::Dashboard
+    key::String                 # what selected this view: a dir, or a "<dir>:<name>" id
     dir::String
     runs::Vector{RemoteRun}
-    sweeps::Vector{Any}
+    entries::Vector{Any}        # the index sweeps[] entries under this view
 end
 
 # ── index navigation ──────────────────────────────────────────────────────────
 
-# run id => campaign dir. Fat indexes carry `dir` on every run; legacy indexes only
-# attribute runs that appear in a sweep's cells.
+# run id => results dir. Fat indexes carry `dir` on every run; legacy indexes attribute
+# through sweep cells (and extras, on declared entries).
 function _dir_by_run(index)
     byid = Dict{String, String}()
-    for s in get(index, "sweeps", Any[]), c in get(s, "cells", Any[])
-        byid[c["run"]] = s["dir"]
+    for s in get(index, "sweeps", Any[])
+        for c in get(s, "cells", Any[])
+            byid[c["run"]] = s["dir"]
+        end
+        for x in get(s, "extras", Any[])
+            byid[x["run"]] = s["dir"]
+        end
     end
     for r in get(index, "runs", Any[])
         d = get(r, "dir", nothing)
@@ -114,44 +125,68 @@ function _dir_by_run(index)
 end
 
 """
-    campaigns(dash::Dashboard) -> Vector{String}
+    sweeps(dash::Dashboard) -> Vector{String}
 
-The campaign dir names the index knows about (sorted). On a legacy index (no per-run
-`dir` field) standalone runs are unattributable — only campaigns visible through sweeps
-are listed.
+The browse keys this index offers (sorted results-dir names). A declared sweep's stable
+id (`"<dir>:<name>"`, on the entries' `id` field) is also indexable via `dash[id]` for a
+view narrowed to that declaration's members. On a legacy index (no per-run `dir`)
+standalone runs are unattributable — only dirs visible through sweeps are listed.
 """
-campaigns(dash::Dashboard) = sort(unique(values(_dir_by_run(dash.index))))
+sweeps(dash::Dashboard) = sort(unique(values(_dir_by_run(dash.index))))
 
 """
-    campaign(dash::Dashboard, dir) -> Campaign
+    sweep(dash::Dashboard, key) -> Sweep
 
-The [`Campaign`](@ref) view of one campaign dir (see [`campaigns`](@ref) for the names).
-`dash[dir]` is equivalent.
+The [`Sweep`](@ref) view for `key`: a results-dir name (see [`sweeps`](@ref)) for every
+run attributed there, or a stable declared id `"<dir>:<name>"` for just that entry's
+cells + extras. `dash[key]` is equivalent.
 """
-function campaign(dash::Dashboard, dir::AbstractString)
+function sweep(dash::Dashboard, key::AbstractString)
+    allsweeps = get(dash.index, "sweeps", Any[])
+    if occursin(':', key)   # declared stable id → narrowed member view
+        i = findfirst(s -> get(s, "id", nothing) == key, allsweeps)
+        i === nothing && error("sweep: no entry with id $(repr(String(key))) — " *
+                               "sweeps(dash) lists the dirs; entry ids ride the entries")
+        e = allsweeps[i]
+        members = Set{String}(String(c["run"]) for c in get(e, "cells", Any[]))
+        for x in get(e, "extras", Any[])
+            push!(members, String(x["run"]))
+        end
+        rs = [RemoteRun(dash, String(e["dir"]), r) for r in get(dash.index, "runs", Any[])
+              if r["id"] in members]
+        return Sweep(dash, String(key), String(e["dir"]), rs, Any[e])
+    end
     byid = _dir_by_run(dash.index)
-    rs = [RemoteRun(dash, String(dir), r) for r in get(dash.index, "runs", Any[])
-          if get(byid, r["id"], nothing) == dir]
-    isempty(rs) && error("campaign: no runs under $(repr(String(dir))) — " *
-                         "campaigns(dash) lists what this index has")
-    sw = Any[s for s in get(dash.index, "sweeps", Any[]) if s["dir"] == dir]
-    return Campaign(dash, String(dir), rs, sw)
+    rs = [RemoteRun(dash, String(key), r) for r in get(dash.index, "runs", Any[])
+          if get(byid, r["id"], nothing) == key]
+    isempty(rs) && error("sweep: no runs under $(repr(String(key))) — " *
+                         "sweeps(dash) lists what this index has")
+    es = Any[s for s in allsweeps if s["dir"] == key]
+    return Sweep(dash, String(key), String(key), rs, es)
 end
-Base.getindex(dash::Dashboard, dir::AbstractString) = campaign(dash, dir)
+Base.getindex(dash::Dashboard, key::AbstractString) = sweep(dash, key)
 
 """
-    runs(c::Campaign; params...) -> Vector{RemoteRun}
+    runs(s::Sweep; params...) -> Vector{RemoteRun}
+    runs(dash::Dashboard)
 
-The campaign's runs, optionally filtered on canonical index params:
-`runs(c; a0 = 0.1, N_electrons = 2000)`. Numeric values match with a small relative
+A sweep view's runs, optionally filtered on canonical index params:
+`runs(s; a0 = 0.1, N_electrons = 2000)`. Numeric values match with a small relative
 tolerance (TOML/JSON float round-trip safe); everything else compares as strings.
+The `Dashboard` method lists every run in the index (dir-attributed where possible).
 """
-function runs(c::Campaign; params...)
-    out = c.runs
+function runs(s::Sweep; params...)
+    out = s.runs
     for (k, v) in pairs(params)
         out = filter(r -> _param_eq(get(r.params, String(k), nothing), v), out)
     end
     return out
+end
+
+function runs(dash::Dashboard)
+    byid = _dir_by_run(dash.index)
+    return [RemoteRun(dash, get(byid, r["id"], nothing), r)
+            for r in get(dash.index, "runs", Any[])]
 end
 
 _param_eq(::Nothing, v) = false
@@ -159,21 +194,68 @@ _param_eq(x::Real, v::Real) = x == v || isapprox(Float64(x), Float64(v); rtol = 
 _param_eq(x, v) = string(x) == string(v)
 
 """
-    sweeps(c::Campaign) -> Vector
+    sweeps(s::Sweep) -> Vector
 
-The index's sweep entries detected in this campaign dir (axes, cells, coverage) — the
-coordinate system for picking runs by physics values via [`runs`](@ref) filters.
+The raw index sweep entries under this view (axes, cells, extras, coverage, summaries) —
+the coordinate system for picking runs by physics values via [`runs`](@ref) filters.
 """
-sweeps(c::Campaign) = c.sweeps
+sweeps(s::Sweep) = s.entries
 
-function Base.getindex(c::Campaign, key::AbstractString)
-    hits = [r for r in c.runs
+function Base.getindex(s::Sweep, key::AbstractString)
+    hits = [r for r in s.runs
             if startswith(r.id, key) || r.label == key || r.label == "#" * key]
-    isempty(hits) && error("campaign $(c.dir): no run matches $(repr(key)) " *
+    isempty(hits) && error("sweep $(s.key): no run matches $(repr(key)) " *
                            "(uuid prefix or gallery label)")
-    length(hits) > 1 && error("campaign $(c.dir): $(length(hits)) runs match $(repr(key)): " *
+    length(hits) > 1 && error("sweep $(s.key): $(length(hits)) runs match $(repr(key)): " *
                               join((r.id for r in hits), ", "))
     return hits[1]
+end
+
+"""
+    summaries(s::Sweep) -> Vector{NamedTuple}
+
+The campaign-level summary plots attached to this view's sweep entries, flattened to
+`(; sweep, kind, label, at, axis, url, data)` rows — one per picker value for
+parametrized entries (`at` is the picker value, `nothing` otherwise). `data`, when
+present, is a `/data/...` URL loadable via [`loaddata`](@ref)`(dash, row.data)`.
+"""
+function summaries(s::Sweep)
+    out = NamedTuple[]
+    for e in s.entries
+        sums = get(e, "summaries", nothing)
+        sums === nothing && continue
+        for (kind, entry) in pairs(sums)
+            base = (; sweep = get(e, "id", nothing), kind = String(kind),
+                label = get(entry, "label", String(kind)), axis = get(entry, "axis", nothing))
+            if haskey(entry, "values")
+                for v in entry["values"]
+                    push!(out, (; base..., at = get(v, "v", nothing),
+                        url = get(v, "url", nothing), data = get(v, "data", nothing)))
+                end
+            else
+                push!(out, (; base..., at = nothing,
+                    url = get(entry, "url", nothing), data = get(entry, "data", nothing)))
+            end
+        end
+    end
+    return out
+end
+
+"""
+    comparisons(dash::Dashboard; involving = nothing) -> Vector
+
+The index's resolved comparison entries (label, `along`, sides, matched cells with run
+ids and diff-plot entries). `involving = "<dir>"` (or a declared sweep id) keeps only
+comparisons with a side bound there. Entries are returned raw — resolve run ids through
+`runs(dash)` and load any matched plot's `data` URL via [`loaddata`](@ref).
+"""
+function comparisons(dash::Dashboard; involving = nothing)
+    cs = collect(Any, get(dash.index, "comparisons", Any[]))
+    involving === nothing && return cs
+    key = String(involving)
+    return Any[c for c in cs
+               if any(sd -> get(sd, "dir", nothing) == key || get(sd, "sweep", nothing) == key,
+                      get(c, "sides", Any[]))]
 end
 
 """
@@ -274,22 +356,7 @@ function cachepath(r::RemoteRun, key)
     c.url === nothing &&
         error("run $(first(r.id, 8)): cache $(c.file) is recorded but not published yet " *
               "(no download URL on this index)")
-    dest = joinpath(data_store_dir(), r.id, c.file)
-    isfile(dest) && (c.bytes === nothing || filesize(dest) == c.bytes) && return dest
-    mkpath(dirname(dest))
-    url = occursin("://", c.url) ? c.url : getfield(r, :dash).base * c.url
-    sz = c.bytes === nothing ? "" : " ($(round(c.bytes / 2^20; digits = 1)) MiB)"
-    @info "fetching $(c.file)$sz → $(dirname(dest))"
-    tmp = dest * ".part"
-    _download(url, tmp; headers = getfield(r, :dash).headers, what = c.file)
-    if c.bytes !== nothing && filesize(tmp) != c.bytes
-        n = filesize(tmp)
-        rm(tmp; force = true)
-        error("cache $(c.file): downloaded $n bytes, expected $(c.bytes) — " *
-              "partial/corrupt transfer, not kept")
-    end
-    mv(tmp, dest; force = true)
-    return dest
+    return _fetched(getfield(r, :dash), c.url, r.id, c.file, c.bytes)
 end
 
 """
@@ -322,7 +389,46 @@ function clear_data_store!()
     return dir
 end
 
+"""
+    datapath(dash::Dashboard, url) -> String
+    loaddata(dash::Dashboard, url)
+
+Fetch (lazily) any of the index's `/data/<uuid>/<basename>` URLs — a summary or
+comparison entry's `data`, for instance — into the scratch store under its owning uuid,
+and return the local path / the deserialized payload. Sizes aren't recorded for these
+(unlike run caches), so no integrity check beyond a completed transfer.
+"""
+function datapath(dash::Dashboard, url::AbstractString)
+    parts = split(String(url), '/'; keepempty = false)
+    length(parts) >= 2 || error("datapath: unrecognized data url $(repr(String(url)))")
+    return _fetched(dash, String(url), String(parts[end-1]), String(parts[end]), nothing)
+end
+loaddata(dash::Dashboard, url::AbstractString) = Serialization.deserialize(datapath(dash, url))
+
 # ── plumbing ──────────────────────────────────────────────────────────────────
+
+# The one download path: store under <data_store_dir()>/<sub>/<file>, refetch when the
+# recorded size disagrees (products are immutable — a mismatch is a broken transfer, not
+# an update), atomic .part → file so a crash never leaves a plausible-looking partial.
+function _fetched(dash::Dashboard, url::AbstractString, sub::AbstractString,
+        file::AbstractString, bytes)
+    dest = joinpath(data_store_dir(), sub, file)
+    isfile(dest) && (bytes === nothing || filesize(dest) == bytes) && return dest
+    mkpath(dirname(dest))
+    full = occursin("://", url) ? String(url) : dash.base * url
+    sz = bytes === nothing ? "" : " ($(round(bytes / 2^20; digits = 1)) MiB)"
+    @info "fetching $file$sz → $(dirname(dest))"
+    tmp = dest * ".part"
+    _download(full, tmp; headers = dash.headers, what = file)
+    if bytes !== nothing && filesize(tmp) != bytes
+        n = filesize(tmp)
+        rm(tmp; force = true)
+        error("$file: downloaded $n bytes, expected $bytes — " *
+              "partial/corrupt transfer, not kept")
+    end
+    mv(tmp, dest; force = true)
+    return dest
+end
 
 function _download(url, output; headers, what)
     try
@@ -343,12 +449,12 @@ end
 function Base.show(io::IO, dash::Dashboard)
     print(io, "Dashboard(", repr(dash.base), ", ",
         length(get(dash.index, "runs", Any[])), " runs, ",
-        length(campaigns(dash)), " campaigns)")
+        length(sweeps(dash)), " sweeps)")
 end
 
-function Base.show(io::IO, c::Campaign)
-    print(io, "Campaign(", repr(c.dir), ", ", length(c.runs), " runs, ",
-        length(c.sweeps), " sweeps)")
+function Base.show(io::IO, s::Sweep)
+    print(io, "Sweep(", repr(s.key), ", ", length(s.runs), " runs, ",
+        length(s.entries), " entr", length(s.entries) == 1 ? "y" : "ies", ")")
 end
 
 function Base.show(io::IO, r::RemoteRun)

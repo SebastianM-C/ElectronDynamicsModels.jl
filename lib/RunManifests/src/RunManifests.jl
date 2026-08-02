@@ -12,10 +12,11 @@ everything reproducibility-related:
     `summary_*.toml` the results dashboard consumes) and the `find_parent_*` readers;
   * **the replay seed** — `run_spec_from_manifest`, the inverse of how solver scripts
     read `ENV`, used by the reproduce/sweep launcher;
-  * **the dashboard client** — `dashboard` / `campaigns` / `campaign` / `runs` /
-    `caches` / `loadcache` (src/remote.jl): read-only browse of a published results
-    index and lazy, integrity-checked download of the reduction caches into a local
-    Scratch store — post-hoc analysis without the campaign dir.
+  * **the dashboard client** — `dashboard` / `sweeps` / `sweep` / `runs` / `caches` /
+    `loadcache` / `summaries` / `comparisons` (src/remote.jl): read-only browse of a
+    published results index and lazy, integrity-checked download of the data files into
+    a local Scratch store — post-hoc analysis without the results dir. ("Sweep" is the
+    catalogue noun by design — see the dashboard repo's sweep_declarations_design.md.)
 
 The solver/plot scripts get these via `using RunManifests`; `scripts/manifest.jl` is a
 thin back-compat shim that re-exports them for scripts that still `include` it.
@@ -36,9 +37,9 @@ export write_sweep_declaration, read_sweep_declarations
 export record_reduction!
 export units_section, units_from_manifest
 export MANIFEST_SCHEMA_VERSION, manifest_schema_version, check_schema_version
-export Dashboard, Campaign, RemoteRun
-export dashboard, campaigns, campaign, runs, sweeps, manifest
-export caches, cachepath, loadcache, data_store_dir, clear_data_store!
+export Dashboard, Sweep, RemoteRun
+export dashboard, sweep, sweeps, runs, manifest, summaries, comparisons
+export caches, cachepath, loadcache, datapath, loaddata, data_store_dir, clear_data_store!
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Manifest schema version. `schema_version` is a top-level Int in every run_*.toml /
