@@ -11,7 +11,11 @@ everything reproducibility-related:
     `write_summary` (the `run_*.toml`, `derived_*.toml`, `comparison_*.toml`, and
     `summary_*.toml` the results dashboard consumes) and the `find_parent_*` readers;
   * **the replay seed** — `run_spec_from_manifest`, the inverse of how solver scripts
-    read `ENV`, used by the reproduce/sweep launcher.
+    read `ENV`, used by the reproduce/sweep launcher;
+  * **the dashboard client** — `dashboard` / `campaigns` / `campaign` / `runs` /
+    `caches` / `loadcache` (src/remote.jl): read-only browse of a published results
+    index and lazy, integrity-checked download of the reduction caches into a local
+    Scratch store — post-hoc analysis without the campaign dir.
 
 The solver/plot scripts get these via `using RunManifests`; `scripts/manifest.jl` is a
 thin back-compat shim that re-exports them for scripts that still `include` it.
@@ -20,6 +24,10 @@ module RunManifests
 
 using TOML
 using Dates
+import Downloads
+import JSON
+import Scratch
+import Serialization
 
 export git_state, assert_committed, run_provenance, run_spec_from_manifest, expand_sweep
 export find_parent_manifest, find_parent_run, spp_from_manifest
@@ -27,6 +35,9 @@ export write_derived, write_comparison, write_summary, write_run_manifest, write
 export record_reduction!
 export units_section, units_from_manifest
 export MANIFEST_SCHEMA_VERSION, manifest_schema_version, check_schema_version
+export Dashboard, Campaign, RemoteRun
+export dashboard, campaigns, campaign, runs, sweeps, manifest
+export caches, cachepath, loadcache, data_store_dir, clear_data_store!
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Manifest schema version. `schema_version` is a top-level Int in every run_*.toml /
@@ -684,5 +695,7 @@ function units_from_manifest(m::AbstractDict)
     n0 = round(Int, Float64(fscale["value"]) / Float64(defs["omega_laser"]["value"]))
     return (; system = u["system"], defs, preferred = pref, n0)
 end
+
+include("remote.jl")
 
 end # module RunManifests
