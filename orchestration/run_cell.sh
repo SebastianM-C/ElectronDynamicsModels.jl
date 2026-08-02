@@ -30,6 +30,13 @@
 #             multi-cell win). Reaped (+ cube policy) by reap_reduces ⇒ requires the run_cells path.
 #   REDUCE_HOOK optional command (receives the uuid as $1) replacing the default cube→products
 #             reducer used in overlap mode (default: harmonic_products.jl + plot_screen_observables.jl)
+#   SWEEP_AXES  optional: declares the campaign's sweep — comma/space-separated manifest
+#             [config] keys (e.g. "gamma" or "a0,interp_saveat"; NOT EDM_* spellings).
+#             When set, the first cell writes $CAMP/sweep_<name>.toml (idempotent) and every
+#             cell is stamped with provenance.sweep_id = <name> via EDM_SWEEP (a per-cell
+#             EDM_SWEEP=other override wins — that's how one dir hosts several named sweeps).
+#   SWEEP_NAME  declaration name, a slug (default: $CAMPAIGN, else basename $CAMP)
+#   SWEEP_DESIGN grid (default) | oat        SWEEP_LABEL optional display label
 # Usage: run_cell <label> [EDM_VAR=val ...]   (per-cell overrides win — env is last-wins)
 : "${SCRIPT:=scripts/thomson_scattering.jl}"
 
@@ -115,10 +122,32 @@ _reduce_cell() {
     fi
 }
 
+# Materialize the campaign's sweep declaration (launch intent → the dashboard's card
+# structure; see RunManifests.write_sweep_declaration). Called from run_cell so it works on
+# every backend path (run_cells loop AND per-task SLURM cells) — first cell writes it,
+# later cells hit the [ -f ] gate. Failure degrades to detection, never aborts a campaign.
+_write_sweep_decl() {
+    [ -n "${SWEEP_AXES:-}" ] || return 0
+    : "${SWEEP_NAME:=${CAMPAIGN:-$(basename "$CAMP")}}"
+    [ -f "$CAMP/sweep_${SWEEP_NAME}.toml" ] && return 0
+    ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} \
+          SWEEP_DECL_DIR="$CAMP" SWEEP_DECL_NAME="$SWEEP_NAME" SWEEP_DECL_AXES="$SWEEP_AXES" \
+          SWEEP_DECL_SCRIPT="$(basename "$SCRIPT")" SWEEP_DECL_DESIGN="${SWEEP_DESIGN:-grid}" \
+          SWEEP_DECL_LABEL="${SWEEP_LABEL:-}" \
+          "${JL[@]}" --project=scripts -e 'using RunManifests
+              write_sweep_declaration(ENV["SWEEP_DECL_DIR"];
+                  name = ENV["SWEEP_DECL_NAME"], script = ENV["SWEEP_DECL_SCRIPT"],
+                  axes = split(replace(ENV["SWEEP_DECL_AXES"], "," => " ")),
+                  design = ENV["SWEEP_DECL_DESIGN"],
+                  label = isempty(ENV["SWEEP_DECL_LABEL"]) ? nothing : ENV["SWEEP_DECL_LABEL"])' ) \
+        || echo "[warn] sweep declaration write failed — campaign continues (dashboard falls back to detection)" >&2
+}
+
 run_cell() {
     local label=$1; shift
     local uuid; uuid=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid)
     mkdir -p "$CAMP"
+    _write_sweep_decl
     # Disk gate (adaptive, KEEP_CUBE campaigns): container-disk quotas are enforced LAZILY —
     # a cube write into a full disk "succeeds" and only surfaces as EOFError at reduce time
     # (2026-07-19 incident). Cell 1 sets the scale; later cells wait until free space ≥ 1.25×
@@ -144,6 +173,7 @@ run_cell() {
     echo "[$(date -u +%FT%TZ)] cell $label  [$(basename "$SCRIPT") ${BACKEND:-?}]  keep=${KEEP_CUBE:-0} overlap=${REDUCE_OVERLAP:-0}  $uuid :: ${*:-<baseline>}"
     # shellcheck disable=SC2086
     ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} ${BASE[@]+"${BASE[@]}"} $skip \
+          ${SWEEP_NAME:+EDM_SWEEP="$SWEEP_NAME"} \
           EDM_GPU_BACKEND="$BACKEND" EDM_CLOUD_PROVIDER="$PROVIDER" EDM_OUTDIR="$CAMP" EDM_RUN_TAG="$uuid" "$@" \
           "${JL[@]}" --project=scripts "$SCRIPT" ) > "$log" 2>&1
     local rc=$?
