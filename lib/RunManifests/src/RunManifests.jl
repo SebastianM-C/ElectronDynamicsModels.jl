@@ -31,6 +31,7 @@ import Scratch
 import Serialization
 
 export git_state, assert_committed, run_provenance, run_spec_from_manifest, expand_sweep
+export ThomsonScatteringSpec, load_spec, write_spec, spec_env, spec_from_manifest, config_dict
 export find_parent_manifest, find_parent_run, spp_from_manifest
 export write_derived, write_comparison, write_summary, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
 export write_sweep_declaration, read_sweep_declarations
@@ -206,52 +207,21 @@ function run_spec_from_manifest(manifest::AbstractDict)
     prov = get(manifest, "provenance", Dict())
     commit = get(prov, "repo_commit", "unknown")
     cfg = get(manifest, "config", Dict())
-    # EDM_* knobs come from `config` (the input layer / echo of ENV — authoritative for
-    # replay, matching the dashboard's PARAM_SPEC); `gpu_backend` lives in `provenance`.
-    env = Dict{String, String}()
-    env["EDM_INITIAL_PHASE"] = string(cfg["initial_phase"])
-    env["EDM_A0"] = string(cfg["a0"])
-    env["EDM_NX"] = string(cfg["Nx"])
-    env["EDM_N"] = string(cfg["N"])
-    env["EDM_NSAMPLES"] = string(cfg["N_samples"])
-    env["EDM_SPP"] = string(cfg["samples_per_period"])
-    env["EDM_NSUBSTEPS"] = string(cfg["n_substeps"])
+    miss = [k for k in REQUIRED_CONFIG_KEYS if !haskey(cfg, k)]
+    isempty(miss) || error(
+        "run manifest [config] is missing replay key(s) $(join(miss, ", ")) — " *
+            "cannot reproduce this run."
+    )
+    # One knob ⇄ env mapping for the whole package: the manifest becomes a
+    # ThomsonScatteringSpec and the spec emits its transport (spec.jl). Guarded-knob
+    # semantics are the spec's nothing-means-script-default contract, so a legacy run
+    # still never grows env out of thin air — while knobs the old hand-rolled emission
+    # dropped (EDM_SYSTEM, EDM_OMEGA_SCALE, EDM_SCREEN_HALFW, EDM_POL, EDM_GAMMA_EPS)
+    # now replay faithfully.
+    env = spec_env(spec_from_manifest(manifest))
     env["EDM_GPU_BACKEND"] = string(prov["gpu_backend"])
-    env["EDM_SYNC_PER_ELECTRON"] = string(cfg["sync_per_electron"])
-    env["EDM_FIELD_MODE"] = string(get(cfg, "mode", "split"))   # default keeps pre-mode manifests replaying as before
-    # Inverse-Thomson knobs (inverse_thomson_scattering.jl) — guarded: absent in rest-electron
-    # manifests. Without these a "reproduce" of a boosted/narrow run silently reran the γ=10
-    # :full defaults (and misused the narrow-mode auto-sized N_samples as a :full window length).
-    haskey(cfg, "gamma") && (env["EDM_GAMMA"] = string(cfg["gamma"]))
-    haskey(cfg, "window") && (env["EDM_WINDOW"] = string(cfg["window"]))
-    haskey(cfg, "screen_hw_w0") && (env["EDM_SCREEN_HW"] = string(cfg["screen_hw_w0"]))
-    haskey(cfg, "harmonics") && (env["EDM_HARMONICS"] = join(cfg["harmonics"], ","))
-    haskey(cfg, "tspan_tau") && (env["EDM_TSPAN_TAU"] = string(cfg["tspan_tau"]))
-    haskey(cfg, "window_lead") && (env["EDM_WINDOW_LEAD"] = string(cfg["window_lead"]))
-    haskey(cfg, "window_tail") && (env["EDM_WINDOW_TAIL"] = string(cfg["window_tail"]))
-    haskey(cfg, "bunch_nb") && (env["EDM_BUNCH_NB"] = string(cfg["bunch_nb"]))
-    haskey(cfg, "bunch_l") && (env["EDM_BUNCH_L"] = string(cfg["bunch_l"]))
-    haskey(cfg, "bunch_chirp") && (env["EDM_BUNCH_CHIRP"] = string(cfg["bunch_chirp"]))
-    # Retarded-time kernel: manifest stores the dashboard-canonical type name; replay re-emits the knob.
-    if get(cfg, "accumulation_alg", "") == "GPUKernelNewton"
-        env["EDM_ACCUM_ALG"] = "newton"
-        haskey(cfg, "newton_iters") && (env["EDM_NEWTON_ITERS"] = string(cfg["newton_iters"]))
-    end
-    haskey(cfg, "reltol") && (env["EDM_RELTOL"] = string(cfg["reltol"]))
-    haskey(cfg, "abstol") && (env["EDM_ABSTOL"] = string(cfg["abstol"]))
-    # Retarded-time GPU solver — guarded: absent in pre-Newton manifests (⇒ rk4 default).
-    # The manifest records the dashboard-canonical kernel name; emit BOTH knob spellings so
-    # replay works on any pinned commit (EDM_ACCUM_ALG = canonical, EDM_GPU_SOLVER = the
-    # legacy alias the first newton-campaign scripts read).
-    solver_env = Dict("GPUKernelRK4" => "rk4", "GPUKernelNewton" => "newton")
-    alg = get(cfg, "accumulation_alg", nothing)
-    if haskey(solver_env, alg)
-        env["EDM_ACCUM_ALG"] = solver_env[alg]
-        env["EDM_GPU_SOLVER"] = solver_env[alg]
-    end
-    haskey(cfg, "newton_iters") && (env["EDM_NEWTON_ITERS"] = string(cfg["newton_iters"]))
-    sv = get(cfg, "interp_saveat", "adaptive")
-    sv != "adaptive" && (env["EDM_INTERP_SAVEAT"] = string(sv))
+    # Pre-mode manifests replay as :split — the scripts' default then and now.
+    get!(env, "EDM_FIELD_MODE", "split")
     return (; commit, env)
 end
 
@@ -819,6 +789,7 @@ function units_from_manifest(m::AbstractDict)
     return (; system = u["system"], defs, preferred = pref, n0)
 end
 
+include("spec.jl")
 include("remote.jl")
 
 end # module RunManifests

@@ -209,6 +209,86 @@ end
     @test rl2.defs["omega_lab"]["value"] ≈ ω
 end
 
+@testset "ThomsonScatteringSpec — file ⇄ env ⇄ manifest" begin
+    dir = mktempdir()
+
+    # write_spec / load_spec roundtrip: typed coercion, extra passthrough, schema stamp.
+    s0 = ThomsonScatteringSpec(; a0 = 2, gamma = 10, samples_per_period = 2048,
+        accumulation_alg = "GPUKernelNewton", harmonics = [199, 299],
+        extra = Dict{String, Any}("scattering" => "inverse"))
+    @test s0.a0 === 2.0 && s0.harmonics == [199.0, 299.0]     # Int → Float64 coercion
+    p = write_spec(joinpath(dir, "spec_cell.toml"), s0)
+    m = TOML.parsefile(p)
+    @test m["schema_version"] == MANIFEST_SCHEMA_VERSION
+    @test m["spec"]["scattering"] == "inverse"                 # extra inlined
+    s1 = load_spec(p; env = Dict{String, String}())
+    @test s1.a0 == 2.0 && s1.gamma == 10.0 && s1.accumulation_alg == "GPUKernelNewton"
+    @test s1.extra["scattering"] == "inverse"
+    @test s1.N === nothing                                     # unset stays script-default
+
+    # env overrides win over the file; special cases mirror the scripts.
+    env = Dict("EDM_A0" => "0.5", "EDM_SYNC_PER_ELECTRON" => "true",
+        "EDM_ABSTOL" => "", "EDM_INTERP_SAVEAT" => "16",
+        "EDM_GPU_SOLVER" => "rk4",                             # legacy alias honored
+        "EDM_HARMONICS" => "1,2.5", "EDM_OUTDIR" => "/ignored")
+    s2 = load_spec(p; env)
+    @test s2.a0 == 0.5 && s2.gamma == 10.0                     # override + carry-through
+    @test s2.sync_per_electron === true && s2.abstol === nothing
+    @test s2.interp_saveat == "16" && s2.harmonics == [1.0, 2.5]
+    @test s2.accumulation_alg == "GPUKernelRK4"
+    @test load_spec(nothing; env).a0 == 0.5                    # env-only legacy path
+
+    # spec_env emission: dual alg knobs, integral harmonics without ".0", ε beats γ,
+    # adaptive omitted, unset fields never emit.
+    e = spec_env(ThomsonScatteringSpec(; a0 = 1.0, gamma = 1.001, gamma_eps = 0.001,
+        accumulation_alg = "GPUKernelNewton", harmonics = [199, 1.0936],
+        interp_saveat = "adaptive", sync_per_electron = false))
+    @test e["EDM_GAMMA_EPS"] == "0.001" && !haskey(e, "EDM_GAMMA")
+    @test e["EDM_ACCUM_ALG"] == "newton" && e["EDM_GPU_SOLVER"] == "newton"
+    @test e["EDM_HARMONICS"] == "199,1.0936"
+    @test e["EDM_SYNC_PER_ELECTRON"] == "false"
+    @test !haskey(e, "EDM_INTERP_SAVEAT") && !haskey(e, "EDM_NX")
+
+    # config_dict → manifest → spec_from_manifest roundtrip; unmapped keys ride extra.
+    cfg = config_dict(s0)
+    @test cfg["a0"] == 2.0 && cfg["scattering"] == "inverse"
+    for k in REQUIRED_CONFIG_KEYS
+        get!(cfg, k, 1)                                        # writer contract
+    end
+    prov = run_provenance(; run_id = "sp", gpu_backend = "cuda", repo_dir = pkgdir(RunManifests))
+    path = write_solver_manifest(dir; run_id = "sp", provenance = prov, config = cfg,
+        laser = Dict(), setup = Dict(), outputs = Dict("plots" => String[]))
+    s3 = spec_from_manifest(TOML.parsefile(path))
+    @test s3.a0 == 2.0 && s3.gamma == 10.0 && s3.harmonics == [199.0, 299.0]
+    @test s3.extra["scattering"] == "inverse"
+
+    # run_spec_from_manifest is table-driven now: previously-dropped knobs replay, and
+    # ε-manifests emit EDM_GAMMA_EPS instead of a rounded EDM_GAMMA.
+    cfg2 = Dict{String, Any}(k => 1 for k in REQUIRED_CONFIG_KEYS)
+    cfg2["gamma_eps"] = 0.001
+    cfg2["gamma"] = 1.001
+    cfg2["system"] = "ll"
+    cfg2["omega_scale"] = 19.9
+    path2 = write_solver_manifest(dir; run_id = "sp2", provenance = prov, config = cfg2,
+        laser = Dict(), setup = Dict(), outputs = Dict("plots" => String[]))
+    env2 = run_spec_from_manifest(TOML.parsefile(path2)).env
+    @test env2["EDM_GAMMA_EPS"] == "0.001" && !haskey(env2, "EDM_GAMMA")
+    @test env2["EDM_SYSTEM"] == "ll" && env2["EDM_OMEGA_SCALE"] == "19.9"
+    @test env2["EDM_FIELD_MODE"] == "split"                    # pre-mode default preserved
+    # missing required keys fail loudly, not with a KeyError deep in emission
+    @test_throws ErrorException run_spec_from_manifest(Dict{String, Any}(
+        "schema_version" => 1, "config" => Dict{String, Any}("a0" => 1)))
+
+    # spec-native sweep expansion: cartesian product, base carried, field vocabulary.
+    cells = expand_sweep(ThomsonScatteringSpec(; a0 = 1.0),
+        Dict("gamma" => [10, 100], "newton_iters" => [1, 2]))
+    @test length(cells) == 4
+    @test all(c -> c.a0 == 1.0, cells)
+    @test Set((c.gamma, c.newton_iters) for c in cells) ==
+          Set([(10.0, 1), (10.0, 2), (100.0, 1), (100.0, 2)])
+    @test_throws ErrorException expand_sweep(ThomsonScatteringSpec(), Dict("nope" => [1]))
+end
+
 @testset "sweep declarations — write/read + membership stamp" begin
     dir = mktempdir()
     p = write_sweep_declaration(dir; name = "ll_gamma_ladder",
