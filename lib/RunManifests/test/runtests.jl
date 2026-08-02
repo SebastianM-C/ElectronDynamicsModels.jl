@@ -298,6 +298,7 @@ end
             mkpath(joinpath(dir, "data", u1))
             S.serialize(joinpath(dir, "data", u1, "powspec_$(u1).jls"), payload)
             nb = filesize(joinpath(dir, "data", u1, "powspec_$(u1).jls"))
+            S.serialize(joinpath(dir, "data", u1, "conv_$(u1).jls"), (; slope = 2.0))
             index = Dict(
                 "generated" => "2026-08-01T00:00:00",
                 "runs" => [
@@ -320,23 +321,44 @@ end
                         "plots" => Dict(), "data" => nothing, "dir" => "camp_a",
                         "caches" => Any[]),
                 ],
-                "sweeps" => [Dict("dir" => "camp_a",
-                    "axes" => [Dict("param" => "a0", "values" => [0.1, 0.5])],
-                    "cells" => [Dict("coord" => [1], "run" => u1),
-                                Dict("coord" => [2], "run" => u2)])],
-                "standalone" => Any[], "comparisons" => Any[])
+                "sweeps" => [Dict("dir" => "camp_a", "id" => "camp_a:camp_a",
+                    "declared" => true,
+                    "axes" => [Dict("param" => "a0", "values" => [0.1])],
+                    "cells" => [Dict("coord" => [1], "run" => u1)],
+                    "extras" => [Dict("run" => u2, "label" => "ctl",
+                        "differs" => Dict("a0" => 0.5))],
+                    "summaries" => Dict("conv" => Dict("label" => "convergence",
+                        "axis" => "a0", "url" => "/plots/$(u1)/conv.png",
+                        "data" => "/data/$(u1)/conv_$(u1).jls")))],
+                "standalone" => Any[],
+                "comparisons" => [Dict("id" => "abc123", "label" => "A vs B",
+                    "along" => "a0",
+                    "sides" => [Dict("dir" => "camp_a", "sweep" => "camp_a:camp_a"),
+                                Dict("dir" => "camp_b", "sweep" => nothing)])])
             write(joinpath(dir, "index.json"), J.json(index))
 
             dash = dashboard(url = fileurl(dir))
-            @test campaigns(dash) == ["camp_a"]
-            c = dash["camp_a"]
-            @test length(runs(c)) == 2 && length(sweeps(c)) == 1
-            r = only(runs(c; a0 = 0.1))                 # sweep-coordinate selection
+            @test sweeps(dash) == ["camp_a"]
+            s = dash["camp_a"]
+            @test length(runs(s)) == 2 && length(sweeps(s)) == 1
+            n = dash["camp_a:camp_a"]                   # declared stable id → member view
+            @test Set(x.id for x in runs(n)) == Set([u1, u2])   # cells + extras
+            @test length(n.entries) == 1 && n.dir == "camp_a"
+            r = only(runs(s; a0 = 0.1))                 # sweep-coordinate selection
             @test r.id == u1
-            @test c["#001"].id == u1                    # gallery label …
-            @test c["aaaa"].id == u1                    # … and uuid prefix
-            @test_throws ErrorException c["zzzz"]       # no match
-            @test isempty(runs(c; a0 = 7.7))
+            @test s["#001"].id == u1                    # gallery label …
+            @test s["aaaa"].id == u1                    # … and uuid prefix
+            @test_throws ErrorException s["zzzz"]       # no match
+            @test isempty(runs(s; a0 = 7.7))
+            @test length(runs(dash)) == 2               # whole-index run listing
+
+            sm = only(summaries(s))                     # campaign-level plot rows
+            @test sm.kind == "conv" && sm.axis == "a0" && sm.sweep == "camp_a:camp_a"
+            @test loaddata(dash, sm.data).slope == 2.0  # lazy summary-datafile fetch
+            @test length(comparisons(dash)) == 1
+            @test length(comparisons(dash; involving = "camp_a")) == 1
+            @test only(comparisons(dash; involving = "camp_a:camp_a"))["label"] == "A vs B"
+            @test isempty(comparisons(dash; involving = "nope"))
 
             @test Set(x.key for x in caches(r)) == Set([:powspec, :hmaps, :field])
 
@@ -379,8 +401,8 @@ end
             write(joinpath(dir, "index.json"), J.json(index))
 
             dash = dashboard(url = fileurl(dir))
-            @test campaigns(dash) == ["camp_legacy"]    # attributed via the sweep's cells
-            r = only(runs(campaign(dash, "camp_legacy")))
+            @test sweeps(dash) == ["camp_legacy"]       # attributed via the sweep's cells
+            r = only(runs(sweep(dash, "camp_legacy")))
             ks = Set(x.key for x in caches(r))
             @test :powspec in ks && :hmaps in ks        # run data + plot-entry data links
             @test loadcache(r, :powspec).x == 1         # bytes unknown on legacy → no check
