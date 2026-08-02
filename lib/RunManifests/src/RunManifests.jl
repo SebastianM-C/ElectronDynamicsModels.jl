@@ -32,6 +32,7 @@ import Serialization
 export git_state, assert_committed, run_provenance, run_spec_from_manifest, expand_sweep
 export find_parent_manifest, find_parent_run, spp_from_manifest
 export write_derived, write_comparison, write_summary, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
+export write_sweep_declaration, read_sweep_declarations
 export record_reduction!
 export units_section, units_from_manifest
 export MANIFEST_SCHEMA_VERSION, manifest_schema_version, check_schema_version
@@ -160,11 +161,15 @@ machines (e.g. the dashboard's known-issue cutoffs) should prefer it.
 
 The standard solver-run `[provenance]` block. `gpu_device` (e.g. `CUDA.name(CUDA.device())`)
 is recorded only when supplied — kept as an argument so this package stays free of any GPU
-backend dependency.
+backend dependency. `sweep_id` (default: `ENV["EDM_SWEEP"]`, as exported by
+`orchestration/run_cell.sh`) records the run's sweep-declaration membership — see
+[`write_sweep_declaration`](@ref); omitted entirely when unset, so runs outside a declared
+sweep look exactly as before.
 """
 function run_provenance(;
         run_id, gpu_backend, repo_dir,
-        script::AbstractString = abspath(PROGRAM_FILE), gpu_device = nothing
+        script::AbstractString = abspath(PROGRAM_FILE), gpu_device = nothing,
+        sweep_id = nothing
     )
     gs = git_state(repo_dir)
     prov = Dict{String, Any}(
@@ -181,6 +186,8 @@ function run_provenance(;
         "timestamp" => string(now()), "timestamp_utc" => string(now(UTC)) * "Z",
     )
     gpu_device === nothing || (prov["gpu_device"] = string(gpu_device))
+    sweep = sweep_id === nothing ? get(ENV, "EDM_SWEEP", "") : string(sweep_id)
+    isempty(sweep) || (prov["sweep_id"] = sweep)
     return prov
 end
 
@@ -545,6 +552,10 @@ function write_run_manifest(
     )
     _script_repo_dirty() && (prov["repo_dirty"] = true)
     derived_from === nothing || (prov["derived_from"] = derived_from)
+    # Analysis nodes launched under a declared sweep (EDM_SWEEP in scope) join it like
+    # solver runs do — same membership channel, same builder hook.
+    sweep = get(ENV, "EDM_SWEEP", "")
+    isempty(sweep) || (prov["sweep_id"] = sweep)
     outs = Dict{String, Any}("plots" => collect(plots))
     datafile === nothing || (outs["datafile"] = datafile)
     m = Dict{String, Any}("schema_version" => MANIFEST_SCHEMA_VERSION, "provenance" => prov, "outputs" => outs)
@@ -607,6 +618,117 @@ function write_solver_manifest(
     path = joinpath(dir, "run_$(run_id).toml")
     open(io -> TOML.print(io, m; sorted = true), path, "w")
     return path
+end
+
+# ───────────────────────── [sweep] — launch-time sweep declarations ─────────────────────
+# A sweep declaration records LAUNCH intent — which [config] knobs a campaign dir sweeps —
+# so the dashboard reads structure instead of re-detecting it from outcomes (the full
+# design lives in the dashboard repo: docs/sweep_declarations_design.md). Membership rides
+# provenance.sweep_id (stamped from EDM_SWEEP by run_cell.sh); runs without it fall to the
+# dir's default declaration for their script. The declared name is an IDENTIFIER: the
+# dashboard's stable sweep id is "<dir>:<name>", so renaming is a breaking act — `label`
+# exists for display.
+
+const SWEEP_NAME_RE = r"^[a-z0-9][a-z0-9_-]*$"
+const SWEEP_DESIGNS = ("grid", "oat")
+
+"""
+    write_sweep_declaration(dir; name, script, axes, design = "grid", hub = nothing,
+                            label = nothing) -> path
+
+Write the `sweep_<name>.toml` declaration into `dir` — the launch-time statement of a
+campaign's structure that the dashboard prefers over sweep auto-detection.
+
+  * `name` — a slug (`[a-z0-9_-]`, leading alphanumeric); becomes the stable dashboard id
+    `"<dir>:<name>"`.
+  * `script` — solver script basename; binds the default-membership rule for runs without
+    a `provenance.sweep_id`.
+  * `axes` — the swept **manifest `[config]` keys** (`"gamma"`, `"a0"`, …), NOT `EDM_*`
+    env names and NOT dashboard display names (the builder translates via its PARAM_SPEC).
+    `[]` declares an unstructured group (a card with only an extras line). Axis *values*
+    are never declared — they are recovered from the member runs, so intent cannot drift
+    from reality.
+  * `design` — `"grid"` (default; axes span a product) or `"oat"` (axes are
+    one-at-a-time arms sharing a hub cell).
+  * `hub` — optional run uuid overriding the inferred OAT hub.
+  * `label` — optional display label (defaults to `name` dashboard-side).
+
+Idempotent: rewrites `sweep_<name>.toml` in place (`run_cell.sh` calls this once per
+campaign, gated on the file's absence). Stamps `schema_version` like the other writers.
+"""
+function write_sweep_declaration(
+        dir::AbstractString; name, script, axes,
+        design = "grid", hub = nothing, label = nothing
+    )
+    n = string(name)
+    occursin(SWEEP_NAME_RE, n) || error(
+        "write_sweep_declaration: name $(repr(n)) is not a slug ([a-z0-9_-], leading " *
+            "alphanumeric) — it becomes the stable dashboard id \"<dir>:$n\"."
+    )
+    string(design) in SWEEP_DESIGNS || error(
+        "write_sweep_declaration: unknown design $(repr(string(design))) — use one of " *
+            join(SWEEP_DESIGNS, ", ") * "."
+    )
+    ax = String[string(a) for a in axes]
+    for a in ax
+        startswith(a, "EDM_") && error(
+            "write_sweep_declaration: axis $(repr(a)) uses the env spelling — axes name " *
+                "manifest [config] keys (e.g. \"gamma\", not \"EDM_GAMMA\")."
+        )
+    end
+    s = Dict{String, Any}(
+        "name" => n, "script" => string(script), "axes" => ax, "design" => string(design)
+    )
+    hub === nothing || (s["hub"] = string(hub))
+    label === nothing || (s["label"] = string(label))
+    m = Dict{String, Any}(
+        "schema_version" => MANIFEST_SCHEMA_VERSION,
+        "provenance" => Dict{String, Any}(
+            "script" => basename(PROGRAM_FILE), "repo_commit" => _script_repo_commit(),
+            "host" => gethostname(), "timestamp" => string(now()), "timestamp_utc" => string(now(UTC)) * "Z"
+        ),
+        "sweep" => s,
+    )
+    path = joinpath(dir, "sweep_$(n).toml")
+    open(io -> TOML.print(io, m; sorted = true), path, "w")
+    return path
+end
+
+"""
+    read_sweep_declarations(dir) -> Vector{NamedTuple}
+
+Parse every `sweep_*.toml` declaration in `dir` into
+`(; name, script, axes, design, hub, label, path)` rows, sorted by filename. TOMLs
+without a `[sweep]` table are skipped; a missing required key or a **duplicate name**
+errors loudly — declarations decide card structure, so ambiguity here must not pass.
+Returns an empty vector for a nonexistent `dir`.
+"""
+function read_sweep_declarations(dir::AbstractString)
+    out = NamedTuple[]
+    isdir(dir) || return out
+    seen = Set{String}()
+    for f in sort(readdir(dir))
+        (startswith(f, "sweep_") && endswith(f, ".toml")) || continue
+        m = TOML.parsefile(joinpath(dir, f))
+        haskey(m, "sweep") || continue
+        check_schema_version(m; source = f)
+        s = m["sweep"]
+        for k in ("name", "script", "axes")
+            haskey(s, k) || error("$f: [sweep] is missing $(repr(k))")
+        end
+        n = string(s["name"])
+        n in seen && error(
+            "$dir: duplicate sweep declaration name $(repr(n)) — names decide card " *
+                "structure; merge the declarations or rename one."
+        )
+        push!(seen, n)
+        push!(out, (;
+            name = n, script = string(s["script"]), axes = String.(s["axes"]),
+            design = string(get(s, "design", "grid")), hub = get(s, "hub", nothing),
+            label = get(s, "label", nothing), path = joinpath(dir, f),
+        ))
+    end
+    return out
 end
 
 # ───────────────────────── [units] — display-unit declarations ─────────────────────────

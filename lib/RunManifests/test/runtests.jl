@@ -209,6 +209,77 @@ end
     @test rl2.defs["omega_lab"]["value"] ≈ ω
 end
 
+@testset "sweep declarations — write/read + membership stamp" begin
+    dir = mktempdir()
+    p = write_sweep_declaration(dir; name = "ll_gamma_ladder",
+        script = "inverse_thomson_scattering.jl", axes = ["gamma"], design = "oat",
+        label = "γ ladder")
+    @test basename(p) == "sweep_ll_gamma_ladder.toml"
+    m = TOML.parsefile(p)
+    @test m["schema_version"] == MANIFEST_SCHEMA_VERSION
+    @test m["sweep"]["axes"] == ["gamma"] && m["sweep"]["design"] == "oat"
+
+    # several named declarations in one dir (the γ-ladder + mini-ladder case)
+    write_sweep_declaration(dir; name = "n_iters",
+        script = "inverse_thomson_scattering.jl", axes = ["newton_iters"])
+    decls = read_sweep_declarations(dir)
+    @test [d.name for d in decls] == ["ll_gamma_ladder", "n_iters"]
+    @test decls[1].design == "oat" && decls[1].label == "γ ladder" && decls[1].hub === nothing
+    @test decls[2].design == "grid" && decls[2].label === nothing
+
+    # idempotent: rewriting a name replaces, never accumulates
+    write_sweep_declaration(dir; name = "n_iters",
+        script = "inverse_thomson_scattering.jl", axes = ["newton_iters", "gamma"])
+    decls = read_sweep_declarations(dir)
+    @test length(decls) == 2
+    @test only(filter(d -> d.name == "n_iters", decls)).axes == ["newton_iters", "gamma"]
+
+    # axes = [] declares a legitimate unstructured group (extras-only card)
+    write_sweep_declaration(dir; name = "probe-extras", script = "x.jl", axes = String[])
+    @test only(filter(d -> d.name == "probe-extras", read_sweep_declarations(dir))).axes ==
+          String[]
+
+    # validation: slug names, known designs, config-key (not env-spelled) axes
+    @test_throws ErrorException write_sweep_declaration(dir; name = "Bad Name",
+        script = "x.jl", axes = ["a0"])
+    @test_throws ErrorException write_sweep_declaration(dir; name = "x",
+        script = "x.jl", axes = ["a0"], design = "star")
+    @test_throws ErrorException write_sweep_declaration(dir; name = "x",
+        script = "x.jl", axes = ["EDM_GAMMA"])
+
+    # duplicate names across files error loudly — declarations decide card structure
+    dup = mktempdir()
+    write_sweep_declaration(dup; name = "s", script = "a.jl", axes = ["a0"])
+    mv(joinpath(dup, "sweep_s.toml"), joinpath(dup, "sweep_s2.toml"))
+    write_sweep_declaration(dup; name = "s", script = "b.jl", axes = ["gamma"])
+    @test_throws ErrorException read_sweep_declarations(dup)
+
+    # membership stamp: EDM_SWEEP → provenance.sweep_id on solver AND analysis nodes;
+    # omitted entirely when unset (legacy manifests stay byte-identical).
+    withenv("EDM_SWEEP" => "ll_gamma_ladder") do
+        prov = run_provenance(; run_id = "sw", gpu_backend = "cuda",
+            repo_dir = pkgdir(RunManifests))
+        @test prov["sweep_id"] == "ll_gamma_ladder"
+        d2 = mktempdir()
+        write_run_manifest(d2; run_id = "sw", script = "x.jl")
+        @test TOML.parsefile(joinpath(d2, "run_sw.toml"))["provenance"]["sweep_id"] ==
+              "ll_gamma_ladder"
+    end
+    withenv("EDM_SWEEP" => nothing) do
+        prov = run_provenance(; run_id = "sw2", gpu_backend = "cuda",
+            repo_dir = pkgdir(RunManifests))
+        @test !haskey(prov, "sweep_id")
+        @test run_provenance(; run_id = "sw3", gpu_backend = "cuda",
+            repo_dir = pkgdir(RunManifests), sweep_id = "explicit")["sweep_id"] == "explicit"
+        d3 = mktempdir()
+        write_run_manifest(d3; run_id = "sw4", script = "x.jl")
+        @test !haskey(TOML.parsefile(joinpath(d3, "run_sw4.toml"))["provenance"], "sweep_id")
+    end
+
+    # a nonexistent dir reads as no declarations (callers probe dirs freely)
+    @test isempty(read_sweep_declarations(joinpath(dir, "nope")))
+end
+
 @testset "dashboard client — browse + lazy load" begin
     # A file:// dashboard fixture: index.json + data/<uuid>/<file>, the same layout the
     # live hosts serve — libcurl's file protocol stands in for Caddy.
