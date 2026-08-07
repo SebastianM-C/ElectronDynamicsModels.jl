@@ -46,31 +46,41 @@ end
 # Atomic units
 const c = 137.03599908330932
 
-# ── Run configuration (ENV-overridable; defaults reproduce the full production run) ──
-const ϕ₀ = parse(Float64, get(ENV, "EDM_INITIAL_PHASE", "0.0"))
-const OUTDIR = get(ENV, "EDM_OUTDIR", ".")
-const NX = parse(Int, get(ENV, "EDM_NX", "400"))
-const NELEC = parse(Int, get(ENV, "EDM_N", "10000"))
-const NSAMPLES = parse(Int, get(ENV, "EDM_NSAMPLES", "8000"))
-const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
-const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
-# Retarded-time kernel: rk4 (ODE march, EDM_NSUBSTEPS) | newton (light-cone root solve,
-# EDM_NEWTON_ITERS). EDM_ACCUM_ALG is the canonical knob (matches the manifest/dashboard
-# accumulation_alg key + inverse_thomson_scattering.jl); EDM_GPU_SOLVER is the legacy alias
-# from the first newton campaigns' manifests — kept so their replay keeps working.
-const GPU_SOLVER = lowercase(get(ENV, "EDM_ACCUM_ALG", get(ENV, "EDM_GPU_SOLVER", "rk4")))
-GPU_SOLVER in ("rk4", "newton") ||
-    error("EDM_ACCUM_ALG must be \"rk4\" or \"newton\", got $(repr(GPU_SOLVER))")
-const NEWTON_ITERS = parse(Int, get(ENV, "EDM_NEWTON_ITERS", "2"))  # ≥3 for strongly-relativistic forward scattering
-const RELTOL = parse(Float64, get(ENV, "EDM_RELTOL", "1e-12"))   # ODE-solve rel tolerance (Vern9)
-const ABSTOL_ENV = get(ENV, "EDM_ABSTOL", "")                    # "" ⇒ abserr(a0); else this Float64
-const INTERP_SAVEAT = get(ENV, "EDM_INTERP_SAVEAT", "")          # trajectory-spline knots/laser-period;
+# ── Run configuration — SPEC-driven (the RunSpec pilot). One typed source of knobs:
+# RunManifests.load_spec reads the EDM_SPEC cell file (when set) and applies the EDM_*
+# env overrides on top (last-wins, so per-cell overrides and one-off tweaks behave exactly
+# as before; env-only campaigns keep working with no spec file at all). A `nothing` field
+# means "this script decides" — the defaults below reproduce the full production run, and
+# the manifest records the RESOLVED values via config_dict at the end.
+const SPEC = load_spec()
+const ϕ₀ = something(SPEC.initial_phase, 0.0)
+const OUTDIR = get(ENV, "EDM_OUTDIR", ".")               # infra, not physics — env stays
+const NX = something(SPEC.Nx, 400)
+const NELEC = something(SPEC.N, 10_000)
+const NSAMPLES = something(SPEC.N_samples, 8000)
+const SPP = something(SPEC.samples_per_period, 16)
+const NSUBSTEPS = something(SPEC.n_substeps, 1)
+# Retarded-time kernel: rk4 (ODE march, n_substeps) | newton (light-cone root solve,
+# newton_iters). The spec stores the dashboard-canonical kernel name (load_spec maps the
+# EDM_ACCUM_ALG / legacy EDM_GPU_SOLVER env values rk4|newton onto it); the solve path
+# below keeps using the short spelling.
+const GPU_SOLVER = let alg = something(SPEC.accumulation_alg, "GPUKernelRK4")
+    alg == "GPUKernelRK4" ? "rk4" :
+    alg == "GPUKernelNewton" ? "newton" :
+        error("spec accumulation_alg must be \"GPUKernelRK4\" or \"GPUKernelNewton\", got $(repr(alg))")
+end
+const NEWTON_ITERS = something(SPEC.newton_iters, 2)  # ≥3 for strongly-relativistic forward scattering
+const RELTOL = something(SPEC.reltol, 1e-12)     # ODE-solve rel tolerance (Vern9)
+const ABSTOL_SPEC = SPEC.abstol                  # nothing ⇒ abserr(a0); resolved below
+const INTERP_SAVEAT = let s = something(SPEC.interp_saveat, "adaptive")
+    s == "adaptive" ? "" : s                     # keep the script's "" ⇒ adaptive sentinel
+end
 #   "" ⇒ adaptive (Vern9 native steps; sparse at small a0 ⇒ coarse cubic spline). A number forces uniform
 #   saveat = T/knots-per-period so the CubicSpline has dense knots (small-a0 2ω-floor source study).
-const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
-const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
-const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
-FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"total\", got \"$FIELD_MODE\"")
+const A0 = something(SPEC.a0, 0.1)
+const SYNC = something(SPEC.sync_per_electron, false)
+const FIELD_MODE = Symbol(something(SPEC.mode, "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
+FIELD_MODE in (:split, :total) || error("spec mode must be \"split\" or \"total\", got \"$FIELD_MODE\"")
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
@@ -82,7 +92,7 @@ const T_START = time()   # wall-clock start → [timing].total in the manifest
 # counter-propagating electron of that γ sees. The pulse keeps its cycle count (τ·ω = 150, phase
 # is boost-invariant) while the transverse/detector geometry stays pinned to the lab λ₀ = 2πc/0.057
 # layout (transverse lengths are boost-invariant). 1.0 ⇒ byte-identical to the production setup.
-const OMEGA_SCALE = parse(Float64, get(ENV, "EDM_OMEGA_SCALE", "1.0"))
+const OMEGA_SCALE = something(SPEC.omega_scale, 1.0)
 const ω₀_lab = 0.057
 ω = ω₀_lab * OMEGA_SCALE
 τ = 150 / ω
@@ -95,7 +105,7 @@ a₀ = A0
 
 p_radial = 2
 m_azimuthal = -2
-pol = Symbol(get(ENV, "EDM_POL", "circular_minus"))   # EDM_POL: :linear | :circular[_plus] | :circular_minus (default matches the LPWA analytic trajectory's spin); recorded in [laser].pol
+pol = Symbol(something(SPEC.pol, "circular_minus"))   # spec pol: linear | circular[_plus] | circular_minus (default matches the LPWA analytic trajectory's spin); recorded in [laser].pol
 profile = :gaussian
 z_focus = 0.0
 
@@ -175,7 +185,7 @@ function abserr(a₀)
     return 10^expo
 end
 
-const ABSTOL = isempty(ABSTOL_ENV) ? abserr(a₀) : parse(Float64, ABSTOL_ENV)
+const ABSTOL = something(ABSTOL_SPEC, abserr(a₀))
 # Optional uniform saveat (= T_laser / knots-per-period) so the trajectory CubicSpline gets dense knots.
 # Passed ONLY when the knob is set, so the default path is byte-identical to the production solve
 # (no saveat ⇒ Vern9's adaptive output). The solve always steps adaptively to RELTOL/ABSTOL regardless.
@@ -199,7 +209,7 @@ trajs = trajectory_interpolants(solution)
 # corner-anchored x⁰_start sits ~11λ_lab after the center-pixel arrival, so once that spread
 # (in scaled periods, ∝scale) exceeds the 8τ pulse half-span (γ≳10 at full frame) the window
 # would open after the peak passed the central pixels; ±8 w₀ suffices at γ=10 (gamma_equiv).
-const HALFW = parse(Float64, get(ENV, "EDM_SCREEN_HALFW", "25.0"))
+const HALFW = something(SPEC.screen_halfw, 25.0)
 const Z = 2.0e5λ_lab
 const samples_per_period = SPP
 const δt = 2π / ω / samples_per_period
@@ -284,29 +294,24 @@ provenance = run_provenance(;
     gpu_device = GPU_BACKEND == "cuda" ? CUDA.name(CUDA.device()) : nothing,
 )
 
-config = Dict{String, Any}(
-    "initial_phase" => ϕ₀,
-    "a0" => A0,
-    "Nx" => Nx,
-    "Ny" => Ny,
-    "N" => N,
-    "N_samples" => N_samples,
-    "samples_per_period" => samples_per_period,
-    "n_substeps" => NSUBSTEPS,
-    # dashboard-canonical kernel name (the builder's accumulation_alg param; defaults to
-    # GPUKernelRK4 for manifests that predate the knob)
-    "accumulation_alg" => GPU_SOLVER == "newton" ? "GPUKernelNewton" : "GPUKernelRK4",
-    "newton_iters" => NEWTON_ITERS,    # Newton corrections/slot (active when the Newton kernel is selected)
-    "reltol" => RELTOL,                # ODE-solve tolerances (replay + small-a0 floor study)
-    "abstol" => ABSTOL,
-    "interp_saveat" => isempty(INTERP_SAVEAT) ? "adaptive" : INTERP_SAVEAT,  # trajectory-spline knots/period
-
-    "mode" => string(FIELD_MODE),      # :split → (E,B,E_far,B_far) | :total → (E,B); mirrors lpwa.jl
-    "sync_per_electron" => SYNC,       # replay input: run_spec_from_manifest reads this
-    "observable" => "field",          # distinguishes this run from the 4-potential (_A) runs
-    "omega_scale" => OMEGA_SCALE,      # Doppler-equivalent ω upshift (1.0 = lab λ₀ production)
-    "screen_halfw" => HALFW,           # screen half-extent in w₀ units (25 = production framing)
+# The RESOLVED spec — what this run actually used, script defaults applied. Its
+# config_dict is the manifest [config] section, so the spec ⇄ manifest vocabulary cannot
+# drift from the run inputs. Ny and observable have no spec field (grid bookkeeping /
+# run-class tag, not replay knobs) and ride `extra`, keeping the [config] key set
+# identical to pre-spec manifests — mixed old/new pools stay raw-config-identical for
+# the builder's PARAM_SPEC gap detector. pol is deliberately NOT here: it records in
+# [laser], as before.
+resolved_spec = ThomsonScatteringSpec(;
+    initial_phase = ϕ₀, a0 = A0, Nx = Nx, N = N, N_samples = N_samples,
+    samples_per_period = samples_per_period, n_substeps = NSUBSTEPS,
+    accumulation_alg = GPU_SOLVER == "newton" ? "GPUKernelNewton" : "GPUKernelRK4",
+    newton_iters = NEWTON_ITERS, reltol = RELTOL, abstol = ABSTOL,
+    interp_saveat = isempty(INTERP_SAVEAT) ? "adaptive" : INTERP_SAVEAT,
+    mode = string(FIELD_MODE), sync_per_electron = SYNC,
+    omega_scale = OMEGA_SCALE, screen_halfw = HALFW,
+    extra = Dict{String, Any}("Ny" => Ny, "observable" => "field"),
 )
+config = config_dict(resolved_spec)
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
