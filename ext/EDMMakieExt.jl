@@ -19,6 +19,8 @@ function ElectronDynamicsModels.plot_harmonic_grid(
         colormap = :jet, colorrange = harmonic_colorrange, transform = real,
         highclip = nothing, lowclip = nothing,
         colorbar_offset = true, ncols = 3, panelsize = 300, outfile = nothing,
+        fontsize = nothing, titlesize = 16,
+        cbar_ticklabelsize = 10, cbar_labelsize = 11,
     )
     ncomp = size(maps, 1)
     length(labels) == ncomp ||
@@ -27,7 +29,11 @@ function ElectronDynamicsModels.plot_harmonic_grid(
     ys = collect(y_grid) ./ w₀
     xlab, ylab = w₀ == 1 ? ("x", "y") : ("x / w₀", "y / w₀")
     # Scope the LaTeX theme to this figure (no global set_theme! side effect).
-    fig = with_theme(theme_latexfonts()) do
+    # `fontsize` (when given) scales every themed text — axis titles, labels, ticks;
+    # the Colorbar/suptitle sizes have their own kwargs since they are set explicitly below.
+    base_theme = fontsize === nothing ? theme_latexfonts() :
+        merge(Theme(; fontsize), theme_latexfonts())
+    fig = with_theme(base_theme) do
         f = Figure()
         for c in 1:ncomp
             cmap_c = @view maps[c, :, :]
@@ -54,7 +60,8 @@ function ElectronDynamicsModels.plot_harmonic_grid(
                 sc = 10.0^e
                 pad = 0.0015 * (cr[2] - cr[1])
                 Colorbar(
-                    gl[1, 2], hm; width = 10, height = panelsize, ticklabelsize = 10, labelsize = 11,
+                    gl[1, 2], hm; width = 10, height = panelsize,
+                    ticklabelsize = cbar_ticklabelsize, labelsize = cbar_labelsize,
                     ticks = ([cr[1] + pad, 0.0, cr[2] - pad],
                         [string(round(cr[1] / sc; digits = 2)), "0", string(round(cr[2] / sc; digits = 2))]),
                     label = L"\times 10^{%$e}", labelrotation = 0,
@@ -65,7 +72,7 @@ function ElectronDynamicsModels.plot_harmonic_grid(
         end
         # Title LAST: `f[0, :]`'s colon span resolves against the CURRENT layout extent — created
         # before the panels it pins to the then-only column and bloats the gap after column 1.
-        isempty(title) || Label(f[0, :], title; fontsize = 16, font = :bold)
+        isempty(title) || Label(f[0, :], title; fontsize = titlesize, font = :bold)
         # Breathing room between columns so each colorbar's tick labels clear the neighbouring panel.
         min(ncols, ncomp) > 1 && colgap!(f.layout, 26)
         resize_to_layout!(f)
