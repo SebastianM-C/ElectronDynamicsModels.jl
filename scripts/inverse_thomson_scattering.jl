@@ -227,10 +227,13 @@ Ny = NX
 #  :full   — legacy wide window. x⁰_start = c·τi + hypot(Z, screen_edge) (plain c·τi, NOT γc·τi: the boosted
 #            electron starts far behind at γc·τi but only radiates near t=0, whose light reaches the screen
 #            at x⁰≈Z; c·τi is a small lead-in — γc·τi would start ~γ× too early and miss it). N = EDM_NSAMPLES.
-#  :narrow — recentre on the burst: on-axis arrival ≈ Z (measured + ~0.003 T at γ=10); off-axis pixels
-#            arrive LATER by the flat-screen path excess |r_o−r_e|²/(2Z), up to ~(√2·screen_hw + Rmax)²/(2Z)
-#            at the corner (worst emitter). Window = lead + that spread + burst + tail; N_samples auto-sized
-#            to it, so raising EDM_SPP resolves ≈4γ²ω at a fixed/short window.
+#  :narrow — recentre on the burst: the observed burst is CENTERED on the on-axis arrival ≈ Z
+#            (emission at lab t from z = βct arrives at Z + (1−β)ct, so the early half arrives
+#            BEFORE Z; peak measured + ~0.003 T at γ=10). Off-axis pixels arrive LATER by the
+#            flat-screen path excess |r_o−r_e|²/(2Z), up to ~(√2·screen_hw + Rmax)²/(2Z) at the
+#            corner (worst emitter). Window = lead + burst + that spread + tail, opening burst/2
+#            before Z; N_samples auto-sized to it, so raising EDM_SPP resolves ≈4γ²ω at a
+#            fixed/short window.
 # The burst length is DERIVED, not frozen at a measurement: the ~τ-long interaction is observed
 # Doppler-compressed by (1−β)/(1+β) = 1/N0, so the 1%-field Gaussian width is 2√(ln 100)·cτ/N0
 # (= 0.257λ at γ=10 — matching the CPU-LW measured ~0.26 T to <1%); the ×1.4 margin reproduces the
@@ -256,7 +259,14 @@ const N_samples, x⁰_start = if WINDOW == :full
     NSAMPLES, c * τi + hypot(Z, screen_hw + Rmax)
 else
     lead = WINDOW_LEAD * λ; tail = WINDOW_TAIL * λ      # lead-in / tail (x⁰ lengths, 1λ = 1 T; env knobs)
-    x0 = Z - lead - bunch_early                         # arrival ≈ Z ⇒ burst sits ~`lead` into the window
+    # The burst is CENTERED at ≈Z, so open burst/2 before it: the 1%-rise then sits ~`lead` into
+    # the window. Anchoring at Z − lead (pre-fix) treated Z as the burst START and clipped the
+    # leading half — 39/28/17/8% of the center-pixel burst energy at γ = 1.5/2/2.5/3, invisible at
+    # the γ=10 validation point (burst/2 = 0.13λ < lead). The budget below already carries a full
+    # `burst`, so the shift re-spends the tail surplus on the rise: earliest content Z − burst/2
+    # (center pixel), latest Z + corner_spread + burst/2 ≤ window end with `tail` intact —
+    # N_samples is unchanged. (Narrow-window audit, 2026-08-30.)
+    x0 = Z - burst / 2 - lead - bunch_early
     ceil(Int, (lead + bunch_early + corner_spread + burst + tail) / (c * δt)), x0
 end
 BUNCH_NB > 0 && WINDOW == :narrow &&
