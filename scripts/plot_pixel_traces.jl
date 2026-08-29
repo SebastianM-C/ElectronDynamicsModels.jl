@@ -10,7 +10,7 @@
 # so coherent structure lands on the per-electron amplitude) is overlaid for comparison.
 #
 # ENV knobs:
-#   EDM_TRACE_RADII      pixel radii as fractions of the screen half-extent, default "0,0.25,0.5,0.75"
+#   EDM_TRACE_RADII      pixel radii as fractions of the screen half-extent, default "0,0.25,0.5,0.75,1.0"
 #   EDM_TRACE_ELECTRONS  sunflower indices (csv); default 5 electrons at r/Rmax ≈ 0, ¼, ½, ¾, 1
 #                        (k = N·f² since the sunflower radius grows as √k)
 #   EDM_TRACE_TOTAL      1 (default) → also accumulate the full-N sum; 0 → skip (much faster)
@@ -36,7 +36,7 @@ length(ARGS) == 1 || error("usage: plot_pixel_traces.jl <run_manifest.toml>")
 const MFILE = abspath(ARGS[1])
 isfile(MFILE) || error("no manifest at $MFILE")
 
-const RADII = parse.(Float64, split(get(ENV, "EDM_TRACE_RADII", "0,0.25,0.5,0.75"), ","))
+const RADII = parse.(Float64, split(get(ENV, "EDM_TRACE_RADII", "0,0.25,0.5,0.75,1.0"), ","))
 all(0 .<= RADII .<= 1) || error("EDM_TRACE_RADII are fractions of the screen half-extent (0…1)")
 const TRACE_TOTAL = get(ENV, "EDM_TRACE_TOTAL", "1") == "1"
 const OUTDIR = get(ENV, "EDM_OUTDIR", dirname(MFILE))
