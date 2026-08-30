@@ -513,3 +513,26 @@ end
     d = TOML.parsefile(joinpath(dir, only(filter(f -> startswith(f, "derived_"), readdir(dir)))))
     @test endswith(d["provenance"]["timestamp_utc"], "Z")
 end
+
+@testset "record_reduction! — re-reduce refreshes bytes, keeps untouched entries" begin
+    dir = mktempdir()
+    write(joinpath(dir, "maps.jls"), zeros(UInt8, 100))
+    write(joinpath(dir, "traces.jls"), zeros(UInt8, 50))
+
+    # first pass: two products staged, then finalized (run_cell.sh does mv .partial → .reduced)
+    partial = record_reduction!(dir, "rr", "maps.jls")
+    @test record_reduction!(dir, "rr", "traces.jls") == partial
+    final = joinpath(dir, "rr.reduced")
+    mv(partial, final)
+    @test length(TOML.parsefile(final)["reduction"]) == 2
+
+    # re-reduce: one product regrows on disk; only IT is re-recorded, then finalize again
+    write(joinpath(dir, "maps.jls"), zeros(UInt8, 300))
+    mv(record_reduction!(dir, "rr", "maps.jls"), final; force = true)
+    m = TOML.parsefile(final)
+    @test m["run_id"] == "rr"                                # header seeded from the final marker
+    @test length(m["reduction"]) == 2                        # replaced, not duplicated
+    bytes = Dict(e["file"] => e["bytes"] for e in m["reduction"])
+    @test bytes["maps.jls"] == 300                           # byte size refreshed (collector byte-compares)
+    @test bytes["traces.jls"] == 50                          # untouched entry survived the re-reduce
+end
