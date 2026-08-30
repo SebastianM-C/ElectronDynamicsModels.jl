@@ -461,11 +461,23 @@ function recover_from_manifest(toml)
         # must ALSO declare what it produced, so [outputs] is complete for resolve_hmaps + the
         # dashboard hmaps download. `sorted` keeps [timing] last (the ops timing-append relies on it).
         outs = m["outputs"]
-        if get(outs, "harmonic_maps", nothing) === nothing
-            outs["harmonic_maps"] = basename(hprod.hmapsfile)
-            outs["plots"] = basename.(hprod.plots)
+        declare = get(outs, "harmonic_maps", nothing) === nothing
+        # Stamp the APPLIED taper: an env-override re-reduce (e.g. hann→none on an archived cube)
+        # must leave the manifest describing the products actually on disk — otherwise the next
+        # recovery without the env var silently reverts them to hann, and nothing records that
+        # the published maps changed convention.
+        restamp = get(cfg, "apodization", nothing) != apod
+        if declare || restamp
+            if declare
+                outs["harmonic_maps"] = basename(hprod.hmapsfile)
+                outs["plots"] = basename.(hprod.plots)
+            end
+            restamp && (cfg["apodization"] = apod)
             open(io -> TOML.print(io, m; sorted = true), toml, "w")
-            println("declared harmonic_maps + plots in $(basename(toml))")
+            println(
+                "updated $(basename(toml)):" * (declare ? " declared harmonic_maps + plots" : "") *
+                    (restamp ? " stamped apodization = $apod" : "")
+            )
         end
         return hprod
     end

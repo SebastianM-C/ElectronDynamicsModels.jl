@@ -15,6 +15,11 @@
 # original recipe rows). Same BASE as rest_departure_bridge otherwise.
 CAMPAIGN=rest_departure_bridge_refix
 SCRIPT=scripts/inverse_thomson_scattering.jl
+KEEP_CUBE=1          # archive the cubes (R2 drain) — also arms the hotaisle backend's drainer,
+#   whose start gate reads the CAMPAIGN file on the driver; without it the VM-side KEEP_CUBE=1
+#   default keeps cubes that never drain and the teardown cube-gate blocks.
+SWEEP_AXES=gamma_eps # declared ladder axis (the builder no longer derives axes; SPP/tspan/hw
+#   co-vary with γ here, so an undeclared dir would shatter into standalone runs)
 BASE=(
   EDM_NX=601 EDM_FIELD_MODE=total
   EDM_N=2000 EDM_NSUBSTEPS=1 EDM_RELTOL=1e-13
