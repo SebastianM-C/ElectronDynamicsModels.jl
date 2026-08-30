@@ -525,7 +525,7 @@ else
         harmonics = HARMONICS,   # :narrow ⇒ around the ≈4γ²ω backscatter line; :full ⇒ (1,2,3,4)
         window = APODIZATION == "none" ? nothing : hann,
         title_prefix = "Inverse Thomson scattering", fileprefix = "inverse_thomson",
-        style = harmonic_field_style(cap_mult = 4.0),   # speckle maps: median-capped colorrange
+        style = harmonic_field_style(cap_quantile = 0.995),   # speckle maps: quantile-capped colorrange
         n0 = N0,                 # boosted runs label frequencies in ω_bs = N0·ω₁ units
     )
     # Speckle-envelope chips (per-bin maps are envelope × speckle; see the report).
