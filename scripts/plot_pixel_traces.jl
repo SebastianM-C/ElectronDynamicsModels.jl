@@ -57,7 +57,15 @@ Rmax = Float64(setup["Rmax"])
 Z = Float64(setup["Z"])
 N_samples = Int(cfg["N_samples"])
 spp = Int(cfg["samples_per_period"])
-HALFW = Float64(get(cfg, "screen_halfw", 25.0))   # pre-knob manifests: production framing
+# Mini-screen half-width = the RUN's screen. Current manifests record the zoom knob as
+# [setup].screen_hw (absolute) / [config].screen_hw_w0; the old cfg.screen_halfw key missed
+# them, so zoomed-screen runs (hw < 25 w₀) fell back to the 25 w₀ production framing and the
+# outer trace rows sampled pixels OFF the cube's screen — beyond the narrow window's corner
+# budget, so their bursts overran the window end and the chips showed a spurious end-of-pulse
+# cutoff (bridge-refix γ=2/2.5, 2026-08-30). The real screen corner is contained by
+# construction (tail margin intact), so on-screen rows never clip.
+HALFW = "screen_hw" in keys(setup) ? Float64(setup["screen_hw"]) / w₀ :
+    Float64(get(cfg, "screen_hw_w0", get(cfg, "screen_halfw", 25.0)))
 reltol = Float64(get(cfg, "reltol", 1.0e-12))
 abstol = Float64(cfg["abstol"])
 interp_saveat = string(get(cfg, "interp_saveat", "adaptive"))

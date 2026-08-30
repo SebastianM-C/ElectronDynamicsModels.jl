@@ -35,7 +35,7 @@ function load_cells(dir)
         c = m["config"]
         push!(cells, (; id, system = get(c, "system", "classical"), gamma = get(c, "gamma", 0),
             a0 = c["a0"], iters = get(c, "newton_iters", 2),
-            n0 = round(Int, get(c, "backscatter_n0", 1)), h = deserialize(hm)))
+            n0 = Float64(get(c, "backscatter_n0", 1)), h = deserialize(hm)))
     end
     return cells
 end
@@ -46,7 +46,7 @@ function main(dir)
     for c in cells
         push!(get!(groups, (c.gamma, c.a0, c.iters), []), c)
     end
-    style = harmonic_field_style(cap_mult = 4.0)
+    style = harmonic_field_style(cap_quantile = 0.995)
     pairs = []
     for ((γ, a0, it), g) in groups
         cl = findfirst(c -> c.system == "classical", g)

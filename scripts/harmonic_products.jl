@@ -29,7 +29,7 @@ _read_cube(path) = get(ENV, "EDM_DIRECT_READ", "0") == "1" ?
     open(deserialize, `dd if=$path bs=64M iflag=direct status=none`) : deserialize(path)
 
 """
-    harmonic_field_style(; cap_mult = nothing) -> (; colormap, colorrange[, highclip, lowclip])
+    harmonic_field_style(; cap_quantile = nothing) -> (; colormap, colorrange[, highclip, lowclip])
 
 Panel style for the field-harmonic heat-maps, splatted into [`plot_harmonic_grid`]. Those panels
 show the **real part** of each component (signed, oscillatory data), so the choice here sets how
@@ -38,15 +38,18 @@ the sign structure reads. Returns a `NamedTuple` with:
   * `colorrange` — a `data -> (lo, hi)` function applied **per panel** (`symmetric_colorrange` and
     `harmonic_colorrange` are both in scope from ElectronDynamicsModels).
 
-`cap_mult` caps the colorrange at ±`cap_mult`×median(|data|) with over-limit pixels rendered in
-the clip colors: speckle-dominated maps (inverse scattering) are otherwise normalized to their
-brightest grain (~6× median), which buries everything below ~2× median in the flat bottom of the
-colormap. The panel title still reports the true peak.
+`cap_quantile` caps the colorrange at ±quantile(|data|, cap_quantile) with over-limit pixels
+rendered in the clip colors: speckle-dominated maps (inverse scattering) are otherwise normalized
+to their brightest grain, which buries everything below ~2× median in the flat bottom of the
+colormap. A quantile clips a FIXED pixel fraction whatever the tail shape — the previous
+±4×median(|data|) cap assumed the ~6×median tail of fully-developed speckle and saturated 36% of
+the central quarter on the heavy-tailed low-γ bridge maps, where the bright beaming core sits on
+a large dark screen (q99.5 ≈ 20×median there). The panel title still reports the true peak.
 """
-function harmonic_field_style(; cap_mult = nothing)
-    cap_mult === nothing && return (; colormap = :jet, colorrange = symmetric_colorrange)
+function harmonic_field_style(; cap_quantile = nothing)
+    cap_quantile === nothing && return (; colormap = :jet, colorrange = symmetric_colorrange)
     capped = data -> begin
-        hi = min(maximum(abs, data), cap_mult * median(abs.(data)))
+        hi = quantile(abs.(vec(data)), cap_quantile)
         hi = hi > 0 ? hi : one(hi)
         (-hi, hi)
     end
@@ -84,7 +87,7 @@ function write_field_products(
             title = n0 == 1 ?
                 @sprintf("%s (%s field) — %gω₁ (%.3f× fundamental)",
                 title_prefix, ftype, n, ffund[k]) :
-                @sprintf("%s (%s field) — %gω₁ = %.4g ω_bs (ω_bs = %dω₁)",
+                @sprintf("%s (%s field) — %gω₁ = %.4f ω_bs (ω_bs = %.4gω₁)",
                 title_prefix, ftype, n, ffund[k] / n0, n0),
             outfile = out,
         )
@@ -97,8 +100,8 @@ function write_field_products(
             plot = basename(out), source = source_datafile,
             setup = Dict("field" => ftype), plot_params = Dict("apodization" => window),
             description = "Field harmonic maps at $(n)ω₁" *
-                (n0 == 1 ? "" : " = $(round(n / n0, sigdigits = 4)) ω_bs (ω_bs = $(n0)ω₁, " *
-                    "the on-axis backscattered fundamental)") *
+                (n0 == 1 ? "" : " = $(round(n / n0, sigdigits = 4)) ω_bs (ω_bs = " *
+                    "$(round(n0, sigdigits = 6))ω₁, the on-axis backscattered fundamental)") *
                 " — each panel a component (Eˣ…Bᶻ). " *
                 "Toggle total (far 1/R + near 1/R²) vs far (radiation 1/R only); the far field is " *
                 "what the LPWA analytic formula is compared against in the lpwa-vs-numeric view. " *
@@ -394,6 +397,34 @@ function _retire_stale_phase(dir, run_tag)
     return
 end
 
+# Delete the per-bin chip artifacts (field/envelope/phase sidecars + PNGs) of harmonic bins
+# DROPPED by an EDM_HARMONICS re-extraction, so the campaign dir doesn't keep publishing chips
+# for bins the manifest no longer declares. Bin `n` appears in filenames via plain string
+# interpolation of the solver's parse (integer-valued bins are Int — "h6", never "h6.0"), so
+# string(n) reproduces the on-disk names exactly.
+function _retire_dropped_bins(dir, run_tag, fileprefix, old_harmonics, new_harmonics)
+    id8 = first(run_tag, 8)
+    keep = Set(string.(collect(new_harmonics)))
+    for n in old_harmonics
+        s = string(n)
+        s in keep && continue
+        for f in (
+                "derived_h$(s)_total_$(id8).toml", "derived_h$(s)_far_$(id8).toml",
+                "derived_envelope_$(s)_$(id8).toml",
+                "derived_phaseE_$(s)_$(id8).toml", "derived_phaseB_$(s)_$(id8).toml",
+                "$(fileprefix)_field_h$(s)_$(run_tag).png",
+                "$(fileprefix)_fieldfar_h$(s)_$(run_tag).png",
+                "$(fileprefix)_envelope_h$(s)_$(run_tag).png",
+                "$(fileprefix)_phaseE_h$(s)_$(run_tag).png",
+                "$(fileprefix)_phaseB_h$(s)_$(run_tag).png",
+            )
+            p = joinpath(dir, f)
+            isfile(p) && (rm(p); println("retired dropped-bin → $f"))
+        end
+    end
+    return
+end
+
 # ── Standalone recovery: rebuild reduced maps + plots from a serialized cube via its manifest ──
 function recover_from_manifest(toml)
     m = TOML.parsefile(toml)
@@ -405,9 +436,9 @@ function recover_from_manifest(toml)
     inverse = get(cfg, "scattering", "") == "inverse"
     title_prefix, fileprefix = lpwa ? ("LPWA", "lpwa") :
         inverse ? ("Inverse Thomson scattering", "inverse_thomson") : ("Thomson scattering", "thomson")
-    # Speckle-dominated inverse maps get the median-capped colorrange (grains saturate in the
-    # clip colors); rest-electron/LPWA maps keep the plain symmetric range.
-    style = harmonic_field_style(cap_mult = inverse ? 4.0 : nothing)
+    # Speckle-dominated inverse maps get the quantile-capped colorrange (brightest 0.5% saturate
+    # in the clip colors); rest-electron/LPWA maps keep the plain symmetric range.
+    style = harmonic_field_style(cap_quantile = inverse ? 0.995 : nothing)
     run_tag = m["provenance"]["run_id"]
     cube = joinpath(dir, m["outputs"]["datafile"])
     # Envelope view geometry (inverse runs only): the blur grain needs the screen distance +
@@ -446,37 +477,55 @@ function recover_from_manifest(toml)
         apod = lowercase(get(ENV, "EDM_APODIZATION", get(cfg, "apodization", "hann")))
         apod in ("hann", "none") ||
             error("apodization must be \"hann\" or \"none\", got \"$apod\"")
+        # The run's own bins (≈4γ²ω for inverse :narrow) — a deferred reduction must produce
+        # exactly what the inline (non-SKIP_POST) path would have; legacy default (1,2,3,4).
+        # An explicit EDM_HARMONICS on a recovery invocation overrides the manifest — the
+        # re-extraction path for archived cubes (e.g. adding measured-powspec-peak line anchors).
+        # Same parse as the solver: integer-valued entries stay Int so filenames read "h6", not "h6.0".
+        harms = if haskey(ENV, "EDM_HARMONICS")
+            Tuple(
+                isinteger(n) ? Int(n) : Float64(n)
+                    for n in parse.(Float64, split(ENV["EDM_HARMONICS"], ","))
+            )
+        else
+            Tuple(get(cfg, "harmonics", (1, 2, 3, 4)))
+        end
         hprod = write_harmonic_products(
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
             source_datafile = m["outputs"]["datafile"], title_prefix, fileprefix, style, n0,
-            # The run's own bins (≈4γ²ω for inverse :narrow) — a deferred reduction must produce
-            # exactly what the inline (non-SKIP_POST) path would have; legacy default (1,2,3,4).
-            harmonics = Tuple(get(cfg, "harmonics", (1, 2, 3, 4))),
+            harmonics = harms,
             window = apod == "none" ? nothing : hann,
         )
         isfile(joinpath(dir, ".reduce_only")) || get(ENV, "EDM_REDUCE_ONLY", "0") == "1" ||
-            envelope!(hprod.fields_h, Tuple(get(cfg, "harmonics", (1, 2, 3, 4))), x_grid, y_grid, las["w0"])
+            envelope!(hprod.fields_h, harms, x_grid, y_grid, las["w0"])
         # Close the loop the inline (non-SKIP_POST) path already does: a deferred/async reduction
         # must ALSO declare what it produced, so [outputs] is complete for resolve_hmaps + the
         # dashboard hmaps download. `sorted` keeps [timing] last (the ops timing-append relies on it).
         outs = m["outputs"]
         declare = get(outs, "harmonic_maps", nothing) === nothing
-        # Stamp the APPLIED taper: an env-override re-reduce (e.g. hann→none on an archived cube)
-        # must leave the manifest describing the products actually on disk — otherwise the next
-        # recovery without the env var silently reverts them to hann, and nothing records that
-        # the published maps changed convention.
+        # Stamp what was APPLIED: an env-override re-reduce (hann→none, or an EDM_HARMONICS
+        # re-extraction) must leave the manifest describing the products actually on disk —
+        # otherwise the next recovery without the env var silently reverts them, and nothing
+        # records that the published maps changed convention/bins.
         restamp = get(cfg, "apodization", nothing) != apod
-        if declare || restamp
+        old_harms = collect(get(cfg, "harmonics", (1, 2, 3, 4)))
+        restamp_h = collect(Float64, old_harms) != collect(Float64, harms)
+        # Bins dropped by the re-extraction leave chips behind that the manifest no longer
+        # declares — retire them so the dir (and the next publish staging) stays consistent.
+        restamp_h && _retire_dropped_bins(dir, run_tag, fileprefix, old_harms, harms)
+        if declare || restamp || restamp_h
             if declare
                 outs["harmonic_maps"] = basename(hprod.hmapsfile)
                 outs["plots"] = basename.(hprod.plots)
             end
             restamp && (cfg["apodization"] = apod)
+            restamp_h && (cfg["harmonics"] = collect(harms))
             open(io -> TOML.print(io, m; sorted = true), toml, "w")
             println(
                 "updated $(basename(toml)):" * (declare ? " declared harmonic_maps + plots" : "") *
-                    (restamp ? " stamped apodization = $apod" : "")
+                    (restamp ? " stamped apodization = $apod" : "") *
+                    (restamp_h ? " stamped harmonics = $(collect(harms))" : "")
             )
         end
         return hprod
@@ -512,7 +561,9 @@ function recover_from_manifest(toml)
         plot_power_spectrum(
             pc.freqs, pc.ps;
             ω = C_LIGHT * 2π / λ, labels = COMPLABELS,
-            marks = collect(Float64, pc.harmonics), n0 = pc.n0,
+            # n0 from the MANIFEST, not the cache: caches serialized before the exact-n0 fix
+            # froze the rounded integer (7 vs 6.8541 at γ=1.5 — the 2.1% axis offset).
+            marks = collect(Float64, pc.harmonics), n0,
             title = "$title_prefix — field power spectra (un-windowed)",
             outfile = joinpath(dir, "powspec_$(run_tag).png"),
         )

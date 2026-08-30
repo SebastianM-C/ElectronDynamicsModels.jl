@@ -199,6 +199,11 @@ const DTMAX = τ / (2 * GAMMA)
 # harmonic the :narrow window targets. EDM_HARMONICS overrides (comma-separated n); default is the
 # fundamental ±1 + its 2nd (narrow) or the legacy (1,2,3,4) (full — the ω-harmonics of the drive laser).
 const N0 = round(Int, (1 + β) / (1 - β))
+# Display/units twin of N0: the EXACT line ratio. N0 stays integer where integers belong
+# (:narrow default bins, Nyquist guard, burst sizing — acquisition parity); every ω_bs
+# LABEL and axis uses the exact value, else near-rest rungs show the line at 0.98 ω_bs
+# (the round is +2.1% at γ=1.5 — larger than the physical a0² redshift it obscures).
+const N0_EXACT = (1 + β) / (1 - β)
 const HARMONICS = let h = get(ENV, "EDM_HARMONICS", "")
     # Fractional n is allowed: near-rest boosted lines sit BETWEEN laser harmonics
     # ((1+β)/(1−β) = 1.33 at ε = 1e-2) — extraction is nearest-rfft-bin of n·ω₁ either way
@@ -525,13 +530,13 @@ else
         harmonics = HARMONICS,   # :narrow ⇒ around the ≈4γ²ω backscatter line; :full ⇒ (1,2,3,4)
         window = APODIZATION == "none" ? nothing : hann,
         title_prefix = "Inverse Thomson scattering", fileprefix = "inverse_thomson",
-        style = harmonic_field_style(cap_mult = 4.0),   # speckle maps: median-capped colorrange
-        n0 = N0,                 # boosted runs label frequencies in ω_bs = N0·ω₁ units
+        style = harmonic_field_style(cap_quantile = 0.995),   # speckle maps: quantile-capped colorrange
+        n0 = N0_EXACT,           # boosted runs label frequencies in the exact ω_bs unit
     )
     # Speckle-envelope chips (per-bin maps are envelope × speckle; see the report).
     write_envelope_products(
         hprod.fields_h, HARMONICS, screen.x_grid, screen.y_grid;
-        w₀, Z, Rmax, λ, n0 = N0, run_tag = RUN_TAG, outdir = OUTDIR,
+        w₀, Z, Rmax, λ, n0 = N0_EXACT, run_tag = RUN_TAG, outdir = OUTDIR,
         source_datafile = basename(datafile),
         title_prefix = "Inverse Thomson scattering", fileprefix = "inverse_thomson",
     )
@@ -583,7 +588,7 @@ config = Dict{String, Any}(
     # EXACT ratio, not the rounded N0: near-rest ladders have ω_s/ω ∈ (1, 3.5) where the
     # integer round collapses distinct rungs onto "1" (γ≫1 rounding was harmless: 397.99→398).
     # N0 stays integer for the :narrow defaults; this key is the dashboard/display value.
-    "backscatter_n0" => (1 + β) / (1 - β),   # on-axis backscatter fundamental ω_s/ω ≈ 4γ²
+    "backscatter_n0" => N0_EXACT,      # on-axis backscatter fundamental ω_s/ω ≈ 4γ²
     "screen_zsign" => SCREEN_ZSIGN,    # screen side: +1 backscatter (+Z), −1 transmission (−Z)
     "accumulation_alg" => (ACCUM_ALG == "newton" ? "GPUKernelNewton" : "GPUKernelRK4"),   # dashboard canonical name
     "newton_iters" => NEWTON_ITERS,    # recorded UNCONDITIONALLY (rk4 runs too): a mixed rk4/newton
@@ -641,9 +646,9 @@ sharding = Dict{String, Any}("electrons" => ndev)
 gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
 extra = Dict{String, Any}(
     "timing" => timing, "sharding" => sharding,
-    # [units]: n0 = N0 declares ω_bs = N0·ω₁ as the preferred frequency scale — the
-    # declaration-layer generalization of [config].backscatter_n0 (kept for legacy readers).
-    "units" => units_section(ω, λ, w₀; n0 = N0),
+    # [units]: declares the EXACT ω_bs = (1+β)/(1−β)·ω₁ as the preferred frequency scale —
+    # the declaration-layer generalization of [config].backscatter_n0 (kept for legacy readers).
+    "units" => units_section(ω, λ, w₀; n0 = N0_EXACT),
 )
 gpu === nothing || (extra["gpu"] = gpu)
 manifestfile = write_solver_manifest(
