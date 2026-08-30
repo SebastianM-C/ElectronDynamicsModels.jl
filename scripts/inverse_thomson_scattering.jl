@@ -141,6 +141,15 @@ const WINDOW_TAIL = parse(Float64, get(ENV, "EDM_WINDOW_TAIL", "0.5"))   # :narr
 #   arrivals are budgeted separately — see `bunch_early` below — so a thin lead stays safe.)
 (WINDOW_LEAD > 0 && WINDOW_TAIL > 0) ||
     error("EDM_WINDOW_LEAD/EDM_WINDOW_TAIL must be > 0, got $WINDOW_LEAD/$WINDOW_TAIL")
+# Time→frequency taper for the harmonic-map reduction: hann (default — leakage suppression) |
+# none (bare rfft — unbiased line amplitudes with NO radial taper mask once the :narrow window
+# contains the burst; the narrow-window audit's pick for line-anchored |maps|. Synthetic γ=2
+# check: 98.5% of the true line amplitude, skirt 2e-7 of the line). Recorded in [config] so the
+# deferred (EDM_SKIP_POSTPROCESS / REDUCE_OVERLAP) reduction applies the SAME taper — the async
+# reducer reads the manifest, not the cell env. The power spectrum stays un-windowed by design.
+const APODIZATION = lowercase(get(ENV, "EDM_APODIZATION", "hann"))
+APODIZATION in ("hann", "none") ||
+    error("EDM_APODIZATION must be \"hann\" or \"none\", got \"$APODIZATION\"")
 const ACCUM_ALG = lowercase(get(ENV, "EDM_ACCUM_ALG", "rk4"))   # retarded-time kernel: rk4 (marching, the
 #   PR-29-validated default) | newton (per-slot light-cone root solve, PR #31 — equal-or-better accuracy
 #   at neutral-to-1.3× field cost; the better default once cross-validated on an inverse cell).
@@ -514,6 +523,7 @@ else
         fld, screen.x_grid, screen.y_grid, ω, δt;
         w₀, run_tag = RUN_TAG, outdir = OUTDIR, source_datafile = basename(datafile),
         harmonics = HARMONICS,   # :narrow ⇒ around the ≈4γ²ω backscatter line; :full ⇒ (1,2,3,4)
+        window = APODIZATION == "none" ? nothing : hann,
         title_prefix = "Inverse Thomson scattering", fileprefix = "inverse_thomson",
         style = harmonic_field_style(cap_mult = 4.0),   # speckle maps: median-capped colorrange
         n0 = N0,                 # boosted runs label frequencies in ω_bs = N0·ω₁ units
@@ -559,6 +569,9 @@ config = Dict{String, Any}(
     "scattering" => "inverse",         # counter-propagating boosted electrons vs. rest-electron thomson_scattering.jl
     "system" => SYSTEM,                # classical | ll — written unconditionally (mixed pools crash axis detection)
     "window" => string(WINDOW),        # :full (wide, coarse) | :narrow (burst-centred, high-SPP)
+    "apodization" => APODIZATION,      # EDM_APODIZATION knob: hann | none — the reduction taper;
+    #   the deferred reducer (recover_from_manifest) reads THIS key for taper parity with the inline path
+
     "screen_hw_w0" => SCREEN_HW,       # EDM_SCREEN_HW knob (w₀ units; [setup].screen_hw is the derived a.u. value)
     "tspan_tau" => TSPAN_TAU,          # EDM_TSPAN_TAU knob (proper-time span per side, τ units; [setup].τi/τf are derived)
     "window_lead" => WINDOW_LEAD,      # EDM_WINDOW_LEAD / EDM_WINDOW_TAIL knobs (:narrow margins, λ units)

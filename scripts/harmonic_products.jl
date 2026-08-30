@@ -440,6 +440,12 @@ function recover_from_manifest(toml)
         # A split cube carries E_far/B_far — keep them so write_harmonic_products also emits the
         # far-field maps the φ0/LPWA comparison needs; a total cube has only E/B.
         fld = hasproperty(raw, :E_far) ? raw : (; E = raw.E, B = raw.B)
+        # Taper parity with the inline path: [config].apodization (the EDM_APODIZATION knob;
+        # pre-knob manifests reduce with the legacy hann). An explicit EDM_APODIZATION on a
+        # recovery/recolor invocation overrides the manifest — that's the re-reduce path.
+        apod = lowercase(get(ENV, "EDM_APODIZATION", get(cfg, "apodization", "hann")))
+        apod in ("hann", "none") ||
+            error("apodization must be \"hann\" or \"none\", got \"$apod\"")
         hprod = write_harmonic_products(
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
@@ -447,6 +453,7 @@ function recover_from_manifest(toml)
             # The run's own bins (≈4γ²ω for inverse :narrow) — a deferred reduction must produce
             # exactly what the inline (non-SKIP_POST) path would have; legacy default (1,2,3,4).
             harmonics = Tuple(get(cfg, "harmonics", (1, 2, 3, 4))),
+            window = apod == "none" ? nothing : hann,
         )
         isfile(joinpath(dir, ".reduce_only")) || get(ENV, "EDM_REDUCE_ONLY", "0") == "1" ||
             envelope!(hprod.fields_h, Tuple(get(cfg, "harmonics", (1, 2, 3, 4))), x_grid, y_grid, las["w0"])
@@ -454,11 +461,23 @@ function recover_from_manifest(toml)
         # must ALSO declare what it produced, so [outputs] is complete for resolve_hmaps + the
         # dashboard hmaps download. `sorted` keeps [timing] last (the ops timing-append relies on it).
         outs = m["outputs"]
-        if get(outs, "harmonic_maps", nothing) === nothing
-            outs["harmonic_maps"] = basename(hprod.hmapsfile)
-            outs["plots"] = basename.(hprod.plots)
+        declare = get(outs, "harmonic_maps", nothing) === nothing
+        # Stamp the APPLIED taper: an env-override re-reduce (e.g. hann→none on an archived cube)
+        # must leave the manifest describing the products actually on disk — otherwise the next
+        # recovery without the env var silently reverts them to hann, and nothing records that
+        # the published maps changed convention.
+        restamp = get(cfg, "apodization", nothing) != apod
+        if declare || restamp
+            if declare
+                outs["harmonic_maps"] = basename(hprod.hmapsfile)
+                outs["plots"] = basename.(hprod.plots)
+            end
+            restamp && (cfg["apodization"] = apod)
             open(io -> TOML.print(io, m; sorted = true), toml, "w")
-            println("declared harmonic_maps + plots in $(basename(toml))")
+            println(
+                "updated $(basename(toml)):" * (declare ? " declared harmonic_maps + plots" : "") *
+                    (restamp ? " stamped apodization = $apod" : "")
+            )
         end
         return hprod
     end
