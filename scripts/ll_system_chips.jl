@@ -35,7 +35,7 @@ function load_cells(dir)
         c = m["config"]
         push!(cells, (; id, system = get(c, "system", "classical"), gamma = get(c, "gamma", 0),
             a0 = c["a0"], iters = get(c, "newton_iters", 2),
-            n0 = round(Int, get(c, "backscatter_n0", 1)), h = deserialize(hm)))
+            n0 = Float64(get(c, "backscatter_n0", 1)), h = deserialize(hm)))
     end
     return cells
 end

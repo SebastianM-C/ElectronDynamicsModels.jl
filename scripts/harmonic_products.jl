@@ -87,7 +87,7 @@ function write_field_products(
             title = n0 == 1 ?
                 @sprintf("%s (%s field) — %gω₁ (%.3f× fundamental)",
                 title_prefix, ftype, n, ffund[k]) :
-                @sprintf("%s (%s field) — %gω₁ = %.4g ω_bs (ω_bs = %dω₁)",
+                @sprintf("%s (%s field) — %gω₁ = %.4f ω_bs (ω_bs = %.4gω₁)",
                 title_prefix, ftype, n, ffund[k] / n0, n0),
             outfile = out,
         )
@@ -100,8 +100,8 @@ function write_field_products(
             plot = basename(out), source = source_datafile,
             setup = Dict("field" => ftype), plot_params = Dict("apodization" => window),
             description = "Field harmonic maps at $(n)ω₁" *
-                (n0 == 1 ? "" : " = $(round(n / n0, sigdigits = 4)) ω_bs (ω_bs = $(n0)ω₁, " *
-                    "the on-axis backscattered fundamental)") *
+                (n0 == 1 ? "" : " = $(round(n / n0, sigdigits = 4)) ω_bs (ω_bs = " *
+                    "$(round(n0, sigdigits = 6))ω₁, the on-axis backscattered fundamental)") *
                 " — each panel a component (Eˣ…Bᶻ). " *
                 "Toggle total (far 1/R + near 1/R²) vs far (radiation 1/R only); the far field is " *
                 "what the LPWA analytic formula is compared against in the lpwa-vs-numeric view. " *
@@ -561,7 +561,9 @@ function recover_from_manifest(toml)
         plot_power_spectrum(
             pc.freqs, pc.ps;
             ω = C_LIGHT * 2π / λ, labels = COMPLABELS,
-            marks = collect(Float64, pc.harmonics), n0 = pc.n0,
+            # n0 from the MANIFEST, not the cache: caches serialized before the exact-n0 fix
+            # froze the rounded integer (7 vs 6.8541 at γ=1.5 — the 2.1% axis offset).
+            marks = collect(Float64, pc.harmonics), n0,
             title = "$title_prefix — field power spectra (un-windowed)",
             outfile = joinpath(dir, "powspec_$(run_tag).png"),
         )

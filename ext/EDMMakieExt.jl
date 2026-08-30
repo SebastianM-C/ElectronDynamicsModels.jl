@@ -94,7 +94,8 @@ function ElectronDynamicsModels.plot_power_spectrum(
     # became wallpaper once spans reached 4γ² ~ 10⁶ ω₁: the aligned dash segments of ~10⁶
     # overlapping dashed vlines rendered as solid gray bars).
     xh = collect(freqs) ./ (ω / 2π) ./ n0
-    xlab = n0 == 1 ? "frequency / ω₁" : "frequency / ω_bs   (ω_bs = $(n0) ω₁)"
+    xlab = n0 == 1 ? "frequency / ω₁" :
+        "frequency / ω_bs   (ω_bs = $(round(n0, sigdigits = 6)) ω₁)"
     yfloor = maximum(power_spec) * 1.0e-30     # log axis needs a positive floor
     fig = with_theme(theme_latexfonts()) do
         f = Figure(size = (1150, 560))

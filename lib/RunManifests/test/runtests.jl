@@ -179,6 +179,20 @@ end
     @test ub["defs"]["omega_bs"]["value"] ≈ 398ω
     @test units_from_manifest(Dict{String, Any}("units" => ub)).n0 == 398
 
+    # near-rest backscatter: n0 is the EXACT fractional line, never rounded (the integer
+    # round is a +2.1% axis/label offset at γ=1.5)
+    n_th = 6.854101966249684
+    uf = units_section(ω, λ, w₀; n0 = n_th)
+    @test uf["defs"]["omega_bs"]["value"] ≈ n_th * ω
+    @test units_from_manifest(Dict{String, Any}("units" => uf)).n0 ≈ n_th
+    # pre-fix manifests stored omega_bs = round(n_th)·ω₁ in [units] while [config] always
+    # carried the exact line — the config value must win when ω_bs is preferred
+    ur = units_section(ω, λ, w₀; n0 = 7)
+    mfix = Dict{String, Any}(
+        "units" => ur, "config" => Dict{String, Any}("backscatter_n0" => n_th),
+    )
+    @test units_from_manifest(mfix).n0 ≈ n_th
+
     # Doppler-equivalent run: scaled carrier + unscaled lab reference
     s = 19.949874371066196
     us = units_section(s * ω, λ / s, w₀; omega_scale = s)

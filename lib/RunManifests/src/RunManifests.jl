@@ -732,7 +732,7 @@ Raw values in [config]/[laser]/[setup] are NEVER converted. Read back (with the 
 fallback) via [`units_from_manifest`](@ref).
 """
 function units_section(ω::Real, λ::Real, w₀::Real; system = "hartree_atomic",
-        n0::Integer = 1, omega_scale::Real = 1.0, transverse_length = "w0", extra_defs...)
+        n0::Real = 1, omega_scale::Real = 1.0, transverse_length = "w0", extra_defs...)
     def(value, tex) = Dict{String, Any}("value" => Float64(value), "tex" => String(tex))
     defs = Dict{String, Any}(
         "omega_laser" => def(ω, "ω₁"),
@@ -767,9 +767,15 @@ end
 
 Read a manifest's `[units]` section; for manifests that predate it, synthesize the same
 structure from what they do record (`[laser] wavelength/w0`, `[config] backscatter_n0/
-omega_scale`) so consumers have ONE code path. `n0` is the derived integer ratio
-preferred-frequency-scale / ω₁ (1 when frequencies are ω₁-preferred) — exactly the legacy
-`backscatter_n0` contract the powspec axis and harmonic-map labels consume.
+omega_scale`) so consumers have ONE code path. `n0` is the EXACT ratio
+preferred-frequency-scale / ω₁ (`1.0` when frequencies are ω₁-preferred) — the legacy
+`backscatter_n0` contract the powspec axis and harmonic-map labels consume. Exact, not
+rounded: near-rest rungs have fractional ω_bs/ω₁ where an integer round is a visible
+axis/label offset (+2.1% at γ=1.5, shrinking ∝1/4γ² up the ladder — invisible at γ=10,
+where the old integer convention came from). Manifests written before this fix stored
+`omega_bs = round(n_th)·ω₁` in [units], so when ω_bs is the preferred scale the exact
+`[config].backscatter_n0` (always recorded at full precision) takes precedence over the
+stored-defs ratio.
 """
 function units_from_manifest(m::AbstractDict)
     u = get(m, "units", nothing)
@@ -779,13 +785,18 @@ function units_from_manifest(m::AbstractDict)
         λ = Float64(get(las, "wavelength", NaN))
         u = units_section(
             2π * C_HARTREE / λ, λ, Float64(get(las, "w0", NaN));
-            n0 = round(Int, get(cfg, "backscatter_n0", 1)),
+            n0 = Float64(get(cfg, "backscatter_n0", 1)),
             omega_scale = Float64(get(cfg, "omega_scale", 1.0)),
         )
     end
     defs, pref = u["defs"], u["preferred"]
     fscale = get(defs, get(pref, "frequency", "omega_laser"), defs["omega_laser"])
-    n0 = round(Int, Float64(fscale["value"]) / Float64(defs["omega_laser"]["value"]))
+    # sigdigits guards FP noise in the stored-defs ratio ((n0·ω)/ω ≠ n0 exactly), NOT a
+    # display round; the ω_bs branch below replaces it with the full-precision config value.
+    n0 = round(Float64(fscale["value"]) / Float64(defs["omega_laser"]["value"]); sigdigits = 12)
+    if get(pref, "frequency", "omega_laser") == "omega_bs"
+        n0 = Float64(get(get(m, "config", Dict{String, Any}()), "backscatter_n0", n0))
+    end
     return (; system = u["system"], defs, preferred = pref, n0)
 end
 
