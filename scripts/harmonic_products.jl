@@ -440,6 +440,12 @@ function recover_from_manifest(toml)
         # A split cube carries E_far/B_far — keep them so write_harmonic_products also emits the
         # far-field maps the φ0/LPWA comparison needs; a total cube has only E/B.
         fld = hasproperty(raw, :E_far) ? raw : (; E = raw.E, B = raw.B)
+        # Taper parity with the inline path: [config].apodization (the EDM_APODIZATION knob;
+        # pre-knob manifests reduce with the legacy hann). An explicit EDM_APODIZATION on a
+        # recovery/recolor invocation overrides the manifest — that's the re-reduce path.
+        apod = lowercase(get(ENV, "EDM_APODIZATION", get(cfg, "apodization", "hann")))
+        apod in ("hann", "none") ||
+            error("apodization must be \"hann\" or \"none\", got \"$apod\"")
         hprod = write_harmonic_products(
             fld, x_grid, y_grid, ω, δt;
             w₀ = las["w0"], run_tag, outdir = dir,
@@ -447,6 +453,7 @@ function recover_from_manifest(toml)
             # The run's own bins (≈4γ²ω for inverse :narrow) — a deferred reduction must produce
             # exactly what the inline (non-SKIP_POST) path would have; legacy default (1,2,3,4).
             harmonics = Tuple(get(cfg, "harmonics", (1, 2, 3, 4))),
+            window = apod == "none" ? nothing : hann,
         )
         isfile(joinpath(dir, ".reduce_only")) || get(ENV, "EDM_REDUCE_ONLY", "0") == "1" ||
             envelope!(hprod.fields_h, Tuple(get(cfg, "harmonics", (1, 2, 3, 4))), x_grid, y_grid, las["w0"])
