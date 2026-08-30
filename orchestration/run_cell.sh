@@ -174,7 +174,7 @@ run_cell() {
     # shellcheck disable=SC2086
     ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} ${BASE[@]+"${BASE[@]}"} $skip \
           ${SWEEP_NAME:+EDM_SWEEP="$SWEEP_NAME"} \
-          EDM_GPU_BACKEND="$BACKEND" EDM_CLOUD_PROVIDER="$PROVIDER" EDM_OUTDIR="$CAMP" EDM_RUN_TAG="$uuid" "$@" \
+          EDM_GPU_BACKEND="$BACKEND" EDM_CLOUD_PROVIDER="$PROVIDER" EDM_OUTDIR="$CAMP" EDM_RUN_TAG="$uuid" EDM_KEEP_CUBE="${KEEP_CUBE:-0}" "$@" \
           "${JL[@]}" --project=scripts "$SCRIPT" ) > "$log" 2>&1
     local rc=$?
     if [ "$rc" -eq 0 ]; then

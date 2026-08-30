@@ -368,18 +368,41 @@ Invariant: every product a drain-path reducer emits must be re-renderable from a
 here. A plot rendered directly from the cube with NO cache is invisible to this marker and breaks
 publish-autonomy — add a cache instead of relying on the cube (which only exists where it was produced/archived).
 Today's drain-path reducers (harmonic_products, plot_screen_observables) cache every product.
+
+Re-reduce semantics: when no `.partial` exists but a finalized `<run_id>.reduced` does, the
+staging marker is SEEDED from the final marker (header restamped to the current pass), and an
+entry with the same `file` basename REPLACES the old one instead of duplicating it. So a
+re-reduce refreshes byte sizes for everything it touches while entries it does not touch
+survive — the VPS status collector byte-compares marker entries against the archive store, and
+a stale size would flip an actually-complete run back to "reduce-pending" (bit the
+rest_departure_bridge_refix re-reduce, 2026-08-30).
 """
 function record_reduction!(dir::AbstractString, run_id, file::AbstractString)
     path = joinpath(dir, "$(run_id).reduced.partial")
-    m = isfile(path) ? TOML.parsefile(path) : Dict{String, Any}(
-        "run_id" => string(run_id),
-        "reduced_at" => string(now()),
-        "host" => gethostname(),
-        "reduce_commit" => _script_repo_commit(),
-        "reduction" => Dict{String, Any}[],
-    )
+    final = joinpath(dir, "$(run_id).reduced")
+    m = if isfile(path)
+        TOML.parsefile(path)
+    elseif isfile(final)
+        # Re-reduce: seed from the finalized marker so untouched entries survive, but the
+        # header reflects THIS pass (a re-reduce is a new reduction event, new commit and all).
+        prev = TOML.parsefile(final)
+        prev["reduced_at"] = string(now())
+        prev["host"] = gethostname()
+        prev["reduce_commit"] = _script_repo_commit()
+        prev
+    else
+        Dict{String, Any}(
+            "run_id" => string(run_id),
+            "reduced_at" => string(now()),
+            "host" => gethostname(),
+            "reduce_commit" => _script_repo_commit(),
+            "reduction" => Dict{String, Any}[],
+        )
+    end
     full = isfile(file) ? file : joinpath(dir, file)
-    push!(m["reduction"], Dict{String, Any}("file" => basename(file), "bytes" => filesize(full)))
+    base = basename(file)
+    filter!(e -> e["file"] != base, m["reduction"])   # replace a re-reduced file, don't duplicate
+    push!(m["reduction"], Dict{String, Any}("file" => base, "bytes" => filesize(full)))
     open(io -> TOML.print(io, m; sorted = true), path, "w")
     return path
 end

@@ -265,6 +265,10 @@ config = Dict{String, Any}(
     "observable" => "field",
     "trajectory_source" => "lpwa_analytic",   # distinguishes from the ODE-solved field runs
 )
+# Cube-retention policy attestation: stamped only on orchestrated runs (EDM_KEEP_CUBE from
+# run_cell), so a manual run never claims "discarded"; lets the dashboard status collector
+# tell discarded-by-policy from location-unknown.
+haskey(ENV, "EDM_KEEP_CUBE") && (config["keep_cube"] = ENV["EDM_KEEP_CUBE"] == "1")
 
 # Beam/laser parameters → [laser]. The dashboard's PARAM_SPEC reads beam params
 # (wavelength, w0, p, m, pol, profile, …) from [laser]; emitting them here — instead of
