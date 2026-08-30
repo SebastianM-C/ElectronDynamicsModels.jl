@@ -312,6 +312,11 @@ resolved_spec = ThomsonScatteringSpec(;
     extra = Dict{String, Any}("Ny" => Ny, "observable" => "field"),
 )
 config = config_dict(resolved_spec)
+# Cube-retention policy attestation: stamped only on orchestrated runs (EDM_KEEP_CUBE from
+# run_cell), so a manual run never claims "discarded"; lets the dashboard status collector
+# tell discarded-by-policy from location-unknown. Not a spec field — retention is an ops
+# knob, not a replay input.
+haskey(ENV, "EDM_KEEP_CUBE") && (config["keep_cube"] = ENV["EDM_KEEP_CUBE"] == "1")
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),

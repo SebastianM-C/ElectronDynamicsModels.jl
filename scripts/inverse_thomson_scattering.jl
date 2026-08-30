@@ -594,6 +594,10 @@ config = Dict{String, Any}(
 # dashboard axis representation (ε-driven pools sweep ε; γ-driven ladders never carry the key,
 # so their axis stays γ — the builder can't pick an axis a pool's runs lack).
 GAMMA_EPS === nothing || (config["gamma_eps"] = GAMMA_EPS)
+# Cube-retention policy attestation: stamped only on orchestrated runs (EDM_KEEP_CUBE from
+# run_cell), so a manual run never claims "discarded"; lets the dashboard status collector
+# tell discarded-by-policy from location-unknown.
+haskey(ENV, "EDM_KEEP_CUBE") && (config["keep_cube"] = ENV["EDM_KEEP_CUBE"] == "1")
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
