@@ -24,6 +24,9 @@ const SPP = parse(Int, get(ENV, "EDM_SPP", "16"))
 const NSUBSTEPS = parse(Int, get(ENV, "EDM_NSUBSTEPS", "1"))
 const A0 = parse(Float64, get(ENV, "EDM_A0", "0.1"))
 const SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
+const SCREEN_HW = parse(Float64, get(ENV, "EDM_SCREEN_HW", "25"))   # screen half-width in w₀ — the same knob and
+#   [config].screen_hw_w0 key as inverse_thomson_scattering.jl (25 = the historical full frame); the
+#   thomson_scattering.jl spelling is EDM_SCREEN_HALFW / screen_halfw
 const FIELD_MODE = Symbol(get(ENV, "EDM_FIELD_MODE", "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
 FIELD_MODE in (:split, :total) || error("EDM_FIELD_MODE must be \"split\" or \"total\", got \"$FIELD_MODE\"")
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
@@ -179,7 +182,8 @@ const Z = 2.0e5λ
 const samples_per_period = SPP
 const δt = 2π / ω / samples_per_period
 const N_samples = NSAMPLES
-const x⁰_start = c * τi + hypot(Z, 25w₀ + Rmax)
+const screen_hw = SCREEN_HW * w₀
+const x⁰_start = c * τi + hypot(Z, screen_hw + Rmax)
 
 Nx = NX
 Ny = NX
@@ -187,8 +191,8 @@ Ny = NX
 x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
 
 screen = ObserverScreen(
-    LinRange(-25w₀, 25w₀, Nx),
-    LinRange(-25w₀, 25w₀, Ny),
+    LinRange(-screen_hw, screen_hw, Nx),
+    LinRange(-screen_hw, screen_hw, Ny),
     Z,
     x⁰_samples;
     c,
@@ -264,6 +268,7 @@ config = Dict{String, Any}(
     "mode" => string(FIELD_MODE),
     "observable" => "field",
     "trajectory_source" => "lpwa_analytic",   # distinguishes from the ODE-solved field runs
+    "screen_hw_w0" => SCREEN_HW,              # EDM_SCREEN_HW knob (w₀ units; [setup].screen_hw is the derived a.u. value)
 )
 # Cube-retention policy attestation: stamped only on orchestrated runs (EDM_KEEP_CUBE from
 # run_cell), so a manual run never claims "discarded"; lets the dashboard status collector
@@ -300,7 +305,11 @@ setup = Dict{String, Any}(
     "τf" => τf,
     "Rmax" => Rmax,
     "Z" => Z,
-)   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is just the integration window + screen depth
+    # Screen geometry the deferred reducers rebuild the grid/window from (RunManifests.screen_halfwidth /
+    # window_start); a.u. like every other [setup] value.
+    "screen_hw" => screen_hw,
+    "x0_start" => x⁰_start,
+)   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is the integration window + screen geometry
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),

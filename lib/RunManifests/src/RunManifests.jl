@@ -32,7 +32,7 @@ import Serialization
 
 export git_state, assert_committed, run_provenance, run_spec_from_manifest, expand_sweep
 export ThomsonScatteringSpec, load_spec, write_spec, spec_env, spec_from_manifest, config_dict
-export find_parent_manifest, find_parent_run, spp_from_manifest
+export find_parent_manifest, find_parent_run, spp_from_manifest, screen_halfwidth, window_start
 export write_derived, write_comparison, write_summary, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
 export write_sweep_declaration, read_sweep_declarations
 export record_reduction!
@@ -303,6 +303,54 @@ function spp_from_manifest(manifest::AbstractDict; default = nothing)
     end
     default === nothing && error("samples_per_period not found in run manifest [config]/[setup]")
     return default
+end
+
+"""
+    screen_halfwidth(manifest) -> Float64
+
+The observer screen's half-width in the solver's raw length unit — what a deferred or
+recovery reduction must rebuild the pixel grid from. Reads `[setup].screen_hw` (recorded by
+every solver since the screen geometry moved into the manifest); older manifests resolve
+from the w₀-unit knob they do carry — `[config].screen_hw_w0` (inverse runs) or
+`[config].screen_halfw` (rest-electron runs from 2026-07-29) — times `[laser].w0`, and
+manifests that predate both knobs were all the historical ±25 w₀ full frame. Errors on a
+manifest that needs the knob fallback but records no `w0`.
+"""
+function screen_halfwidth(manifest::AbstractDict)
+    st = get(manifest, "setup", Dict{String, Any}())
+    haskey(st, "screen_hw") && return Float64(st["screen_hw"])
+    cfg = get(manifest, "config", Dict{String, Any}())
+    hw_w0 = get(cfg, "screen_hw_w0", get(cfg, "screen_halfw", 25.0))
+    w0 = get(get(manifest, "laser", Dict{String, Any}()), "w0", nothing)
+    w0 === nothing && error(
+        "screen_halfwidth: manifest records no [setup].screen_hw and no [laser].w0 to scale " *
+            "the screen_hw_w0/screen_halfw knob ($(hw_w0) w₀) by"
+    )
+    return Float64(hw_w0) * Float64(w0)
+end
+
+"""
+    window_start(manifest) -> Float64
+
+The observer-time window start x⁰_start (raw solver units) — `[setup].x0_start` when the
+run recorded it, else the corner-anchored `:full`-window formula every solver used before
+recording it: `c·τi + hypot(Z, screen_hw + Rmax)` with [`screen_halfwidth`](@ref) and the
+`[setup]` window/geometry values (`Z` may be signed; only its distance enters). A `:narrow`
+window without a recorded start cannot be reconstructed and errors.
+"""
+function window_start(manifest::AbstractDict)
+    st = get(manifest, "setup", Dict{String, Any}())
+    haskey(st, "x0_start") && return Float64(st["x0_start"])
+    win = string(get(get(manifest, "config", Dict{String, Any}()), "window", "full"))
+    win == "full" || error(
+        "window_start: a :$win observer window records its start in [setup].x0_start; " *
+            "this manifest has none and the corner-anchor reconstruction only holds for :full"
+    )
+    for k in ("τi", "Z", "Rmax")
+        haskey(st, k) || error("window_start: [setup] is missing $(repr(k))")
+    end
+    return C_HARTREE * Float64(st["τi"]) +
+        hypot(abs(Float64(st["Z"])), screen_halfwidth(manifest) + Float64(st["Rmax"]))
 end
 
 """

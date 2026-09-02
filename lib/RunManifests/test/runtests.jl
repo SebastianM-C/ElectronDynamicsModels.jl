@@ -317,6 +317,37 @@ end
     @test_throws ErrorException expand_sweep(ThomsonScatteringSpec(), Dict("nope" => [1]))
 end
 
+@testset "screen_halfwidth / window_start — recorded, knob-derived, legacy" begin
+    c = 137.03599908330932
+    w0 = 75 * 2π * c / 0.057
+    base = Dict{String, Any}(
+        "laser" => Dict{String, Any}("w0" => w0),
+        "setup" => Dict{String, Any}("τi" => -8 * 150 / 0.057, "Z" => 2.0e5 * 2π * c / 0.057, "Rmax" => 3.25w0),
+        "config" => Dict{String, Any}(),
+    )
+    corner(hw) = c * base["setup"]["τi"] + hypot(base["setup"]["Z"], hw + base["setup"]["Rmax"])
+    # Pre-knob manifest: the historical ±25 w₀ frame and its corner-anchored window start.
+    @test screen_halfwidth(base) ≈ 25w0
+    @test window_start(base) ≈ corner(25w0)
+    # Rest-electron knob (thomson_scattering.jl, 2026-07-29…): [config].screen_halfw in w₀ units.
+    mt = deepcopy(base); mt["config"]["screen_halfw"] = 8
+    @test screen_halfwidth(mt) ≈ 8w0
+    @test window_start(mt) ≈ corner(8w0)          # the grid AND the window follow the zoom
+    # Inverse knob: [config].screen_hw_w0, and [setup].screen_hw / x0_start recorded — the
+    # recorded values win over every reconstruction, and a signed Z only enters as a distance.
+    mi = deepcopy(base); mi["config"]["screen_hw_w0"] = 5
+    @test screen_halfwidth(mi) ≈ 5w0
+    mi["setup"]["screen_hw"] = 4.5w0; mi["setup"]["x0_start"] = 123.0; mi["setup"]["Z"] = -mi["setup"]["Z"]
+    @test screen_halfwidth(mi) == 4.5w0 && window_start(mi) == 123.0
+    delete!(mi["setup"], "x0_start")
+    @test window_start(mi) ≈ corner(4.5w0)        # |Z| in the corner anchor
+    # A :narrow window without a recorded start cannot be reconstructed.
+    mn = deepcopy(base); mn["config"]["window"] = "narrow"
+    @test_throws ErrorException window_start(mn)
+    # The knob fallback needs w0 to scale by.
+    @test_throws ErrorException screen_halfwidth(Dict{String, Any}("config" => Dict{String, Any}("screen_halfw" => 8)))
+end
+
 @testset "sweep declarations — write/read + membership stamp" begin
     dir = mktempdir()
     p = write_sweep_declaration(dir; name = "ll_gamma_ladder",
