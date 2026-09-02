@@ -44,6 +44,8 @@ Base.@kwdef struct ThomsonScatteringSpec
     bunch_nb::Union{Nothing, Int} = nothing
     bunch_l::Union{Nothing, Int} = nothing
     bunch_chirp::Union{Nothing, Float64} = nothing
+    screen_zsign::Union{Nothing, Int} = nothing         # 1 (+Z, backscatter side) | -1 (−Z, transmission side)
+    apodization::Union{Nothing, String} = nothing       # hann | none — the harmonic-map reduction taper
     extra::Dict{String, Any} = Dict{String, Any}()
 end
 
@@ -64,6 +66,7 @@ const _SPEC_ENV = (
     (:window_lead, "EDM_WINDOW_LEAD"), (:window_tail, "EDM_WINDOW_TAIL"),
     (:harmonics, "EDM_HARMONICS"), (:bunch_nb, "EDM_BUNCH_NB"),
     (:bunch_l, "EDM_BUNCH_L"), (:bunch_chirp, "EDM_BUNCH_CHIRP"),
+    (:screen_zsign, "EDM_SCREEN_ZSIGN"), (:apodization, "EDM_APODIZATION"),
 )
 
 const _ALG_TO_ENV = Dict("GPUKernelRK4" => "rk4", "GPUKernelNewton" => "newton")

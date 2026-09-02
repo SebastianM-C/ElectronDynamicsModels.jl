@@ -289,6 +289,20 @@ end
     @test env2["EDM_GAMMA_EPS"] == "0.001" && !haskey(env2, "EDM_GAMMA")
     @test env2["EDM_SYSTEM"] == "ll" && env2["EDM_OMEGA_SCALE"] == "19.9"
     @test env2["EDM_FIELD_MODE"] == "split"                    # pre-mode default preserved
+    # screen_zsign / apodization: [config] keys the inverse script writes — typed fields, so a
+    # replay no longer silently reruns the script defaults for a −Z screen or a bare-FFT reduce.
+    cfg3 = Dict{String, Any}(k => 1 for k in REQUIRED_CONFIG_KEYS)
+    cfg3["screen_zsign"] = -1
+    cfg3["apodization"] = "none"
+    path3 = write_solver_manifest(dir; run_id = "sp3", provenance = prov, config = cfg3,
+        laser = Dict(), setup = Dict(), outputs = Dict("plots" => String[]))
+    s4 = spec_from_manifest(TOML.parsefile(path3))
+    @test s4.screen_zsign === -1 && s4.apodization == "none" && isempty(s4.extra)
+    env3 = run_spec_from_manifest(TOML.parsefile(path3)).env
+    @test env3["EDM_SCREEN_ZSIGN"] == "-1" && env3["EDM_APODIZATION"] == "none"
+    @test !haskey(env2, "EDM_SCREEN_ZSIGN") && !haskey(env2, "EDM_APODIZATION")   # absent stays absent
+    s5 = load_spec(nothing; env = Dict("EDM_SCREEN_ZSIGN" => "-1", "EDM_APODIZATION" => "none"))
+    @test s5.screen_zsign === -1 && s5.apodization == "none"
     # missing required keys fail loudly, not with a KeyError deep in emission
     @test_throws ErrorException run_spec_from_manifest(Dict{String, Any}(
         "schema_version" => 1, "config" => Dict{String, Any}("a0" => 1)))
