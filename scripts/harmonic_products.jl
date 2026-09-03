@@ -461,9 +461,11 @@ function recover_from_manifest(toml)
         λ = las["wavelength"]
         ω = C_LIGHT * 2π / λ
         δt = 2π / ω / spp_from_manifest(m)
-        # Screen half-width from [setup] when the run recorded it (EDM_SCREEN_HW runs);
-        # legacy runs predate the knob and were all ±25w₀.
-        hw = get(get(m, "setup", Dict()), "screen_hw", 25las["w0"])
+        # Screen half-width: [setup].screen_hw when recorded, else the w₀-unit knob the run
+        # carries ([config].screen_hw_w0 / screen_halfw), else the historical ±25 w₀ frame —
+        # one resolver (RunManifests.screen_halfwidth) so a zoomed rest-electron run can no
+        # longer be re-reduced on the wrong grid.
+        hw = screen_halfwidth(m)
         x_grid = LinRange(-hw, hw, cfg["Nx"])
         y_grid = LinRange(-hw, hw, cfg["Ny"])
         println("loading $(m["outputs"]["datafile"]) …")

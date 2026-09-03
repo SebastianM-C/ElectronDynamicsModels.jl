@@ -18,16 +18,8 @@ using Printf
 using CairoMakie
 include(joinpath(@__DIR__, "plot_theme.jl"))   # LaTeX (Computer Modern) fonts
 
-# Thomson screen constants (identical to scripts/thomson_scattering.jl).
-const c = 137.03599908330932
-const ω = 0.057
-const λ = 2π * c / ω
-const w₀ = 75λ
-const Rmax = 3.25w₀
-const Z = 2.0e5λ
-const τ = 150 / ω
-const τi = -8τ
-const ε₀ = 1 / (4π)          # atomic units (4πε₀ = 1); map structure is ε₀-independent
+const c = 137.03599908330932   # speed of light, atomic units (repo convention)
+const ε₀ = 1 / (4π)             # atomic units (4πε₀ = 1); map structure is ε₀-independent
 
 const datafile = length(ARGS) ≥ 1 ? ARGS[1] : error("pass the field .jls as ARG 1")
 const stem = replace(datafile, r"\.jls$" => "")
@@ -35,17 +27,22 @@ const stem = replace(datafile, r"\.jls$" => "")
 include(joinpath(@__DIR__, "manifest.jl"))
 const dir = dirname(abspath(datafile))
 const parent = find_parent_manifest(dir, basename(datafile))
-parent === nothing && error("no run_*.toml in $dir binds $(basename(datafile)) — needed for samples_per_period")
-const spp = spp_from_manifest(parent[2])
-# Screen geometry from the run's [setup] when recorded (EDM_SCREEN_HW / windowed runs, e.g.
-# inverse_thomson_scattering.jl); legacy fallbacks reproduce the historical ±25w₀ full window.
-const setup_sec = get(parent[2], "setup", Dict{String, Any}())
-const screen_hw = get(setup_sec, "screen_hw", 25w₀)
-const x⁰_start_rec = get(setup_sec, "x0_start", nothing)
+parent === nothing && error("no run_*.toml in $dir binds $(basename(datafile)) — needed for the screen geometry")
+const mf = parent[2]
+const spp = spp_from_manifest(mf)
+# Carrier + screen geometry from the run's MANIFEST, never the lab-frame production constants:
+# Doppler-equivalent runs (omega_scale ≠ 1) carry a scaled wavelength in [laser] (the cube's
+# δt = T/spp is the scaled period), zoomed screens a smaller half-width, inverse runs a signed
+# Z (−Z = transmission side) and a burst-centred window start. screen_halfwidth/window_start
+# resolve [setup].screen_hw / x0_start with the pre-knob fallbacks (±25 w₀, corner anchor).
+const ω = 2π * c / Float64(mf["laser"]["wavelength"])
+const w₀ = Float64(mf["laser"]["w0"])
+const Z = Float64(mf["setup"]["Z"])
+const screen_hw = screen_halfwidth(mf)
+const x⁰_start = window_start(mf)
 
 function thomson_screen(Nx, N_samples)
     δt = 2π / ω / spp
-    x⁰_start = x⁰_start_rec === nothing ? c * τi + hypot(Z, screen_hw + Rmax) : x⁰_start_rec
     x⁰ = range(start = x⁰_start, step = c * δt, length = N_samples)
     return ObserverScreen(LinRange(-screen_hw, screen_hw, Nx), LinRange(-screen_hw, screen_hw, Nx), Z, x⁰; c)
 end
@@ -57,9 +54,25 @@ end
 # skip BOTH the 86 GB .jls reload and the (minutes-long) screen_observables recompute
 # when re-plotting. Bump OBS_CACHE_VERSION whenever the reduced schema/math changes,
 # so an older cache is detected as stale and recomputed.
-const OBS_CACHE_VERSION = 3   # v3: screen geometry (screen_hw / x0_start) now read from the manifest
+const OBS_CACHE_VERSION = 4   # v4: carrier + screen geometry from the manifest for EVERY run family, and
+#   recorded in the cache. v3 read [setup].screen_hw / x0_start but kept the lab-frame ω=0.057 and
+#   the ±25 w₀ corner anchor as fallbacks — right for inverse runs and pre-knob rest-electron runs,
+#   wrong for zoomed (screen_halfw ≠ 25) or ω-scaled rest-electron runs.
 const cachefile = stem * "_obscache.jls"
 const recompute = ("--recompute" in ARGS) || get(ENV, "EDM_OBS_RECOMPUTE", "0") == "1"
+
+# Is an existing cache exact for THIS run's geometry? v4 caches carry the geometry they were
+# reduced with; a v3 cache is kept when v3's assumptions held for the run (lab carrier, and
+# either a recorded [setup].screen_hw or the ±25 w₀ frame), so only caches built under the
+# wrong assumptions pay the cube reload.
+function cache_valid(cc)
+    haskey(cc, :version) || return false
+    cc.version == OBS_CACHE_VERSION &&
+        return isapprox(cc.omega, ω) && isapprox(cc.screen_hw, screen_hw) && isapprox(cc.x0_start, x⁰_start)
+    cc.version == 3 || return false
+    st = get(mf, "setup", Dict{String, Any}())
+    return isapprox(ω, 0.057) && (haskey(st, "screen_hw") || isapprox(screen_hw, 25w₀))
+end
 
 # Collapse one screen_observables result to the plot-ready quantities (per field).
 reduce_field(o, kp, dt, dA) = (;
@@ -100,6 +113,7 @@ function build_cache()
         total = reduce_field(ot, kp, dt, dA),
         far = has_far ? reduce_field(ofar, kp, dt, dA) : nothing,
         k_peak = kp, slot_energy = se, Nx = nx, Ny = ny, N_samples = Ns,
+        omega = ω, screen_hw = screen_hw, x0_start = x⁰_start,   # the geometry these reductions used
     )
 end
 
@@ -116,9 +130,10 @@ function load_or_build()
         cc = build_and_save()
     else
         cc = deserialize(cachefile)
-        if haskey(cc, :version) && cc.version == OBS_CACHE_VERSION
+        if cache_valid(cc)
             return cc
         else
+            println("obscache $(basename(cachefile)) predates the manifest-driven geometry — rebuilding from the cube")
             cc = build_and_save()
         end
     end

@@ -7,7 +7,7 @@
 # ENV knobs (defaults = full production): EDM_GPU_BACKEND (rocm|cuda), EDM_A0,
 # EDM_INITIAL_PHASE, EDM_NX, EDM_N, EDM_NSAMPLES, EDM_SPP, EDM_NSUBSTEPS,
 # EDM_OMEGA_SCALE (Doppler-equivalent ω upshift) + EDM_SCREEN_HALFW (screen half-extent, w₀ units),
-# EDM_GPU_SOLVER (rk4|newton) + EDM_NEWTON_ITERS,
+# EDM_ACCUM_ALG (rk4|newton) + EDM_NEWTON_ITERS,
 # EDM_POL (linear|circular[_plus]|circular_minus),
 # EDM_SYNC_PER_ELECTRON, EDM_OUTDIR. Writes the field .jls + per-harmonic PNGs +
 # run_<uuid>.toml manifest.
@@ -83,16 +83,24 @@ const FIELD_MODE = Symbol(something(SPEC.mode, "split"))   # :split → (E,B,E_f
 FIELD_MODE in (:split, :total) || error("spec mode must be \"split\" or \"total\", got \"$FIELD_MODE\"")
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
-mkpath(OUTDIR)
-@info "Thomson (field) run config" RUN_TAG GPU_BACKEND GPU_SOLVER ϕ₀ A0 SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS NEWTON_ITERS OMEGA_SCALE HALFW
-const T_START = time()   # wall-clock start → [timing].total in the manifest
-
-# Laser parameters
 # EDM_OMEGA_SCALE: Doppler-equivalent runs — upshift ω by γ(1+β) = γ+√(γ²−1), the frequency a
 # counter-propagating electron of that γ sees. The pulse keeps its cycle count (τ·ω = 150, phase
 # is boost-invariant) while the transverse/detector geometry stays pinned to the lab λ₀ = 2πc/0.057
 # layout (transverse lengths are boost-invariant). 1.0 ⇒ byte-identical to the production setup.
 const OMEGA_SCALE = something(SPEC.omega_scale, 1.0)
+# EDM_SCREEN_HALFW: screen half-extent in w₀ units (default 25 = production). Do NOT zoom
+# scaled-ω cells ∝ 1/OMEGA_SCALE: with the geometry pinned, the source Fraunhofer distance
+# a²/λ′ grows with the scale (≳Z beyond γ≈2), the screen enters the Fresnel zone, and the
+# pattern shrinks slower than 1/scale. Zoom only when the sampling window demands it — the
+# corner-anchored x⁰_start sits ~11λ_lab after the center-pixel arrival, so once that spread
+# (in scaled periods, ∝scale) exceeds the 8τ pulse half-span (γ≳10 at full frame) the window
+# would open after the peak passed the central pixels; ±8 w₀ suffices at γ=10 (gamma_equiv).
+const HALFW = something(SPEC.screen_halfw, 25.0)
+mkpath(OUTDIR)
+@info "Thomson (field) run config" RUN_TAG GPU_BACKEND GPU_SOLVER ϕ₀ A0 SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS NEWTON_ITERS OMEGA_SCALE HALFW
+const T_START = time()   # wall-clock start → [timing].total in the manifest
+
+# Laser parameters
 const ω₀_lab = 0.057
 ω = ω₀_lab * OMEGA_SCALE
 τ = 150 / ω
@@ -201,15 +209,7 @@ t_trajectories = @elapsed solution = solve(
 # Radiation computation
 trajs = trajectory_interpolants(solution)
 
-# Screen parameters
-# EDM_SCREEN_HALFW: screen half-extent in w₀ units (default 25 = production). Do NOT zoom
-# scaled-ω cells ∝ 1/OMEGA_SCALE: with the geometry pinned, the source Fraunhofer distance
-# a²/λ′ grows with the scale (≳Z beyond γ≈2), the screen enters the Fresnel zone, and the
-# pattern shrinks slower than 1/scale. Zoom only when the sampling window demands it — the
-# corner-anchored x⁰_start sits ~11λ_lab after the center-pixel arrival, so once that spread
-# (in scaled periods, ∝scale) exceeds the 8τ pulse half-span (γ≳10 at full frame) the window
-# would open after the peak passed the central pixels; ±8 w₀ suffices at γ=10 (gamma_equiv).
-const HALFW = something(SPEC.screen_halfw, 25.0)
+# Screen parameters (HALFW = the EDM_SCREEN_HALFW knob, resolved with the spec above)
 const Z = 2.0e5λ_lab
 const samples_per_period = SPP
 const δt = 2π / ω / samples_per_period
@@ -345,7 +345,12 @@ setup = Dict{String, Any}(
     "τf" => τf,
     "Rmax" => Rmax,
     "Z" => Z,
-)   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is just the integration window + screen depth
+    # Screen geometry the deferred reducers rebuild the grid/window from (harmonic_products.jl,
+    # plot_screen_observables.jl read [setup].screen_hw / x0_start via RunManifests.screen_halfwidth /
+    # window_start). Recorded in a.u. like every other [setup] value; [config].screen_halfw is the knob.
+    "screen_hw" => HALFW * w₀,
+    "x0_start" => x⁰_start,
+)   # input knobs (Nx/Ny/N/N_samples/spp) live in [config]; setup is the integration window + screen geometry
 
 # Wall-clock phase timings → [timing] (dashboard renders total/trajectories/field, in seconds).
 timing = Dict{String, Any}(

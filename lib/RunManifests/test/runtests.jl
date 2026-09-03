@@ -289,6 +289,20 @@ end
     @test env2["EDM_GAMMA_EPS"] == "0.001" && !haskey(env2, "EDM_GAMMA")
     @test env2["EDM_SYSTEM"] == "ll" && env2["EDM_OMEGA_SCALE"] == "19.9"
     @test env2["EDM_FIELD_MODE"] == "split"                    # pre-mode default preserved
+    # screen_zsign / apodization: [config] keys the inverse script writes — typed fields, so a
+    # replay no longer silently reruns the script defaults for a −Z screen or a bare-FFT reduce.
+    cfg3 = Dict{String, Any}(k => 1 for k in REQUIRED_CONFIG_KEYS)
+    cfg3["screen_zsign"] = -1
+    cfg3["apodization"] = "none"
+    path3 = write_solver_manifest(dir; run_id = "sp3", provenance = prov, config = cfg3,
+        laser = Dict(), setup = Dict(), outputs = Dict("plots" => String[]))
+    s4 = spec_from_manifest(TOML.parsefile(path3))
+    @test s4.screen_zsign === -1 && s4.apodization == "none" && isempty(s4.extra)
+    env3 = run_spec_from_manifest(TOML.parsefile(path3)).env
+    @test env3["EDM_SCREEN_ZSIGN"] == "-1" && env3["EDM_APODIZATION"] == "none"
+    @test !haskey(env2, "EDM_SCREEN_ZSIGN") && !haskey(env2, "EDM_APODIZATION")   # absent stays absent
+    s5 = load_spec(nothing; env = Dict("EDM_SCREEN_ZSIGN" => "-1", "EDM_APODIZATION" => "none"))
+    @test s5.screen_zsign === -1 && s5.apodization == "none"
     # missing required keys fail loudly, not with a KeyError deep in emission
     @test_throws ErrorException run_spec_from_manifest(Dict{String, Any}(
         "schema_version" => 1, "config" => Dict{String, Any}("a0" => 1)))
@@ -301,6 +315,37 @@ end
     @test Set((c.gamma, c.newton_iters) for c in cells) ==
           Set([(10.0, 1), (10.0, 2), (100.0, 1), (100.0, 2)])
     @test_throws ErrorException expand_sweep(ThomsonScatteringSpec(), Dict("nope" => [1]))
+end
+
+@testset "screen_halfwidth / window_start — recorded, knob-derived, legacy" begin
+    c = 137.03599908330932
+    w0 = 75 * 2π * c / 0.057
+    base = Dict{String, Any}(
+        "laser" => Dict{String, Any}("w0" => w0),
+        "setup" => Dict{String, Any}("τi" => -8 * 150 / 0.057, "Z" => 2.0e5 * 2π * c / 0.057, "Rmax" => 3.25w0),
+        "config" => Dict{String, Any}(),
+    )
+    corner(hw) = c * base["setup"]["τi"] + hypot(base["setup"]["Z"], hw + base["setup"]["Rmax"])
+    # Pre-knob manifest: the historical ±25 w₀ frame and its corner-anchored window start.
+    @test screen_halfwidth(base) ≈ 25w0
+    @test window_start(base) ≈ corner(25w0)
+    # Rest-electron knob (thomson_scattering.jl, 2026-07-29…): [config].screen_halfw in w₀ units.
+    mt = deepcopy(base); mt["config"]["screen_halfw"] = 8
+    @test screen_halfwidth(mt) ≈ 8w0
+    @test window_start(mt) ≈ corner(8w0)          # the grid AND the window follow the zoom
+    # Inverse knob: [config].screen_hw_w0, and [setup].screen_hw / x0_start recorded — the
+    # recorded values win over every reconstruction, and a signed Z only enters as a distance.
+    mi = deepcopy(base); mi["config"]["screen_hw_w0"] = 5
+    @test screen_halfwidth(mi) ≈ 5w0
+    mi["setup"]["screen_hw"] = 4.5w0; mi["setup"]["x0_start"] = 123.0; mi["setup"]["Z"] = -mi["setup"]["Z"]
+    @test screen_halfwidth(mi) == 4.5w0 && window_start(mi) == 123.0
+    delete!(mi["setup"], "x0_start")
+    @test window_start(mi) ≈ corner(4.5w0)        # |Z| in the corner anchor
+    # A :narrow window without a recorded start cannot be reconstructed.
+    mn = deepcopy(base); mn["config"]["window"] = "narrow"
+    @test_throws ErrorException window_start(mn)
+    # The knob fallback needs w0 to scale by.
+    @test_throws ErrorException screen_halfwidth(Dict{String, Any}("config" => Dict{String, Any}("screen_halfw" => 8)))
 end
 
 @testset "sweep declarations — write/read + membership stamp" begin

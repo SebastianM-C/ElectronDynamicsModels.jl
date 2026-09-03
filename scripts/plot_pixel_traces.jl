@@ -29,6 +29,7 @@ using Printf
 using CairoMakie
 using Serialization
 using TOML
+using RunManifests   # screen_halfwidth, window_start — the run's screen geometry from its manifest
 
 const c = 137.03599908330932   # speed of light, atomic units (repo convention)
 
@@ -57,15 +58,14 @@ Rmax = Float64(setup["Rmax"])
 Z = Float64(setup["Z"])
 N_samples = Int(cfg["N_samples"])
 spp = Int(cfg["samples_per_period"])
-# Mini-screen half-width = the RUN's screen. Current manifests record the zoom knob as
-# [setup].screen_hw (absolute) / [config].screen_hw_w0; the old cfg.screen_halfw key missed
-# them, so zoomed-screen runs (hw < 25 w₀) fell back to the 25 w₀ production framing and the
-# outer trace rows sampled pixels OFF the cube's screen — beyond the narrow window's corner
-# budget, so their bursts overran the window end and the chips showed a spurious end-of-pulse
-# cutoff (bridge-refix γ=2/2.5, 2026-08-30). The real screen corner is contained by
-# construction (tail margin intact), so on-screen rows never clip.
-HALFW = "screen_hw" in keys(setup) ? Float64(setup["screen_hw"]) / w₀ :
-    Float64(get(cfg, "screen_hw_w0", get(cfg, "screen_halfw", 25.0)))
+# Mini-screen half-width = the RUN's screen, resolved by RunManifests.screen_halfwidth
+# ([setup].screen_hw, else the run's w₀-unit knob, else the historical 25 w₀ frame). Reading
+# only cfg.screen_halfw once put zoomed-screen runs (hw < 25 w₀) on the 25 w₀ production
+# framing, so the outer trace rows sampled pixels OFF the cube's screen — beyond the narrow
+# window's corner budget — and the chips showed a spurious end-of-pulse cutoff (bridge-refix
+# γ=2/2.5, 2026-08-30). The real screen corner is contained by construction (tail margin
+# intact), so on-screen rows never clip.
+HALFW = screen_halfwidth(m) / w₀
 reltol = Float64(get(cfg, "reltol", 1.0e-12))
 abstol = Float64(cfg["abstol"])
 interp_saveat = string(get(cfg, "interp_saveat", "adaptive"))
@@ -151,14 +151,10 @@ traj_of = Dict(zip(solve_idx, trajs))
 
 # ── Mini-screen: the requested pixels along +x (center first), production time window ──
 xs = [f * HALFW * w₀ for f in RADII]
-# Prefer the RECORDED window start (setup.x0_start, present on current manifests): exact for
-# both :full and :narrow (burst-centred) windows — the corner-anchor formula is the pre-knob
-# reconstruction fallback and is wrong for narrow runs.
-x⁰_samples = range(
-    start = haskey(m["setup"], "x0_start") ? Float64(m["setup"]["x0_start"]) :
-        c * τi + hypot(Z, HALFW * w₀ + Rmax), step = c * (2π / ω / spp),
-    length = N_samples,
-)
+# The RECORDED window start ([setup].x0_start, present on current manifests) is exact for
+# both :full and :narrow (burst-centred) windows; RunManifests.window_start falls back to the
+# corner-anchor formula only for pre-knob :full runs (and refuses a narrow run without it).
+x⁰_samples = range(start = window_start(m), step = c * (2π / ω / spp), length = N_samples)
 screen = ObserverScreen(xs, [0.0], Z, x⁰_samples; c)   # Ny = 1: one y = 0 row of pixels
 
 # Retarded-time ODE tolerances (CPU reference path; the trajectories carry the production spline).
