@@ -22,12 +22,20 @@ point, a capacity cell — every cell doubles as a physics point; the header of
 `mgpu_bench_common.sh` says which). Launch sequence, from the driver box:
 
 ```bash
-export RUNPOD_GPU_COUNT=8 RUNPOD_DC="" RUNPOD_GPU_CANDIDATES="NVIDIA H200" RUNPOD_DISK_GB=400 RUNPOD_DRAIN_DELETE_LOCAL=1
+export RUNPOD_BRANCH=<the branch carrying this recipe> RUNPOD_GPU_COUNT=8 RUNPOD_DC="" \
+    RUNPOD_GPU_CANDIDATES="NVIDIA H200,NVIDIA H200 NVL" RUNPOD_DISK_GB=400 RUNPOD_DRAIN_DELETE_LOCAL=1
+#   the pod resolves scripts/ FRESH at warm (no tracked manifest) — the branch must carry the current
+#   [compat] caps; if the grab log shows the create rejected for the disk size, lower RUNPOD_DISK_GB
+#   (DRAIN_DELETE_LOCAL=1 keeps the footprint at ~2 cubes). One pod = one GPU type for both phases.
 B=orchestration/backends/runpod.sh; C=orchestration/campaigns
 # size first: estimate_run.sh --nx 601 --ns 1660 --n 16000 --devices 8 --mode total --direct 1 --vram-gb 141 --thr 5.5e8
 #   (phase 1 ≈ 3 × 82 GiB strong lanes + 36 GiB weak lane + overlapped reduces ≈ 300 GiB host;
 #    phase 2 peaks at the 1101² cell, ≈ 235 GiB; cubes on disk ≈ 245 GB if never freed)
-bash $B run $C/mgpu_bench_smoke.sh                      # ~3 min: D=1 vs D=2 must agree to roundoff
+bash $B run $C/mgpu_bench_smoke.sh                      # ~3 min; also the pod's first fresh resolve+precompile
+julia --project=scripts scripts/compare_hmaps.jl ~/campaign_out/smoke/run_<D1>.toml ~/campaign_out/smoke/run_<D2>.toml
+#   → D=1 vs D=2 must agree to roundoff; the D=1 manifest's [timing].field gives the per-device
+#     throughput (N·N_samples·Nx²/t): re-run estimate_run.sh --thr <it> for the real lane B length
+#     (the plan assumes 5.5e8; below ~4e8 drop strong D=1 or lower EDM_N) before phase 1.
 #   → check the "[pod] pod shape" line against the budget above; below ~350 GB RAM run
 #     l0 + l12 first and l3456 + l7 after.
 bash $B run $C/mgpu_bench_l0.sh $C/mgpu_bench_l12.sh $C/mgpu_bench_l3456.sh $C/mgpu_bench_l7.sh
