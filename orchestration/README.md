@@ -39,8 +39,12 @@ RUNPOD_STATE=~/.config/runpod/pod_h100 RUNPOD_GPU_COUNT=1 RUNPOD_GPU_CANDIDATES=
 julia --project=scripts scripts/scaling_report.jl ~/campaign_out/mgpu_bench ~/campaign_out/mgpu_bench_h100 \
     ~/campaign_out/rest_departure_bridge_refix          # tables + scaling_*.png; extra dirs = reference throughput rows
 bash orchestration/run_diagnostics.sh ~/campaign_out/mgpu_bench ~/campaign_out/mgpu_bench_h100
-#   validity chips per run (CPU, manifests only): per-electron E(t) pixel traces (field sampling)
-#   + worldlines with final-position histograms (kick-out check); then re-publish the campaign
+#   validity chips per run (CPU): pixel traces (field sampling), worldlines + final-position
+#   histograms (kick-out, mass-shell, Δγ), lattice-alias check (r_alias vs measured halo onset)
+julia --project=scripts scripts/compare_hmaps.jl --sweep mgpu_strong ~/campaign_out/mgpu_bench   # D=1/2/4/8 ≡ to roundoff
+julia --project=scripts scripts/compare_hmaps.jl ~/campaign_out/mgpu_bench/run_<weak_N2000_D1>.toml \
+    ~/campaign_out/mgpu_bench_h100/run_<h100>.toml ~/campaign_out/rest_departure_bridge_refix/run_486a637e-*.toml
+#   the same cell on H200 / H100 / MI300X: one answer, three vendors; then re-publish the campaigns
 ```
 
 Report field-phase times (`[timing].field`, GPU-bound, barely affected by neighbouring

@@ -52,7 +52,9 @@
 #                        run — the dashboard then shows them on the run's card, like the pixel
 #                        traces. The sidecar carries the final-position statistics (transverse
 #                        displacement rms/max in w₀, fraction displaced beyond EDM_TRAJ_KICK_W0,
-#                        default 0.1 w₀) — the "were electrons kicked out of the disk" check.
+#                        default 0.1 w₀) — the "were electrons kicked out of the disk" check —
+#                        plus the mass-shell residual max |u·u−c²|/c² over all knots and Δγ/γ₀
+#                        rms/max (a tolerance/dtmax mistake or an unexpected drain).
 #
 #   Inverse-Thomson manifests ([config].scattering = "inverse": boosted counter-propagating
 #   electrons, reversed laser, meet-at-origin timing) are reconstructed like plot_pixel_traces.jl
@@ -367,13 +369,28 @@ function analyze_run(mfile)
     dx = [last(gx(s)) - x0w[i] for (i, s) in enumerate(sols)]
     dy = [last(gy(s)) - y0w[i] for (i, s) in enumerate(sols)]
     dr = hypot.(dx, dy)
+    # Trajectory sanity over ALL electrons and ALL saved knots (state vector = (x⁰..x³, u⁰..u³)):
+    # the mass-shell residual |u·u − c²|/c² (a tolerance/dtmax mistake shows up here first —
+    # the boosted interaction is stepped over silently otherwise) and the energy change
+    # Δγ/γ₀ = u⁰_f/u⁰_i − 1 (radiation-reaction drain / net ponderomotive energy exchange).
+    # (symbolic getters: mtkcompile may order the raw state vector differently from (x, u))
+    gu = [getsym(prob, sys.u[j]) for j in 1:4]
+    uu_max = 0.0
+    dγ = Vector{Float64}(undef, N)
+    for (i, s) in enumerate(sols)
+        u0s, u1s, u2s, u3s = (g(s) for g in gu)
+        uu_max = max(uu_max, maximum(abs.(u0s .^ 2 .- u1s .^ 2 .- u2s .^ 2 .- u3s .^ 2 .- c^2)) / c^2)
+        dγ[i] = last(u0s) / first(u0s) - 1
+    end
     stats = Dict{String, Any}(
         "disp_rms_w0" => sqrt(mean(abs2, dr)), "disp_max_w0" => maximum(dr),
         "disp_p99_w0" => quantile(dr, 0.99), "kick_threshold_w0" => KICK_W0,
         "kicked_fraction" => count(>=(KICK_W0), dr) / N,
         "zf_mean_w0" => mean(zf), "zf_spread_w0" => std(zf),
+        "uu_residual_max" => uu_max,
+        "dgamma_rel_rms" => sqrt(mean(abs2, dγ)), "dgamma_rel_max" => maximum(abs, dγ),
     )
-    @info "final positions" stats["disp_rms_w0"] stats["disp_max_w0"] stats["kicked_fraction"] stats["zf_spread_w0"]
+    @info "final positions" stats["disp_rms_w0"] stats["disp_max_w0"] stats["kicked_fraction"] stats["zf_spread_w0"] stats["uu_residual_max"] stats["dgamma_rel_max"]
 
     zlabel = L"z/w_0"
     plots = String[]
@@ -413,8 +430,10 @@ function analyze_run(mfile)
                     "description" => "Re-solved worldlines of $(length(plot_idx)) of the N=$N electrons " *
                         "projected on the $(plane) plane" * (disp ? " (transverse displacement from the start position)" : "") *
                         ", coloured by r₀/w₀, with marginal histograms of ALL electrons' final positions. " *
-                        @sprintf("Transverse displacement rms %.2e w₀, max %.2e w₀; %.2f%% displaced beyond %g w₀.",
-                            stats["disp_rms_w0"], stats["disp_max_w0"], 100 * stats["kicked_fraction"], KICK_W0),
+                        @sprintf("Transverse displacement rms %.2e w₀, max %.2e w₀; %.2f%% displaced beyond %g w₀. ",
+                            stats["disp_rms_w0"], stats["disp_max_w0"], 100 * stats["kicked_fraction"], KICK_W0) *
+                        @sprintf("Mass-shell residual max |u·u−c²|/c² = %.1e; Δγ/γ₀ rms %.1e, max %.1e.",
+                            stats["uu_residual_max"], stats["dgamma_rel_rms"], stats["dgamma_rel_max"]),
                 ),
                 "plot_params" => merge(Dict{String, Any}("coords" => COORDS, "n_plot_traj" => length(plot_idx),
                     "npath" => NPATH), stats),
