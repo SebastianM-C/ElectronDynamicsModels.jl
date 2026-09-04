@@ -68,6 +68,13 @@ function with_gpu_sampler(f, backend, dt::Real;
         length(parts) == 6 || continue
         vals = map(x -> tryparse(Float64, x), parts)
         any(isnothing, vals) && continue
+        # Plausibility gate: a torn row (two writers interleaving on the trace) can still parse as
+        # six numbers — a VRAM value glued to the next row's epoch once reached the manifest as
+        # a 3e20 B peak. Epoch inside the sampled window (±5 s), utilizations in [0, 1], power
+        # and VRAM non-negative and below any real board (5 kW, 1 TB).
+        (t0 - 5 <= vals[1] <= time() + 5) || continue
+        (0 <= vals[4] <= 1 && 0 <= vals[5] <= 1) || continue
+        (0 <= vals[3] <= 5000 && 0 <= vals[6] <= 1.0e12) || continue
         push!(samples, (vals[1] - t0, vals[2], vals[3], vals[4], vals[5], vals[6]))
     end
     tracefile === nothing && rm(trace; force = true)
