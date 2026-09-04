@@ -22,11 +22,14 @@ point, a capacity cell — every cell doubles as a physics point; the header of
 `mgpu_bench_common.sh` says which). Launch sequence, from the driver box:
 
 ```bash
-export RUNPOD_GPU_COUNT=8 RUNPOD_DC="" RUNPOD_GPU_CANDIDATES="NVIDIA H200" RUNPOD_DISK_GB=400
+export RUNPOD_GPU_COUNT=8 RUNPOD_DC="" RUNPOD_GPU_CANDIDATES="NVIDIA H200" RUNPOD_DISK_GB=400 RUNPOD_DRAIN_DELETE_LOCAL=1
 B=orchestration/backends/runpod.sh; C=orchestration/campaigns
+# size first: estimate_run.sh --nx 601 --ns 1660 --n 16000 --devices 8 --mode total --direct 1 --vram-gb 141 --thr 5.5e8
+#   (phase 1 ≈ 3 × 82 GiB strong lanes + 36 GiB weak lane + overlapped reduces ≈ 300 GiB host;
+#    phase 2 peaks at the 1101² cell, ≈ 235 GiB; cubes on disk ≈ 245 GB if never freed)
 bash $B run $C/mgpu_bench_smoke.sh                      # ~3 min: D=1 vs D=2 must agree to roundoff
-#   → check the "[pod] pod shape" line: phase 1 holds three N=16000 spline sets (~100 GB each)
-#     plus the weak cells at once; below ~400 GB RAM run l0 and l12 first, l3456 + l7 after.
+#   → check the "[pod] pod shape" line against the budget above; below ~350 GB RAM run
+#     l0 + l12 first and l3456 + l7 after.
 bash $B run $C/mgpu_bench_l0.sh $C/mgpu_bench_l12.sh $C/mgpu_bench_l3456.sh $C/mgpu_bench_l7.sh
 bash $B run $C/mgpu_bench_p2.sh                         # all 8 GPUs, after phase 1 is DONE
 bash $B teardown                                        # gate waits for the R2 drainer

@@ -307,8 +307,13 @@ start_drainer() {
     ssh_vm 'cat > ~/cube_drain_r2.sh' < "$ORCH/cube_drain_r2.sh" || return 1
     # guard is its OWN ssh call: bundled with the nohup start, the remote shell's cmdline would
     # contain the plain script name and pgrep would always self-match (drainer never starts)
+    # RUNPOD_DRAIN_DELETE_LOCAL=1 frees each cube on the pod once its upload + sha sidecar are in
+    # the bucket (the container disk is small and its quota is enforced lazily — see the
+    # drainer header). Default 0 = keep the local copy until teardown; the disk gate then
+    # serializes cells behind the drainer once cubes pile up, so size RUNPOD_DISK_GB for the
+    # whole campaign or turn this on.
     if ! drainer_active; then
-        ssh_vm 'nohup bash ~/cube_drain_r2.sh >> ~/drain_r2.log 2>&1 < /dev/null &' || return 1
+        ssh_vm "DRAIN_DELETE_LOCAL='${RUNPOD_DRAIN_DELETE_LOCAL:-0}' nohup bash ~/cube_drain_r2.sh >> ~/drain_r2.log 2>&1 < /dev/null &" || return 1
     fi
     log "[drain] cube_drain_r2.sh running on the pod (log: ~/drain_r2.log)"
 }
