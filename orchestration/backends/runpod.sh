@@ -66,7 +66,12 @@ STATE="${RUNPOD_STATE:-$HOME/.config/runpod/campaign_pod}"; OUT="${RUNPOD_OUT:-$
 POLL="${RUNPOD_POLL_SEC:-120}"; MAXTRIES="${RUNPOD_MAX_TRIES:-240}"
 PUBKEY="$(cat "${RUNPOD_SSH_PUBKEY:-$HOME/.config/runpod/ssh_pubkey}" 2>/dev/null || ssh-add -L 2>/dev/null | head -1)"
 CM="$HOME/.ssh/cm-runpod-$(basename "$STATE").sock"   # per-STATE: concurrent drivers must not remux onto one socket
-SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600${RUNPOD_SSH_KEY:+ -i $RUNPOD_SSH_KEY -o IdentitiesOnly=yes}"
+# RUNPOD_SSH_JUMP: an ssh host/alias to ProxyJump through. RunPod maps the pod's sshd to a RANDOM
+# high public port, and some networks block outbound TCP in that range (2026-09-04: the driver
+# box could not reach 11000–50000 anywhere, while a VPS could) — every ssh/rsync then rides the
+# jump; the pod-side drainer/depot cache are unaffected (they originate on the pod).
+SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600${RUNPOD_SSH_KEY:+ -i $RUNPOD_SSH_KEY -o IdentitiesOnly=yes}${RUNPOD_SSH_JUMP:+ -o ProxyJump=$RUNPOD_SSH_JUMP}"
+SSH_WAIT_TRIES="${RUNPOD_SSH_WAIT_TRIES:-40}"   # readiness polls (×~30 s) before declaring sshd dead
 
 rp()      { curl -fsS -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" "$@"; }
 ssh_vm()  { /usr/bin/ssh $SSHOPTS -p "$PORT" root@"$IP" "$@"; }
@@ -227,8 +232,8 @@ wait_ready() {   # public IP + 22 mapping appear only once the container is stab
         sleep 15
     done
     [ -n "${IP:-}" ] && [ -n "${PORT:-}" ] || { log "[ERROR] no endpoint after wait"; return 1; }
-    for i in $(seq 1 40); do ssh_vm true 2>/dev/null && return 0; sleep 10; done
-    log "[ERROR] sshd never came up"; return 1
+    for i in $(seq 1 "$SSH_WAIT_TRIES"); do ssh_vm true 2>/dev/null && return 0; sleep 10; done
+    log "[ERROR] sshd never came up after $SSH_WAIT_TRIES tries — if the pod's own log says 'Pod is ready', the mapped port is likely blocked on THIS network: set RUNPOD_SSH_JUMP"; return 1
 }
 
 warm() {
@@ -466,10 +471,17 @@ monitor_and_download() {   # poll every lane for DONE (crash = 3 consecutive dea
 run_campaign() {   # run <campaign.sh>... — several files = concurrent lanes on one pod
     load_lanes "$@"
     if pod_reachable; then
-        log "reusing kept pod $POD ($IP:$PORT) from $STATE (no grab/warm) — syncing repo to $BRANCH"
-        # A kept pod carries whatever branch it was warmed with; sync so a re-run
-        # with a different RUNPOD_BRANCH doesn't silently execute stale code.
-        ssh_vm "cd EDM && git fetch --quiet origin '$BRANCH' && git checkout --quiet -f '$BRANCH' && git reset --quiet --hard 'origin/$BRANCH' && echo '[sync] now at' \$(git rev-parse --short HEAD) 'on' \$(git branch --show-current)"
+        if ssh_vm '[ -d "$HOME/EDM/.git" ] && [ -x "$HOME/.juliaup/bin/julia" ]' 2>/dev/null; then
+            log "reusing kept pod $POD ($IP:$PORT) from $STATE (no grab/warm) — syncing repo to $BRANCH"
+            # A kept pod carries whatever branch it was warmed with; sync so a re-run
+            # with a different RUNPOD_BRANCH doesn't silently execute stale code.
+            ssh_vm "cd EDM && git fetch --quiet origin '$BRANCH' && git checkout --quiet -f '$BRANCH' && git reset --quiet --hard 'origin/$BRANCH' && echo '[sync] now at' \$(git rev-parse --short HEAD) 'on' \$(git branch --show-current)"
+        else
+            # A driver that died between grab and warm (ssh unreachable, Ctrl-C…) leaves a
+            # reachable but bare pod: warm it instead of failing on a missing ~/EDM.
+            log "kept pod $POD ($IP:$PORT) was never warmed — warming now"
+            warm
+        fi
     else
         if [ -f "$STATE" ]; then   # unreachable but maybe still billing — never silently orphan it
             read -r POD _ < "$STATE"
