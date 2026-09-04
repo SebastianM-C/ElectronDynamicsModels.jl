@@ -24,9 +24,11 @@ point, a capacity cell — every cell doubles as a physics point; the header of
 ```bash
 export RUNPOD_BRANCH=<the branch carrying this recipe> RUNPOD_GPU_COUNT=8 RUNPOD_DC="" \
     RUNPOD_GPU_CANDIDATES="NVIDIA H200,NVIDIA H200 NVL" RUNPOD_DISK_GB=400 RUNPOD_DRAIN_DELETE_LOCAL=1
-#   the pod resolves scripts/ FRESH at warm (no tracked manifest) — the branch must carry the current
-#   [compat] caps; if the grab log shows the create rejected for the disk size, lower RUNPOD_DISK_GB
-#   (DRAIN_DELETE_LOCAL=1 keeps the footprint at ~2 cubes). One pod = one GPU type for both phases.
+#   the pod instantiates the TRACKED scripts/Manifest-v1.12.toml at warm (no fresh resolve): a
+#   dependency update reaches cloud runs only by committing a regenerated manifest (which also
+#   re-keys the depot warm cache). If the grab log shows the create rejected for the disk size,
+#   lower RUNPOD_DISK_GB (DRAIN_DELETE_LOCAL=1 keeps the footprint at ~2 cubes). One pod = one
+#   GPU type for both phases.
 B=orchestration/backends/runpod.sh; C=orchestration/campaigns
 # size first: estimate_run.sh --nx 601 --ns 1660 --n 16000 --devices 8 --mode total --direct 1 --vram-gb 141 --thr 5.5e8
 #   (phase 1 ≈ 3 × 82 GiB strong lanes + 36 GiB weak lane + overlapped reduces ≈ 300 GiB host;
