@@ -4,6 +4,43 @@ Portable campaign framework: a campaign is pure data (`campaigns/*.sh`), `run_ce
 shared core, `backends/` decides where cells run (local GPU / SLURM / Hot Aisle / RunPod).
 Machine infra lives in the gitignored `config.env`; secrets stay under `~/.config`.
 
+## Multi-GPU lanes (RunPod)
+
+`accumulate_field_sharded` splits the electrons across every device the solver can see and
+streams the per-device partials into one host cube (exact by linearity; host peak ≈ 1.1× cube
+whatever the device count). Two knobs turn that into a benchmark or a big-N campaign:
+
+- `RUNPOD_GPU_COUNT=<1-8>` (config.env or inline) — the pod's GPU count.
+- **Lanes**: `runpod.sh run a.sh b.sh …` launches several campaign files CONCURRENTLY on one
+  pod (one sequential `local.sh` lane each; each owns `runs/<stem>.out/.pid`) and monitors /
+  downloads them together. Lanes may share a `CAMPAIGN` dir; cells pin themselves to device
+  subsets with a per-cell `CUDA_VISIBLE_DEVICES=…` override (the CUDA extension maps ordinals
+  to NVML uuids, so telemetry stays correct) and name their logical sweep with `EDM_SWEEP=…`.
+
+Reference recipe: `campaigns/mgpu_bench_*.sh` (weak + strong scaling on 8×H200, an H100
+point, a capacity cell — every cell doubles as a physics point; the header of
+`mgpu_bench_common.sh` says which). Launch sequence, from the driver box:
+
+```bash
+export RUNPOD_GPU_COUNT=8 RUNPOD_DC="" RUNPOD_GPU_CANDIDATES="NVIDIA H200" RUNPOD_DISK_GB=400
+B=orchestration/backends/runpod.sh; C=orchestration/campaigns
+bash $B run $C/mgpu_bench_smoke.sh                      # ~3 min: D=1 vs D=2 must agree to roundoff
+#   → check the "[pod] pod shape" line: phase 1 holds three N=16000 spline sets (~100 GB each)
+#     plus the weak cells at once; below ~400 GB RAM run l0 and l12 first, l3456 + l7 after.
+bash $B run $C/mgpu_bench_l0.sh $C/mgpu_bench_l12.sh $C/mgpu_bench_l3456.sh $C/mgpu_bench_l7.sh
+bash $B run $C/mgpu_bench_p2.sh                         # all 8 GPUs, after phase 1 is DONE
+bash $B teardown                                        # gate waits for the R2 drainer
+# H100 point — its own pod/STATE:
+RUNPOD_STATE=~/.config/runpod/pod_h100 RUNPOD_GPU_COUNT=1 RUNPOD_GPU_CANDIDATES="NVIDIA H100 80GB HBM3" \
+    bash $B run $C/mgpu_bench_h100.sh && RUNPOD_STATE=~/.config/runpod/pod_h100 bash $B teardown
+julia --project=scripts scripts/scaling_report.jl ~/campaign_out/mgpu_bench ~/campaign_out/mgpu_bench_h100 \
+    ~/campaign_out/rest_departure_bridge_refix          # tables + scaling_*.png; extra dirs = reference throughput rows
+```
+
+Report field-phase times (`[timing].field`, GPU-bound, barely affected by neighbouring
+lanes) separately from end-to-end cell times (which include the ~4 min of un-sharded
+Julia load / serialize / reduce, and DO see lane contention on the host).
+
 ## R2 cube pipeline
 
 Field cubes (`field_*.jls`, ~86 GB each) are too big for any ssh path off a cloud VM

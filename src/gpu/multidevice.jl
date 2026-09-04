@@ -4,6 +4,14 @@
 # This parallelizes the otherwise-serial electron loop (the H200 is only ~0.59 occupied per launch,
 # so a single device underuses it; D devices give a ~D× electron-loop speedup). Built on the vendor
 # API: `gpu_device_count`/`gpu_device!` (ext/EDM{CUDA,AMDGPU}Ext.jl) pin each shard's task to a GPU.
+#
+# Host memory: the partials are STREAMED into one host cube set, not collected. Each device task
+# hands its still-resident device buffers to a sink that, under a lock, downloads them chunk by
+# chunk and adds them into the shared accumulator (`_add_fields!`); the first task to finish
+# allocates the accumulator by a plain download (`_collect_fields`). Peak host residency is
+# therefore ~1.1× one cube regardless of D — the previous collect-then-sum design held D cubes
+# (8 × 97 GB for a 1101² capacity cell), which no node RAM survives. The lock serializes only the
+# PCIe download + host add (seconds), not the accumulation.
 
 # Near-even contiguous split of 1:n into k index ranges (first `rem` chunks get one extra).
 function _shard_indices(n::Integer, k::Integer)
@@ -27,7 +35,11 @@ end
 Shard `trajs` across `devices` (vendor-native 1-based ids) and run the single-device
 [`accumulate_field`](@ref) on each shard CONCURRENTLY — one `Threads.@spawn` task per device, each
 pinned with `gpu_device!(backend, d)` so its buffers + kernels land on that GPU — then sum the
-per-device partials. `kwargs` (e.g. `mode`, `n_substeps`, `sync_per_electron`) forward unchanged.
+per-device partials into ONE host cube set as each device finishes (streamed reduce; host peak
+≈ 1.1 × cube, independent of the device count). `kwargs` (e.g. `mode`, `n_substeps`,
+`sync_per_electron`) forward unchanged. The same device id may appear more than once (e.g.
+`devices = [1, 1]`): the shards then time-share that GPU — pointless for throughput but the
+exactness check the CPU-backend test relies on.
 
 Needs ≥`length(devices)` Julia threads (`julia -t`): each per-device task is GPU-bound and blocks its
 thread on the final device→host copy, so they only overlap on separate OS threads. Each device holds
@@ -45,27 +57,25 @@ function accumulate_field_sharded(
                per-device tasks will serialize; rerun with julia -t$nd"
 
     shards = _shard_indices(length(trajs), nd)
-    partials = Vector{Any}(undef, length(shards))
+    acc = Ref{Any}(nothing)
+    lk = ReentrantLock()
+    # The sink runs INSIDE accumulate_field, while the device buffers are alive; it returns
+    # nothing so the task holds no host copy of its partial.
+    sink = (E1, B1, E2, B2, mode) -> lock(lk) do
+        if acc[] === nothing
+            acc[] = _collect_fields(E1, B1, E2, B2, mode)
+        else
+            _add_fields!(acc[], E1, B1, E2, B2, mode)
+        end
+        nothing
+    end
     @sync for (i, rng) in enumerate(shards)
         d = devices[i]
         Threads.@spawn begin
             gpu_device!(backend, d)
-            partials[i] = accumulate_field(trajs[rng], screen, alg, backend; kwargs...)
+            accumulate_field(trajs[rng], screen, alg, backend; sink, kwargs...)
         end
     end
 
-    return _reduce_partials(partials)
-end
-
-# Combine the per-device partials (each a NamedTuple `(; E, B[, E_far, B_far])` of host arrays, all
-# the same fields/shape) into a single NamedTuple by summing each field across devices.
-function _reduce_partials(partials)
-    nd = length(partials)
-    for i in 2:nd
-        for k in propertynames(partials[1])
-            getproperty(partials[1], k) .+= getproperty(partials[i], k)
-        end
-    end
-
-    return partials[1]
+    return acc[]
 end

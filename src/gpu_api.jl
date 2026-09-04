@@ -88,6 +88,14 @@ end
 gpu_device!(b::KA.Backend, ::Integer) = error(
     "gpu_device!: no GPU vendor extension loaded for ", typeof(b), " — load CUDA.jl or AMDGPU.jl"
 )
+# The KA CPU backend is one "device": lets the multi-device sharding driver (and its tests)
+# run on the CPU path — `devices = [1, 1]` shards electrons over two tasks on the same
+# backend, exercising the concurrent accumulate + streamed reduce without a GPU.
+gpu_device_count(::KA.CPU) = 1
+gpu_device(::KA.CPU) = 1
+gpu_device!(::KA.CPU, ::Integer) = 1
+gpu_name(::KA.CPU) = "CPU"
+
 gpu_telemetry_child_cmd(b::KA.Backend, ::AbstractVector{<:Integer}, ::Real, ::AbstractString) = error(
     "gpu_telemetry_child_cmd: no GPU vendor extension loaded for ", typeof(b),
     " — load CUDA.jl or AMDGPU.jl"

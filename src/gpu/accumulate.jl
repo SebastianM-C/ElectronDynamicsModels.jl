@@ -174,3 +174,76 @@ function _download_permuted(buf::AbstractArray{T, 4}) where {T}
     end
     return out
 end
+
+"""
+    _download_permuted_add!(out, buf) -> out
+
+In-place sibling of [`_download_permuted`](@ref): download `buf` (`[ix, iy, μ, k]`) chunk by
+chunk and ADD it into the preallocated host cube `out` (`[k, μ, ix, iy]`). Two staging
+buffers of 1/16 cube (the linear download slab and its permuted copy) are the only
+transient, so folding a device partial into a running host sum costs ~(1/8)× cube of
+extra host memory — the primitive behind the streamed multi-device reduce, which keeps ONE
+host cube resident instead of one per device.
+"""
+function _download_permuted_add!(out::Array{T, 4}, buf::AbstractArray{T, 4}) where {T}
+    Nx, Ny, M, K = size(buf)
+    size(out) == (K, M, Nx, Ny) || throw(DimensionMismatch(
+        "_download_permuted_add!: out $(size(out)) does not match buf $(size(buf)) permuted"))
+    chunk = max(1, cld(K, 16))
+    stage = Array{T}(undef, Nx * Ny * M * chunk)
+    pstage = Array{T, 4}(undef, chunk, M, Nx, Ny)
+    bufv = vec(buf)
+    slab = Nx * Ny * M
+    for k0 in 1:chunk:K
+        nk = min(chunk, K - k0 + 1)
+        copyto!(stage, 1, bufv, (k0 - 1) * slab + 1, nk * slab)
+        pv = view(pstage, 1:nk, :, :, :)
+        permutedims!(pv, reshape(view(stage, 1:(nk * slab)), Nx, Ny, M, nk), (4, 3, 1, 2))
+        view(out, k0:(k0 + nk - 1), :, :, :) .+= pv
+    end
+    return out
+end
+
+# ── Field-cube collection: the shared tail of the RK4/Newton `accumulate_field` kernels ──
+# `_collect_fields` is the default (download every buffer to a fresh host NamedTuple);
+# `_add_fields!` folds the device buffers into an existing host NamedTuple of the same
+# shape. `accumulate_field`'s `sink` kwarg picks between them: `nothing` ⇒ collect and
+# return; a callable ⇒ it receives `(E1, B1, E2, B2, mode)` device buffers while they are
+# still alive and its return value is what `accumulate_field` returns (the sharded driver
+# passes a sink that locks and `_add_fields!`s, so partials never coexist on the host).
+function _collect_fields(E1_buf, B1_buf, E2_buf, B2_buf, mode::Val)
+    if mode == Val(:split)
+        E_far = _download_permuted(E1_buf)
+        B_far = _download_permuted(B1_buf)
+        E_near = _download_permuted(E2_buf)
+        B_near = _download_permuted(B2_buf)
+        E = E_far .+ E_near
+        B = B_far .+ B_near
+        return (; E, B, E_far, B_far)
+    else
+        E = _download_permuted(E1_buf)
+        B = _download_permuted(B1_buf)
+        return (; E, B)
+    end
+end
+
+function _add_fields!(acc::NamedTuple, E1_buf, B1_buf, E2_buf, B2_buf, mode::Val)
+    if mode == Val(:split)
+        haskey(acc, :E_far) || throw(ArgumentError("_add_fields!: split-mode buffers need an accumulator with E_far/B_far"))
+        _download_permuted_add!(acc.E_far, E1_buf)
+        _download_permuted_add!(acc.B_far, B1_buf)
+        _download_permuted_add!(acc.E, E1_buf)
+        _download_permuted_add!(acc.E, E2_buf)
+        _download_permuted_add!(acc.B, B1_buf)
+        _download_permuted_add!(acc.B, B2_buf)
+    else
+        _download_permuted_add!(acc.E, E1_buf)
+        _download_permuted_add!(acc.B, B1_buf)
+    end
+    return acc
+end
+
+_finish_fields(sink::Nothing, E1_buf, B1_buf, E2_buf, B2_buf, mode::Val) =
+    _collect_fields(E1_buf, B1_buf, E2_buf, B2_buf, mode)
+_finish_fields(sink, E1_buf, B1_buf, E2_buf, B2_buf, mode::Val) =
+    sink(E1_buf, B1_buf, E2_buf, B2_buf, mode)

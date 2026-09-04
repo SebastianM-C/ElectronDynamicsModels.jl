@@ -354,6 +354,7 @@ function accumulate_field(
         n_iters::Int = 2,
         mode::Val = Val(:split),
         sync_per_electron::Bool = true,
+        sink = nothing,
     )
     n_iters ≥ 1 || throw(ArgumentError(
         "n_iters must be ≥ 1 — n_iters = 0 degrades to an unchecked Euler march"))
@@ -403,17 +404,7 @@ function accumulate_field(
         finalize(gpu_traj.a_itp.c2)
     end
 
-    if mode == Val(:split)
-        E_far = _download_permuted(E1_buf)
-        B_far = _download_permuted(B1_buf)
-        E_near = _download_permuted(E2_buf)
-        B_near = _download_permuted(B2_buf)
-        E = E_far .+ E_near
-        B = B_far .+ B_near
-        return (; E, B, E_far, B_far)
-    else
-        E = _download_permuted(E1_buf)
-        B = _download_permuted(B1_buf)
-        return (; E, B)
-    end
+    # Download (or hand to `sink`) while the device buffers are still alive — see
+    # _finish_fields / _collect_fields / _add_fields! in accumulate.jl.
+    return _finish_fields(sink, E1_buf, B1_buf, E2_buf, B2_buf, mode)
 end

@@ -404,6 +404,7 @@ function accumulate_field(
         n_substeps::Int = 1,
         mode::Val = Val(:split),
         sync_per_electron::Bool = true,
+        sink = nothing,
     )
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
@@ -452,18 +453,8 @@ function accumulate_field(
         finalize(gpu_traj.a_itp.c2)
     end
 
-    if mode == Val(:split)
-        E_far = _download_permuted(E1_buf)
-        B_far = _download_permuted(B1_buf)
-        E_near = _download_permuted(E2_buf)
-        B_near = _download_permuted(B2_buf)
-        E = E_far .+ E_near
-        B = B_far .+ B_near
-        return (; E, B, E_far, B_far)
-    else
-        # Level-2: far+near already summed in the kernel → E1/B1 hold the total directly.
-        E = _download_permuted(E1_buf)
-        B = _download_permuted(B1_buf)
-        return (; E, B)
-    end
+    # Download (or hand to `sink`) while the device buffers are still alive; in `:total`
+    # far+near are already summed in the kernel, so E1/B1 hold the total directly — see
+    # _finish_fields / _collect_fields / _add_fields! in accumulate.jl.
+    return _finish_fields(sink, E1_buf, B1_buf, E2_buf, B2_buf, mode)
 end

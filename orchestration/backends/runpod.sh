@@ -3,10 +3,16 @@
 # hotaisle.sh's lifecycle; cell execution, tagging, logging and cube policy all come from the SAME
 # run_cell.sh the pod clones.
 #
-#   bash orchestration/backends/runpod.sh run <campaign.sh>      grab pod → warm → run → download
-#   bash orchestration/backends/runpod.sh attach <campaign.sh>   re-attach to a kept pod's campaign
+#   bash orchestration/backends/runpod.sh run <campaign.sh>...   grab pod → warm → run → download
+#   bash orchestration/backends/runpod.sh attach <campaign.sh>... re-attach to a kept pod's campaign
 #                                                                (monitor + download, NO relaunch)
 #   bash orchestration/backends/runpod.sh teardown               delete the kept pod (stops billing)
+#
+# Lanes (multi-GPU pods, RUNPOD_GPU_COUNT>1): several campaign files in one `run` are launched
+# CONCURRENTLY on the pod, one sequential local.sh lane each, and monitored/downloaded together.
+# A lane owns runs/<file-stem>.out/.pid, so lanes may share a CAMPAIGN (output dir) — cells then
+# pin themselves to device subsets with a per-cell CUDA_VISIBLE_DEVICES=… override and name their
+# logical sweep with EDM_SWEEP=… (see campaigns/mgpu_bench_*.sh). One file = the classic flow.
 #
 # Storage layout (reworked 2026-07-02 — the FUSE network volume is pathological for depots):
 #   • Julia depot → pod-LOCAL disk (/root/julia-depot-$BACKEND), restored from / pushed to a
@@ -35,20 +41,24 @@ ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."; ORCH="$(cd "$ORCH" && p
 _CALLER_BRANCH="${RUNPOD_BRANCH-}"
 _CALLER_VOLGB="${RUNPOD_VOLUME_GB-}"
 _CALLER_DISK="${RUNPOD_DISK_GB-}"
+_CALLER_GPUS="${RUNPOD_GPU_COUNT-}"
 _CALLER_DC="${RUNPOD_DC-__unset__}"
 . "$ORCH/run_cell.sh"        # config.env + notify() (notifications fire from THIS driving machine)
 [ -n "$_CALLER_BRANCH" ] && RUNPOD_BRANCH="$_CALLER_BRANCH"
 [ -n "$_CALLER_VOLGB" ] && RUNPOD_VOLUME_GB="$_CALLER_VOLGB"
 [ -n "$_CALLER_DISK" ] && RUNPOD_DISK_GB="$_CALLER_DISK"
+[ -n "$_CALLER_GPUS" ] && RUNPOD_GPU_COUNT="$_CALLER_GPUS"
 [ "$_CALLER_DC" != "__unset__" ] && RUNPOD_DC="$_CALLER_DC"   # explicit empty = unpinned, must survive too
 
-MODE="${1:?usage: runpod.sh run <campaign.sh> | attach <campaign.sh> | teardown}"
+MODE="${1:?usage: runpod.sh run <campaign.sh>... | attach <campaign.sh>... | teardown}"
 TOK=$(cat "${RUNPOD_TOKEN_FILE:-$HOME/.config/runpod/token}")
 API="https://rest.runpod.io/v1"
 DC="${RUNPOD_DC-EU-RO-1}"   # unset ⇒ EU-RO-1; EXPLICIT empty ⇒ unpinned (scheduler picks the DC)
 ROCM_IMAGE="${RUNPOD_ROCM_IMAGE:-rocm/pytorch@sha256:4449f856653602317e4101a76fce599c7fcd58ccec2e539951fce5f73083179e}"
 CUDA_IMAGE="${RUNPOD_CUDA_IMAGE:-runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404}"
 DISK="${RUNPOD_DISK_GB:-120}"
+GPUS="${RUNPOD_GPU_COUNT:-1}"   # GPUs per pod (1–8; the solver shards electrons across all visible devices)
+[[ "$GPUS" =~ ^[1-8]$ ]] || { echo "RUNPOD_GPU_COUNT must be 1..8, got '$GPUS'" >&2; exit 64; }
 VOLNAME="${RUNPOD_VOLUME_NAME:-edm-vol}"; VOLGB="${RUNPOD_VOLUME_GB:-0}"
 REPO_URL="${RUNPOD_REPO_URL:?set RUNPOD_REPO_URL in config.env}"; BRANCH="${RUNPOD_BRANCH:-main}"
 DEPOT_CACHE="${DEPOT_CACHE:-}"; DEPOT_CACHE_KEY="${DEPOT_CACHE_KEY:-$HOME/.config/runpod/depot_key}"   # shared cache (see depot_cache.sh)
@@ -159,7 +169,7 @@ grab_pod() {
     fi
     local -a cands; mapfile -t cands < <(gpu_candidates)
     [ "${#cands[@]}" -gt 0 ] || { log "[ERROR] gpu_candidates returned nothing"; return 1; }
-    log "grabbing (poll ${POLL}s ≤$MAXTRIES tries): ${cands[*]}"
+    log "grabbing ${GPUS}× GPU pod (poll ${POLL}s ≤$MAXTRIES tries): ${cands[*]}"
     local try gpu prof resp pid rate
     for ((try=1; try<=MAXTRIES; try++)); do
         for gpu in "${cands[@]}"; do
@@ -167,8 +177,8 @@ grab_pod() {
             BACKEND="${prof%% *}"; IMAGE="${prof#* }"
             resp="$(curl --fail-with-body -sS -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" -X POST "$API/pods" \
                 -d "$(jq -n --arg gpu "$gpu" --arg img "$IMAGE" --arg pub "$PUBKEY" --arg vol "${VOLID:-}" \
-                        --arg dc "$DC" --arg start "$START_CMD" --argjson disk "$DISK" \
-                    '{name:"edm-runpod",imageName:$img,gpuTypeIds:[$gpu],cloudType:"SECURE",gpuCount:1,
+                        --arg dc "$DC" --arg start "$START_CMD" --argjson disk "$DISK" --argjson gpus "$GPUS" \
+                    '{name:"edm-runpod",imageName:$img,gpuTypeIds:[$gpu],cloudType:"SECURE",gpuCount:$gpus,
                       containerDiskInGb:$disk,
                       ports:["22/tcp"],supportPublicIp:true,env:{PUBLIC_KEY:$pub}}
                      + (if ($img|startswith("runpod/")) then {}
@@ -188,9 +198,9 @@ grab_pod() {
             # ping as soon as a pod is secured, not only at campaign launch.
             [ -n "$pid" ] && { POD="$pid"
                 rate="$(echo "$resp" | jq -r 'if .costPerHr then (.costPerHr*100|round) else empty end' 2>/dev/null)" || rate=""
-                ledger "$POD" provision "gpu=$gpu dc=$DC" "$rate" "$(pod_balance)"
-                log "grabbed $gpu → pod $POD ($BACKEND / $IMAGE, ${rate:-?}¢/h)"
-                notify satellite default "EDM runpod grabbed" "$gpu → pod $POD (try $try/$MAXTRIES, billing started)"; return 0; }
+                ledger "$POD" provision "gpu=$gpu gpus=$GPUS dc=$DC" "$rate" "$(pod_balance)"
+                log "grabbed ${GPUS}× $gpu → pod $POD ($BACKEND / $IMAGE, ${rate:-?}¢/h)"
+                notify satellite default "EDM runpod grabbed" "${GPUS}× $gpu → pod $POD (try $try/$MAXTRIES, billing started)"; return 0; }
         done
         [ $(( (try-1) % 10 )) -eq 0 ] && log "  no capacity yet (try $try/$MAXTRIES)…"
         sleep "$POLL"
@@ -205,10 +215,15 @@ resolve_endpoint() {   # set IP/PORT from the API for $POD — RunPod remaps con
     [ -n "$IP" ] && [ -n "$PORT" ]
 }
 
+pod_shape() {   # what we actually got (multi-GPU pods scale vCPU/RAM with the GPU count) — log only, never fail
+    rp "$API/pods/$POD" 2>/dev/null | jq -r '"pod shape: \(.gpuCount // "?")× GPU, \(.vcpuCount // "?") vCPU, \(.memoryInGb // "?") GB RAM, \(.containerDiskInGb // "?") GB disk"' 2>/dev/null \
+        | sed 's/^/[pod] /' || true
+}
+
 wait_ready() {   # public IP + 22 mapping appear only once the container is stable; then sshd is up
     log "waiting for public IP + sshd…"; local i
     for i in $(seq 1 60); do
-        resolve_endpoint && { log "endpoint root@$IP:$PORT"; break; }
+        resolve_endpoint && { log "endpoint root@$IP:$PORT"; pod_shape; break; }
         sleep 15
     done
     [ -n "${IP:-}" ] && [ -n "${PORT:-}" ] || { log "[ERROR] no endpoint after wait"; return 1; }
@@ -332,56 +347,117 @@ GATE
     exit 1
 }
 
-monitor_and_download() {   # poll for DONE (crash = 3 consecutive dead liveness checks), then download+verify
-    log "polling for completion (DONE marker; crash = 3 consecutive failed liveness checks)…"
-    local misses=0
-    until ssh_vm "cd EDM && grep -q '\\] ${CAMPAIGN} DONE' runs/${CAMPAIGN}.out 2>/dev/null"; do
-        if ssh_vm "cd EDM && kill -0 \$(cat runs/${CAMPAIGN}.pid 2>/dev/null) 2>/dev/null"; then
-            misses=0
-        else
-            misses=$((misses+1))
-            if [ "$misses" -ge 3 ]; then
-                ssh_vm "cd EDM && grep -q '\\] ${CAMPAIGN} DONE' runs/${CAMPAIGN}.out 2>/dev/null" && break   # finished between checks
-                notify rotating_light urgent "EDM runpod CRASH" "$CAMPAIGN driver died with no DONE on $POD — pod KEPT; '$0 attach' to retry or teardown."
-                ledger "$POD" campaign_crash "campaign=$CAMPAIGN driver died, no DONE"
-                log "[ERROR] driver gone, no DONE — pod $POD KEPT. tail:"; ssh_vm "cd EDM && tail -n 20 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[pod] /'; return 1
+# ── lanes ────────────────────────────────────────────────────────────────────
+# One campaign file = one sequential local.sh lane on the pod; several files in one `run` =
+# concurrent lanes. A lane owns runs/<stem>.out + .pid (stem = file name sans .sh) — NOT
+# runs/<CAMPAIGN>.*, so lanes may share an output dir. load_lanes reads each file in a
+# subshell (never the driver's shell) and derives the campaign-level globals the drainer /
+# cube-gate / notify contract expects: CAMPAIGN (distinct names joined with +) and
+# KEEP_CUBE (1 if ANY lane keeps — the drainer serves the whole pod).
+declare -a LANE_FILE LANE_STEM LANE_CAMP LANE_KEEP
+load_lanes() {
+    [ "$#" -ge 1 ] || { echo "usage: $0 $MODE <campaign.sh>..." >&2; exit 64; }
+    local cf c k
+    LANE_FILE=(); LANE_STEM=(); LANE_CAMP=(); LANE_KEEP=()
+    for cf in "$@"; do
+        [ -f "$cf" ] || { log "[ERROR] campaign file not found: $cf"; exit 64; }
+        read -r c k < <( . "$cf" && echo "${CAMPAIGN:?$cf sets no CAMPAIGN} ${KEEP_CUBE:-0}" ) \
+            || { log "[ERROR] cannot source $cf (or it sets no CAMPAIGN)"; exit 64; }
+        LANE_FILE+=("$cf"); LANE_STEM+=("$(basename "$cf" .sh)"); LANE_CAMP+=("$c"); LANE_KEEP+=("$k")
+    done
+    CAMPAIGN=$(printf '%s\n' "${LANE_CAMP[@]}" | sort -u | paste -sd+)
+    KEEP_CUBE=0; for k in "${LANE_KEEP[@]}"; do [ "$k" = 1 ] && KEEP_CUBE=1; done
+    LANES=$(printf '%s\n' "${LANE_STEM[@]}" | paste -sd,)
+}
+lane_done()  { ssh_vm "cd EDM && grep -q '\\] ${LANE_CAMP[$1]} DONE' runs/${LANE_STEM[$1]}.out 2>/dev/null"; }
+lane_alive() { ssh_vm "cd EDM && kill -0 \$(cat runs/${LANE_STEM[$1]}.pid 2>/dev/null) 2>/dev/null"; }
+lane_tail()  { ssh_vm "cd EDM && tail -n1 runs/${LANE_STEM[$1]}.out 2>/dev/null" | sed "s/^/[pod ${LANE_STEM[$1]}] /" || true; }
+
+launch_lane() {
+    local i=$1 stem=${LANE_STEM[$1]} cname; cname=$(basename "${LANE_FILE[$i]}")
+    if lane_done "$i"; then
+        log "$stem already DONE on the pod — skipping launch (rm runs/$stem.out on the pod to force a rerun)"
+    elif lane_alive "$i"; then
+        log "$stem already RUNNING on the pod — monitoring it (no relaunch)"
+    else
+        log "launching lane $stem (→ runs/${LANE_CAMP[$i]}) via the local backend ($BACKEND), detached…"
+        ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && rm -f runs/$stem.out runs/$stem.pid && { nohup bash \$HOME/edm-orch/backends/local.sh \$HOME/edm-orch/campaigns/$cname > runs/$stem.out 2>&1 < /dev/null & echo \$! > runs/$stem.pid; }"
+    fi
+}
+
+download_campaign() {   # rsync one campaign dir off the pod (+ md5 verify, + driver-side publish)
+    local camp=$1 keep=$2
+    log "downloading $camp via rsync…"
+    mkdir -p "$OUT/$camp"
+    local -a excl=(--include='*_obscache.jls' --exclude='field_*.jls')
+    if [ "$keep" = 1 ] && [ -z "${VOLID:-}" ] && ! drainer_active; then
+        excl=(); log "  KEEP_CUBE=1, no volume, no drainer ⇒ cubes included in the download (bulky!)"
+    fi
+    /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS -p $PORT" ${excl[@]+"${excl[@]}"} root@"$IP":"EDM/runs/$camp/" "$OUT/$camp/"
+    ( CAMPAIGN="$camp"; download_verify "$OUT/$camp" ) || log "[verify] issues — products still on the pod${VOLID:+ and volume /workspace/runs/$camp}"
+    # Auto-publish fires DRIVER-side for cloud campaigns: the pod's generated config.env carries
+    # no PUBLISH_HOOK (and the pod has no dashboard repo/keys), so run_cell.sh's hook never
+    # covers this path. Same contract as run_cell.sh: only if ≥1 cell left a manifest.
+    if [ -n "${PUBLISH_HOOK:-}" ] && ls "$OUT/$camp"/run_*.toml >/dev/null 2>&1; then
+        log "publish: $camp → PUBLISH_HOOK"
+        ( CAMP="$OUT/$camp"; CAMPAIGN="$camp"; _run_publish_hook )
+    fi
+    ledger "$POD" campaign_done "campaign=$camp dir=$OUT/$camp"
+}
+
+monitor_and_download() {   # poll every lane for DONE (crash = 3 consecutive dead liveness checks), then download
+    log "polling ${#LANE_STEM[@]} lane(s) for completion: $LANES (DONE marker; crash = 3 consecutive failed liveness checks)…"
+    local -a misses fin; local i alldone anybad=0
+    for i in "${!LANE_STEM[@]}"; do misses[$i]=0; fin[$i]=0; done
+    while :; do
+        alldone=1
+        for i in "${!LANE_STEM[@]}"; do
+            [ "${fin[$i]}" = 1 ] && continue
+            if lane_done "$i"; then fin[$i]=1; log "lane ${LANE_STEM[$i]} DONE"; continue; fi
+            if lane_alive "$i"; then
+                misses[$i]=0
+            else
+                misses[$i]=$((misses[$i]+1))
+                if [ "${misses[$i]}" -ge 3 ]; then
+                    lane_done "$i" && { fin[$i]=1; continue; }   # finished between checks
+                    notify rotating_light urgent "EDM runpod CRASH" "lane ${LANE_STEM[$i]} (${LANE_CAMP[$i]}) driver died with no DONE on $POD — pod KEPT; '$0 attach' to retry or teardown."
+                    ledger "$POD" campaign_crash "campaign=${LANE_CAMP[$i]} lane=${LANE_STEM[$i]} driver died, no DONE"
+                    log "[ERROR] lane ${LANE_STEM[$i]}: driver gone, no DONE — pod $POD KEPT. tail:"
+                    ssh_vm "cd EDM && tail -n 20 runs/${LANE_STEM[$i]}.out 2>/dev/null" | sed 's/^/[pod] /' || true
+                    fin[$i]=1; anybad=1; continue
+                fi
+                log "  liveness check failed for ${LANE_STEM[$i]} (${misses[$i]}/3) — transient ssh blip or a real crash, retrying…"
             fi
-            log "  liveness check failed ($misses/3) — transient ssh blip or a real crash, retrying…"
-        fi
-        sleep 60; ssh_vm "cd EDM && tail -n1 runs/${CAMPAIGN}.out 2>/dev/null" | sed 's/^/[pod] /' || true
+            alldone=0
+        done
+        [ "$alldone" = 1 ] && break
+        sleep 60
+        for i in "${!LANE_STEM[@]}"; do [ "${fin[$i]}" = 1 ] || lane_tail "$i"; done
     done
     local dl="${RUNPOD_RSYNC_DOWNLOAD:-1}"
     if [ "$dl" != 1 ] && [ -z "${VOLID:-}" ]; then
         log "[warn] RUNPOD_RSYNC_DOWNLOAD=0 but no volume attached — downloading anyway (products would die with the pod)"; dl=1
     fi
     if [ "$dl" = 1 ]; then
-        log "campaign done; downloading products via rsync…"
-        mkdir -p "$OUT/$CAMPAIGN"
-        local -a excl=(--include='*_obscache.jls' --exclude='field_*.jls')
-        if [ "${KEEP_CUBE:-0}" = 1 ] && [ -z "${VOLID:-}" ] && ! drainer_active; then
-            excl=(); log "  KEEP_CUBE=1, no volume, no drainer ⇒ cubes included in the download (bulky!)"
-        fi
-        /usr/bin/rsync -az -e "/usr/bin/ssh $SSHOPTS -p $PORT" ${excl[@]+"${excl[@]}"} root@"$IP":"EDM/runs/$CAMPAIGN/" "$OUT/$CAMPAIGN/"
-        download_verify "$OUT/$CAMPAIGN" || log "[verify] issues — products still on the pod${VOLID:+ and volume /workspace/runs/$CAMPAIGN}"
+        local camp keep j
+        for camp in $(printf '%s\n' "${LANE_CAMP[@]}" | sort -u); do
+            keep=0; for j in "${!LANE_CAMP[@]}"; do [ "${LANE_CAMP[$j]}" = "$camp" ] && [ "${LANE_KEEP[$j]}" = 1 ] && keep=1; done
+            download_campaign "$camp" "$keep"
+        done
     else
-        log "campaign done; rsync skipped (RUNPOD_RSYNC_DOWNLOAD=0) — drain from the volume later: orchestration/drain.sh $CAMPAIGN"
+        log "lanes done; rsync skipped (RUNPOD_RSYNC_DOWNLOAD=0) — drain from the volume later: orchestration/drain.sh <campaign>"
     fi
-    # Auto-publish fires DRIVER-side for cloud campaigns: the pod's generated config.env carries
-    # no PUBLISH_HOOK (and the pod has no dashboard repo/keys), so run_cell.sh's hook never
-    # covers this path. Same contract as run_cell.sh: only if ≥1 cell left a manifest (also
-    # skips the RUNPOD_RSYNC_DOWNLOAD=0 volume path, where nothing lands in $OUT).
-    if [ -n "${PUBLISH_HOOK:-}" ] && ls "$OUT/$CAMPAIGN"/run_*.toml >/dev/null 2>&1; then
-        log "publish: $CAMPAIGN → PUBLISH_HOOK"
-        ( CAMP="$OUT/$CAMPAIGN"; _run_publish_hook )
+    if [ "$anybad" = 1 ]; then
+        notify warning high "EDM runpod finished WITH CRASHES" "$LANES on $POD: some lane(s) died — products downloaded; pod KEPT."
+    else
+        notify white_check_mark default "EDM runpod done" "$LANES → $OUT/{$CAMPAIGN} ; pod $POD KEPT — run teardown."
     fi
-    notify white_check_mark default "EDM runpod done" "$CAMPAIGN → $OUT/$CAMPAIGN ; pod $POD KEPT — run teardown."
-    ledger "$POD" campaign_done "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"
-    log "products → $OUT/$CAMPAIGN ; pod $POD KEPT (state $STATE). More: $0 run <campaign>. Finish: $0 teardown"
+    log "products → $OUT/{$CAMPAIGN} ; pod $POD KEPT (state $STATE). More: $0 run <campaign>... Finish: $0 teardown"
+    return "$anybad"
 }
 
-run_campaign() {
-    local cf="${1:?usage: runpod.sh run <campaign.sh>}" cname; cname=$(basename "$cf")
-    . "$cf"   # CAMPAIGN + KEEP_CUBE (names product paths + sets cube download policy); re-read on the pod
+run_campaign() {   # run <campaign.sh>... — several files = concurrent lanes on one pod
+    load_lanes "$@"
     if pod_reachable; then
         log "reusing kept pod $POD ($IP:$PORT) from $STATE (no grab/warm) — syncing repo to $BRANCH"
         # A kept pod carries whatever branch it was warmed with; sync so a re-run
@@ -395,7 +471,7 @@ run_campaign() {
             fi
             log "stale state: pod $POD is gone — clearing $STATE"; rm -f "$STATE"
         fi
-        trap 'rc=$?; log "FAILED (rc=$rc) before campaign launch"; notify rotating_light urgent "EDM runpod FAILED" "$CAMPAIGN setup errored (rc=$rc); tearing down"; teardown; exit $rc' ERR
+        trap 'rc=$?; log "FAILED (rc=$rc) before campaign launch"; notify rotating_light urgent "EDM runpod FAILED" "$LANES setup errored (rc=$rc); tearing down"; teardown; exit $rc' ERR
         grab_pod
         echo "$POD PENDING 0 ${VOLID:--} $BACKEND" > "$STATE"   # pod bills from NOW — record it before anything can fail
         wait_ready
@@ -404,25 +480,18 @@ run_campaign() {
         trap - ERR    # pod up + warm; a campaign hiccup below must NOT auto-destroy it
     fi
     push_orchestration
-    if ssh_vm "cd EDM && grep -q '\\] ${CAMPAIGN} DONE' runs/${CAMPAIGN}.out 2>/dev/null"; then
-        log "$CAMPAIGN already DONE on the pod — skipping launch (rm runs/${CAMPAIGN}.out on the pod to force a rerun)"
-    elif ssh_vm "cd EDM && kill -0 \$(cat runs/${CAMPAIGN}.pid 2>/dev/null) 2>/dev/null"; then
-        log "$CAMPAIGN already RUNNING on the pod — monitoring it (no relaunch)"
-    else
-        notify hourglass_flowing_sand default "EDM runpod started" "$CAMPAIGN on $POD ($BACKEND @$DC)"
-        ledger "$POD" campaign_start "campaign=$CAMPAIGN dir=$OUT/$CAMPAIGN"
-        log "launching $CAMPAIGN on the pod via the local backend ($BACKEND), detached…"
-        ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && rm -f runs/${CAMPAIGN}.out runs/${CAMPAIGN}.pid && { nohup bash \$HOME/edm-orch/backends/local.sh \$HOME/edm-orch/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
-    fi
-    start_drainer || notify warning high "EDM drainer NOT started" "$CAMPAIGN on $POD: cubes stay on the pod only; teardown gate will hold them"
+    notify hourglass_flowing_sand default "EDM runpod started" "$LANES on $POD ($BACKEND @$DC, ${GPUS}× GPU)"
+    ledger "$POD" campaign_start "campaign=$CAMPAIGN lanes=$LANES dir=$OUT"
+    local i; for i in "${!LANE_STEM[@]}"; do launch_lane "$i"; done
+    start_drainer || notify warning high "EDM drainer NOT started" "$LANES on $POD: cubes stay on the pod only; teardown gate will hold them"
     monitor_and_download
 }
 
 attach_campaign() {   # resume monitoring+download after a driver-side interruption — never relaunches
-    local cf="${1:?usage: runpod.sh attach <campaign.sh>}"; . "$cf"
+    load_lanes "$@"
     pod_reachable || { log "[ERROR] no reachable kept pod ($STATE)"; exit 1; }
-    log "attached to kept pod $POD ($IP:$PORT) for $CAMPAIGN"
-    start_drainer || notify warning high "EDM drainer NOT started" "$CAMPAIGN on $POD: cubes stay on the pod only; teardown gate will hold them"
+    log "attached to kept pod $POD ($IP:$PORT) for $LANES"
+    start_drainer || notify warning high "EDM drainer NOT started" "$LANES on $POD: cubes stay on the pod only; teardown gate will hold them"
     monitor_and_download
 }
 
@@ -447,8 +516,8 @@ teardown() {   # delete the pod (stops GPU billing); a volume, if attached, is K
 }
 
 case "$MODE" in
-    run)      shift; run_campaign "${1:-}" ;;
-    attach)   shift; attach_campaign "${1:-}" ;;
+    run)      shift; run_campaign "$@" ;;
+    attach)   shift; attach_campaign "$@" ;;
     teardown) teardown ;;
-    *) echo "usage: $0 run <campaign.sh> | attach <campaign.sh> | teardown" >&2; exit 64 ;;
+    *) echo "usage: $0 run <campaign.sh>... | attach <campaign.sh>... | teardown" >&2; exit 64 ;;
 esac
