@@ -46,6 +46,20 @@
 # trajectories mode:
 #   EDM_COORDS           "absolute" (default) or "displacement" (plot x−x₀, y−y₀ vs z)
 #   EDM_N_PLOT_TRAJ      worldlines actually drawn (default 800; histograms always use all N)
+#   EDM_TRAJ_CHIPS       "1" ⇒ attach the figures to the SOURCE run as derived chips
+#                        (traj_<plane>_<coords>_<run_id>.png + derived_traj_*.toml sidecars next to
+#                        the manifest, or in EDM_OUTDIR) instead of writing a standalone analysis
+#                        run — the dashboard then shows them on the run's card, like the pixel
+#                        traces. The sidecar carries the final-position statistics (transverse
+#                        displacement rms/max in w₀, fraction displaced beyond EDM_TRAJ_KICK_W0,
+#                        default 0.1 w₀) — the "were electrons kicked out of the disk" check.
+#
+#   Inverse-Thomson manifests ([config].scattering = "inverse": boosted counter-propagating
+#   electrons, reversed laser, meet-at-origin timing) are reconstructed like plot_pixel_traces.jl
+#   does: the solve uses the manifest's own reltol/abstol/dtmax (the boosted interaction is
+#   stepped over otherwise) and the production uniform saveat instead of dense output (dense
+#   Vern9 storage at N ≳ 10⁴ is tens of GB). Bunched runs (bunch_nb > 0) are reconstructed
+#   WITHOUT their Δz offsets (warned).
 #   EDM_NPATH            dense τ samples per drawn worldline (default 10000 displacement / 1500 absolute)
 #
 # spline-error mode:
@@ -108,6 +122,8 @@ const N_PLOT_TRAJ = parse(Int, get(ENV, "EDM_N_PLOT_TRAJ", "800"))
 # needs ~26 pts/optical-cycle to render smoothly; absolute hides the quiver under the disk so 1500
 # suffices. Default tracks COORDS; override with EDM_NPATH.
 const NPATH = parse(Int, get(ENV, "EDM_NPATH", COORDS == "displacement" ? "10000" : "1500"))
+const TRAJ_CHIPS = get(ENV, "EDM_TRAJ_CHIPS", "0") == "1"
+const KICK_W0 = parse(Float64, get(ENV, "EDM_TRAJ_KICK_W0", "0.1"))   # "kicked out" threshold, w₀
 COORDS in ("absolute", "displacement") || error("EDM_COORDS must be \"absolute\" or \"displacement\", got \"$COORDS\"")
 # spline-error mode
 const ERR_SPP = parse(Int, get(ENV, "EDM_ERR_SPP", "32"))            # fine-grid samples/period
@@ -218,20 +234,40 @@ function reconstruct(mfile)
     reltol = Float64(get(cfg, "reltol", 1.0e-12))
     abstol = Float64(get(cfg, "abstol", abserr(a₀)))
 
-    # Laser + electron model — same construction as thomson_scattering.jl, φ₀ overridden.
+    # Inverse-Thomson manifests: reversed laser + boosted electrons (u = γc(1, 0, 0, β)), the
+    # meet-at-origin timing of inverse_thomson_scattering.jl (all electrons cross z = 0 at
+    # τ = 0). Thomson manifests: γ = 1, β = 0 — every expression collapses to the rest forms.
+    inverse = get(cfg, "scattering", "") == "inverse"
+    γboost = inverse ? Float64(get(cfg, "gamma", 1.0)) : 1.0
+    u⁰_t = γboost * c
+    u³_z = inverse ? c * sqrt(γboost^2 - 1) : 0.0
+    βz = u³_z / u⁰_t
+    dtmax_cfg = Float64(get(cfg, "dtmax", Inf))
+    dtmax_kw = isfinite(dtmax_cfg) ? (; dtmax = dtmax_cfg) : (;)
+    interp_saveat = string(get(cfg, "interp_saveat", "adaptive"))
+    # Production knot grid (inverse script convention: knots divide the proper-time carrier
+    # period T/(γ(1+β))); used instead of dense output for inverse runs.
+    ω = 2π * c / λ
+    saveat_kw = interp_saveat == "adaptive" ? (;) :
+        (; saveat = collect(τi:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τf))
+    inverse && Int(get(cfg, "bunch_nb", 0)) > 0 &&
+        @warn "bunched inverse run (bunch_nb > 0): Δz offsets are NOT reconstructed — worldlines start unbunched" parent_run_id
+
+    # Laser + electron model — same construction as the solver scripts, φ₀ overridden.
     @named world = Worldline(:τ, :atomic)
     @named laser = LaguerreGaussLaser(;
         wavelength = λ, a0 = a₀, beam_waist = w₀,
         radial_index = p_rad, azimuthal_index = m_az,
         world, temporal_profile = profile, temporal_width = τ0,
         focus_position = z_focus, polarization = pol, initial_phase = φ₀,
+        (inverse ? (; k_direction = [0, 0, -1]) : (;))...,
     )
     @named elec = ClassicalElectron(; laser)
     sys = mtkcompile(elec)
 
     tspan = (τi, τf)
-    x⁰ = [τi * c, 0.0, 0.0, 0.0]
-    u⁰ = [c, 0.0, 0.0, 0.0]
+    x⁰ = [u⁰_t * τi, 0.0, 0.0, u³_z * τi]
+    u⁰ = [u⁰_t, 0.0, 0.0, u³_z]
     u0 = [sys.x => x⁰, sys.u => u⁰]
     prob = ODEProblem{false, SciMLBase.FullSpecialize}(
         sys, u0, tspan; u0_constructor = SVector{8}, fully_determined = true
@@ -239,37 +275,43 @@ function reconstruct(mfile)
 
     # Initial transverse positions (sunflower scaled to Rmax) + per-electron initial radius.
     R₀ = sunflower(N, 2)
-    xμ = [[τi * c, Rmax * p[1], Rmax * p[2], 0.0] for p in R₀]
+    xμ = [[u⁰_t * τi, Rmax * p[1], Rmax * p[2], u³_z * τi] for p in R₀]
     r0 = [hypot(x[2], x[3]) for x in xμ]
 
     set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
     function prob_func(prob, ctx)
         i = ctx.sim_id
         x_new = SVector{4}(xμ[i]...)
-        u_new = SVector{4}(c, 0.0, 0.0, 0.0)
+        u_new = SVector{4}(u⁰_t, 0.0, 0.0, u³_z)
         u0, p = set_x(prob, SVector{8}(x_new..., u_new...))
         return remake(prob; u0, p)
     end
     ensemble = EnsembleProblem(prob; prob_func, safetycopy = false)
 
-    return (; m, λ, w₀, ω = 2π * c / λ, m_az, p_rad, pol, profile, τ0, z_focus,
-        a₀, N, Rmax, τi, τf, φ₀, parent_run_id, reltol, abstol, sys, prob, ensemble, xμ, r0)
+    return (; m, mfile, λ, w₀, ω, m_az, p_rad, pol, profile, τ0, z_focus,
+        a₀, N, Rmax, τi, τf, φ₀, parent_run_id, reltol, abstol, sys, prob, ensemble, xμ, r0,
+        inverse, γboost, βz, dtmax_kw, saveat_kw)
 end
 
 # ── Analyze one source run: reconstruct, re-solve, plot zx + zy, write manifest ──
 function analyze_run(mfile)
     rec = reconstruct(mfile)
     (; λ, w₀, m_az, p_rad, pol, profile, τ0, z_focus,
-        a₀, N, Rmax, τi, τf, φ₀, parent_run_id, sys, prob, ensemble, xμ, r0) = rec
+        a₀, N, Rmax, τi, τf, φ₀, parent_run_id, sys, prob, ensemble, xμ, r0,
+        inverse, γboost, reltol, abstol, dtmax_kw, saveat_kw) = rec
 
-    @info "run" file = basename(mfile) a₀ φ₀ N COORDS parent_run_id
+    @info "run" file = basename(mfile) a₀ φ₀ N COORDS parent_run_id inverse γboost
 
-    # Dense solve (no saveat) so the worldlines can be sampled with the continuous interpolation;
-    # only ~1.3k steps/trajectory ⇒ <1 GB for 10⁴ electrons.
-    t_solve = @elapsed solution = solve(
-        ensemble, Vern9(), EnsembleThreads();
-        reltol = 1.0e-12, abstol = abserr(a₀), trajectories = N,
-    )
+    # Thomson runs: dense solve (no saveat) so the worldlines can be sampled with the continuous
+    # interpolation; only ~1.3k steps/trajectory ⇒ <1 GB for 10⁴ electrons. Inverse runs: the
+    # manifest's own tolerances + dtmax (looser stepping silently skips the boosted interaction)
+    # on the production knot grid — sol(t) then interpolates between saved knots, which the
+    # worldline sampling below tolerates and which keeps N = 16000 at ~25 GB instead of ~60.
+    t_solve = @elapsed solution = inverse ?
+        solve(ensemble, Vern9(), EnsembleThreads();
+            reltol, abstol, trajectories = N, saveat_kw..., dtmax_kw...) :
+        solve(ensemble, Vern9(), EnsembleThreads();
+            reltol = 1.0e-12, abstol = abserr(a₀), trajectories = N)
     sols = solution.u
     @info "trajectories solved" t_solve steps_per_traj = round(Int, sum(length(s.t) for s in sols) / N)
 
@@ -310,9 +352,28 @@ function analyze_run(mfile)
 
     philab = phi_label(φ₀)
     ctag = disp ? "disp" : "abs"
-    base = @sprintf("%s_a0_%.0e_phi%.4f", ctag, a₀, φ₀)
+    base = inverse ? @sprintf("%s_g%.3g_a0_%.0e_phi%.4f", ctag, γboost, a₀, φ₀) :
+        @sprintf("%s_a0_%.0e_phi%.4f", ctag, a₀, φ₀)
     id8 = first(string(uuid4()), 8)
-    mkpath(OUTDIR)
+    # Chips mode: figures + derived sidecars next to the source manifest (or EDM_OUTDIR), named by
+    # the source run id, so the dashboard attaches them to that run.
+    outdir = TRAJ_CHIPS ? get(ENV, "EDM_OUTDIR", dirname(abspath(mfile))) : OUTDIR
+    mkpath(outdir)
+
+    # Final-position statistics over ALL electrons: transverse displacement from the start
+    # position (the ponderomotive/scattering kick) and the beam-axis spread. `kicked` = the
+    # fraction displaced beyond KICK_W0 — electrons leaving their sunflower cell, i.e. the disk
+    # no longer being the aperture the field maps assume.
+    dx = [last(gx(s)) - x0w[i] for (i, s) in enumerate(sols)]
+    dy = [last(gy(s)) - y0w[i] for (i, s) in enumerate(sols)]
+    dr = hypot.(dx, dy)
+    stats = Dict{String, Any}(
+        "disp_rms_w0" => sqrt(mean(abs2, dr)), "disp_max_w0" => maximum(dr),
+        "disp_p99_w0" => quantile(dr, 0.99), "kick_threshold_w0" => KICK_W0,
+        "kicked_fraction" => count(>=(KICK_W0), dr) / N,
+        "zf_mean_w0" => mean(zf), "zf_spread_w0" => std(zf),
+    )
+    @info "final positions" stats["disp_rms_w0"] stats["disp_max_w0"] stats["kicked_fraction"] stats["zf_spread_w0"]
 
     zlabel = L"z/w_0"
     plots = String[]
@@ -320,13 +381,56 @@ function analyze_run(mfile)
             ("zx", xpath, xf, disp ? L"(x-x_0)/w_0" : L"x/w_0"),
             ("zy", ypath, yf, disp ? L"(y-y_0)/w_0" : L"y/w_0"),
         )
-        title = @sprintf("Electron trajectories — %s plane%s  (a₀=%.0e, φ₀=%s, N=%d)",
-            plane, disp ? " (displacement)" : "", a₀, philab, N)
+        title = inverse ?
+            @sprintf("Electron trajectories — %s plane%s  (γ=%.3g, a₀=%.0e, φ₀=%s, N=%d)",
+                plane, disp ? " (displacement)" : "", γboost, a₀, philab, N) :
+            @sprintf("Electron trajectories — %s plane%s  (a₀=%.0e, φ₀=%s, N=%d)",
+                plane, disp ? " (displacement)" : "", a₀, philab, N)
         fig = marginal_figure(; zpath, tpath, cval, zf, tf, crange, zlabel, tlabel, title)
-        fname = "traj_$(plane)_$(base)_$(id8).png"
-        save(joinpath(OUTDIR, fname), fig)
+        fname = TRAJ_CHIPS ? "traj_$(plane)_$(ctag)_$(parent_run_id).png" : "traj_$(plane)_$(base)_$(id8).png"
+        save(joinpath(outdir, fname), fig)
         push!(plots, fname)
-        println("saved → $(joinpath(OUTDIR, fname))")
+        println("saved → $(joinpath(outdir, fname))")
+    end
+
+    if TRAJ_CHIPS
+        # Derived sidecars (same schema as plot_pixel_traces.jl / harmonic_products' derived_h*.toml)
+        # so the dashboard stager/builder shows the worldlines as chips of the parent run.
+        repo_commit = try
+            readchomp(`git -C $(pkgdir(ElectronDynamicsModels)) rev-parse HEAD`)
+        catch
+            "unknown"
+        end
+        idtag = first(parent_run_id, 8)
+        for (plane, png) in zip(("zx", "zy"), plots)
+            kind = "traj_$(plane)_$(ctag)"
+            sidecar = Dict(
+                "schema_version" => 1,
+                "derived" => Dict(
+                    "depends_on" => [parent_run_id], "kind" => kind,
+                    "label" => "worldlines $(plane)" * (disp ? " (displacement)" : "") * " + final-position histograms",
+                    "plot" => png, "source" => basename(mfile),
+                    "description" => "Re-solved worldlines of $(length(plot_idx)) of the N=$N electrons " *
+                        "projected on the $(plane) plane" * (disp ? " (transverse displacement from the start position)" : "") *
+                        ", coloured by r₀/w₀, with marginal histograms of ALL electrons' final positions. " *
+                        @sprintf("Transverse displacement rms %.2e w₀, max %.2e w₀; %.2f%% displaced beyond %g w₀.",
+                            stats["disp_rms_w0"], stats["disp_max_w0"], 100 * stats["kicked_fraction"], KICK_W0),
+                ),
+                "plot_params" => merge(Dict{String, Any}("coords" => COORDS, "n_plot_traj" => length(plot_idx),
+                    "npath" => NPATH), stats),
+                "provenance" => Dict(
+                    "host" => readchomp(`hostname`), "repo_commit" => repo_commit,
+                    "script" => "analyze_trajectories.jl",   # not PROGRAM_FILE: wrong under a daemon/include
+                    "timestamp" => string(Libc.strftime("%Y-%m-%dT%H:%M:%S", time())),
+                ),
+            )
+            scfile = joinpath(outdir, "derived_$(kind)_$(idtag).toml")
+            open(scfile, "w") do io
+                TOML.print(io, sidecar)
+            end
+            println("sidecar → $scfile")
+        end
+        return parent_run_id
     end
 
     # Standalone analysis-node manifest (new φ₀ ⇒ a fresh computation, not a derived field product).
@@ -342,9 +446,9 @@ function analyze_run(mfile)
         "temporal_width" => τ0, "focus_position" => z_focus, "phi0" => φ₀,
     )
     setup_out = Dict("Rmax" => Rmax, "τi" => τi, "τf" => τf)
-    write_run_manifest(OUTDIR; run_id, script = basename(PROGRAM_FILE),
+    write_run_manifest(outdir; run_id, script = basename(PROGRAM_FILE),
         config, laser = laser_out, setup = setup_out, plots)
-    println("manifest → $(joinpath(OUTDIR, "run_$(run_id).toml"))")
+    println("manifest → $(joinpath(outdir, "run_$(run_id).toml"))")
     return run_id
 end
 
@@ -885,9 +989,9 @@ isempty(manifests) && error("no matching run_*.toml in $SOURCE_CAMPAIGN (EDM_SOU
 if ANALYSIS == "spline-error"
     @info "spline-error analysis" SOURCE_CAMPAIGN SOURCE_RUN OUTDIR runs = length(manifests) PHASE_SPEC ERR_SPP ERR_SAVEAT ERR_COMPONENT ERR_N_TRACE ERR_ZOOM
 else
-    @info "trajectory analysis" SOURCE_CAMPAIGN SOURCE_RUN OUTDIR runs = length(manifests) PHASE_SPEC COORDS N_PLOT_TRAJ NPATH
+    @info "trajectory analysis" SOURCE_CAMPAIGN SOURCE_RUN OUTDIR TRAJ_CHIPS runs = length(manifests) PHASE_SPEC COORDS N_PLOT_TRAJ NPATH
 end
-mkpath(OUTDIR)
+TRAJ_CHIPS || mkpath(OUTDIR)
 for mfile in manifests
     ANALYSIS == "spline-error" ? analyze_spline_error(mfile) : analyze_run(mfile)
 end

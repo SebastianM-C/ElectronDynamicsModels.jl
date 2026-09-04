@@ -38,6 +38,9 @@ RUNPOD_STATE=~/.config/runpod/pod_h100 RUNPOD_GPU_COUNT=1 RUNPOD_GPU_CANDIDATES=
     bash $B run $C/mgpu_bench_h100.sh && RUNPOD_STATE=~/.config/runpod/pod_h100 bash $B teardown
 julia --project=scripts scripts/scaling_report.jl ~/campaign_out/mgpu_bench ~/campaign_out/mgpu_bench_h100 \
     ~/campaign_out/rest_departure_bridge_refix          # tables + scaling_*.png; extra dirs = reference throughput rows
+bash orchestration/run_diagnostics.sh ~/campaign_out/mgpu_bench ~/campaign_out/mgpu_bench_h100
+#   validity chips per run (CPU, manifests only): per-electron E(t) pixel traces (field sampling)
+#   + worldlines with final-position histograms (kick-out check); then re-publish the campaign
 ```
 
 Report field-phase times (`[timing].field`, GPU-bound, barely affected by neighbouring
