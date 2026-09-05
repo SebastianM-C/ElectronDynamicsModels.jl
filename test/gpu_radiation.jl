@@ -298,6 +298,42 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         @test rel_l2(gpu.B_far, ref.B_far) < 5.0e-3
     end
 
+    @testset "accumulate_field_sharded ≡ accumulate_field (streamed reduce, both modes)" begin
+        # Electron sharding is exact by linearity; the streamed host reduce (one accumulator,
+        # partials folded under a lock as each device task finishes) must reproduce the
+        # single-call result to roundoff. devices = [1, 1] shards 3 electrons over two tasks
+        # on the one CPU "device" — uneven shards (2 + 1) exercise _shard_indices too.
+        trajs = [
+            analytic_traj(; g = 1.2, A = 0.25, Ω = 2.0, vz = 0.0, τspan = (0.0, 20.0), N = 3000),
+            analytic_traj(; g = 1.3, A = 0.20, Ω = 2.5, vz = 0.0, τspan = (0.0, 20.0), N = 3000),
+            analytic_traj(; g = 1.1, A = 0.30, Ω = 1.5, vz = 0.0, τspan = (0.0, 20.0), N = 3000),
+        ]
+        τi, τf = first(trajs[1].itp.t), last(trajs[1].itp.t)
+        z = 50.0
+        Nx = Ny = 7
+        half = 6.0
+        x_grid = LinRange(-half, half, Nx)
+        y_grid = LinRange(-half, half, Ny)
+        x⁰ = LinRange(1.2τi + (z - 2half), 1.2τf + (z + 2half), 120)
+        screen = ObserverScreen(x_grid, y_grid, z, x⁰; c = 1.0)
+
+        for (alg, kw) in ((GPUKernelRK4(), (; n_substeps = 2)), (GPUKernelNewton(), (; n_iters = 2))),
+                mode in (Val(:split), Val(:total))
+            one = accumulate_field(trajs, screen, alg, CPU(); mode, kw...)
+            shd = accumulate_field_sharded(trajs, screen, alg, CPU(); devices = [1, 1], mode, kw...)
+            @test propertynames(shd) == propertynames(one)
+            for k in propertynames(one)
+                @test size(getproperty(shd, k)) == size(getproperty(one, k))
+                @test rel_l2(getproperty(shd, k), getproperty(one, k)) < 1.0e-12
+            end
+            # a single shard must be the plain path bit-for-bit
+            solo = accumulate_field_sharded(trajs, screen, alg, CPU(); devices = [1], mode, kw...)
+            @test all(k -> getproperty(solo, k) == getproperty(one, k), propertynames(one))
+        end
+        @test ElectronDynamicsModels._shard_indices(5, 2) == [1:3, 4:5]
+        @test ElectronDynamicsModels._shard_indices(2, 3) == [1:1, 2:2]   # empty shards dropped
+    end
+
     @testset "GPUKernelNewton field matches reference (split E/B)" begin
         # Field path through the Newton light-cone kernel, same setup as the
         # RK4 field test above.
