@@ -11,7 +11,13 @@
 #                         constant work per device), strong scaling (fixed config: speedup
 #                         t₁/t_D vs ideal D), and per-device throughput
 #                         N·N_samples·Nx²/(t_field·D) [electron·sample·pixel/s] for every run
-#                         — the cross-vendor comparison row (H200 / H100 / MI300X …)
+#                         — the cross-vendor comparison row (H200 / H100 / MI300X …).
+#                         Every table carries BOTH the field-phase wall time and the
+#                         KERNEL-ACTIVE time: seconds the busiest device's gputrace reports
+#                         ≥ 99 % utilization (torn/implausible rows dropped). The wall time
+#                         includes the per-process first-call kernel JIT (~60 s) and, in
+#                         sharded runs, the serialized per-device compile (~40 s × D); the
+#                         kernel-active time is the clean scaling metric.
 #   scaling_report.png  — weak (time vs D) + strong (speedup vs D, ideal line) panels
 # Field-phase times are the clean GPU-bound numbers; the end-to-end column includes the
 # un-sharded Julia load / serialize / reduce and any host contention between lanes.
@@ -34,6 +40,25 @@ struct Row
     D::Int; N::Int; Nx::Int; Ns::Int
     t_field::Float64; t_total::Float64; t_traj::Float64
     device::String
+    t_kernel::Float64   # busiest device's seconds at ≥ 99 % utilization (NaN without a trace)
+end
+
+# Kernel-active seconds from a gputrace TSV: per device, count rows with compute_util ≥ 0.99,
+# skipping rows that are torn (≠ 6 fields) or implausible (util ∉ [0,1], VRAM > 1 TB); the
+# busiest device sets the cell's kernel time (sharded devices finish within seconds of each
+# other, so max ≈ every device's).
+function kernel_active(dir, id)
+    fs = filter(f -> startswith(f, "gputrace_") && occursin(id, f), readdir(dir))
+    isempty(fs) && return NaN
+    per = Dict{String, Int}()
+    for ln in eachline(joinpath(dir, fs[1]))
+        startswith(ln, '#') && continue
+        f = split(ln, '\t'); length(f) == 6 || continue
+        u = tryparse(Float64, f[4]); v = tryparse(Float64, f[6])
+        (u === nothing || v === nothing || !(0 <= u <= 1) || v > 1.0e12) && continue
+        u >= 0.99 && (per[f[2]] = get(per, f[2], 0) + 1)
+    end
+    return isempty(per) ? NaN : Float64(maximum(values(per)))
 end
 
 function cell_labels(dir)
@@ -59,13 +84,16 @@ for dir in args
         dev = String(something(get(get(m, "gpu", Dict()), "device", nothing), get(prov, "gpu_device", nothing), "?"))
         push!(rows, Row(id, get(labels, id, id[1:8]), group, dir,
             D, Int(cfg["N"]), Int(cfg["Nx"]), Int(cfg["N_samples"]),
-            Float64(tm["field"]), Float64(get(tm, "total", NaN)), Float64(get(tm, "trajectories", NaN)), dev))
+            Float64(tm["field"]), Float64(get(tm, "total", NaN)), Float64(get(tm, "trajectories", NaN)), dev,
+            kernel_active(dir, id)))
     end
 end
 isempty(rows) && error("no manifests with [timing].field under $(join(args, ", "))")
 
 work(r) = r.N * r.Ns * r.Nx^2                       # electron·sample·pixel
-thr(r) = work(r) / (r.t_field * r.D)                # per device
+thr(r) = work(r) / (r.t_field * r.D)                # per device, wall
+thrk(r) = isnan(r.t_kernel) ? NaN : work(r) / (r.t_kernel * r.D)   # per device, kernel-active
+fmt_e(x) = isnan(x) ? "—" : @sprintf("%.3e", x)
 fmt_t(s) = isnan(s) ? "—" : s < 3600 ? @sprintf("%.0f s", s) : @sprintf("%.2f h", s / 3600)
 
 io = IOBuffer()
@@ -77,11 +105,11 @@ for g in groups
     rs = sort(filter(r -> r.group == g, rows); by = r -> (r.D, r.N))
     Ds = unique(r.D for r in rs)
     println(io, "## ", g, "  (", length(rs), " runs)\n")
-    println(io, "| cell | device | D | N | Nx | N_samples | field | end-to-end | traj | per-device throughput [e·s·px/s] |")
-    println(io, "|---|---|---|---|---|---|---|---|---|---|")
+    println(io, "| cell | device | D | N | Nx | N_samples | field (wall) | kernel-active | end-to-end | traj | per-device rate wall / kernel [e·s·px/s] |")
+    println(io, "|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rs
-        @printf(io, "| %s | %s | %d | %d | %d | %d | %s | %s | %s | %.3e |\n",
-            r.label, r.device, r.D, r.N, r.Nx, r.Ns, fmt_t(r.t_field), fmt_t(r.t_total), fmt_t(r.t_traj), thr(r))
+        @printf(io, "| %s | %s | %d | %d | %d | %d | %s | %s | %s | %s | %.3e / %s |\n",
+            r.label, r.device, r.D, r.N, r.Nx, r.Ns, fmt_t(r.t_field), fmt_t(r.t_kernel), fmt_t(r.t_total), fmt_t(r.t_traj), thr(r), fmt_e(thrk(r)))
     end
     println(io)
     length(Ds) > 1 || continue
@@ -90,22 +118,25 @@ for g in groups
     b = base[1]
     if all(r -> r.N * b.D == b.N * r.D && r.Nx == b.Nx && r.Ns == b.Ns, rs)
         push!(weak_groups, g)
-        println(io, "**Weak scaling** (work per device constant; efficiency = t_field(D=$(b.D)) / t_field(D)):\n")
-        println(io, "| D | N | field | efficiency (field) | end-to-end | efficiency (end-to-end) |")
-        println(io, "|---|---|---|---|---|---|")
+        println(io, "**Weak scaling** (work per device constant; efficiency = t(D=$(b.D)) / t(D)):\n")
+        println(io, "| D | N | field (wall) | efficiency (wall) | kernel-active | efficiency (kernel) | end-to-end | efficiency (end-to-end) |")
+        println(io, "|---|---|---|---|---|---|---|---|")
         for r in rs
-            @printf(io, "| %d | %d | %s | %.2f | %s | %.2f |\n", r.D, r.N, fmt_t(r.t_field), b.t_field / r.t_field,
-                fmt_t(r.t_total), b.t_total / r.t_total)
+            ek = isnan(r.t_kernel) || isnan(b.t_kernel) ? "—" : @sprintf("%.2f", b.t_kernel / r.t_kernel)
+            @printf(io, "| %d | %d | %s | %.2f | %s | %s | %s | %.2f |\n", r.D, r.N, fmt_t(r.t_field), b.t_field / r.t_field,
+                fmt_t(r.t_kernel), ek, fmt_t(r.t_total), b.t_total / r.t_total)
         end
         println(io)
     elseif all(r -> r.N == b.N && r.Nx == b.Nx && r.Ns == b.Ns, rs)
         push!(strong_groups, g)
-        println(io, "**Strong scaling** (fixed problem; speedup = t_field(D=$(b.D)) / t_field(D), ideal = D/$(b.D)):\n")
-        println(io, "| D | field | speedup (field) | efficiency | end-to-end | speedup (end-to-end) |")
-        println(io, "|---|---|---|---|---|---|")
+        println(io, "**Strong scaling** (fixed problem; speedup = t(D=$(b.D)) / t(D), ideal = D/$(b.D)):\n")
+        println(io, "| D | field (wall) | speedup (wall) | efficiency (wall) | kernel-active | speedup (kernel) | efficiency (kernel) | end-to-end | speedup (end-to-end) |")
+        println(io, "|---|---|---|---|---|---|---|---|---|")
         for r in rs
             sp = b.t_field / r.t_field; ideal = r.D / b.D
-            @printf(io, "| %d | %s | %.2f | %.2f | %s | %.2f |\n", r.D, fmt_t(r.t_field), sp, sp / ideal,
+            spk = isnan(r.t_kernel) || isnan(b.t_kernel) ? NaN : b.t_kernel / r.t_kernel
+            @printf(io, "| %d | %s | %.2f | %.2f | %s | %s | %s | %s | %.2f |\n", r.D, fmt_t(r.t_field), sp, sp / ideal,
+                fmt_t(r.t_kernel), isnan(spk) ? "—" : @sprintf("%.2f", spk), isnan(spk) ? "—" : @sprintf("%.2f", spk / ideal),
                 fmt_t(r.t_total), b.t_total / r.t_total)
         end
         println(io)
@@ -113,13 +144,15 @@ for g in groups
 end
 # cross-vendor: per-device throughput by device name (median over runs)
 println(io, "## Per-device throughput by device (median over all runs)\n")
-println(io, "| device | runs | throughput [e·s·px/s] | relative |")
-println(io, "|---|---|---|---|")
+println(io, "| device | runs | wall [e·s·px/s] | relative | kernel-active [e·s·px/s] | relative |")
+println(io, "|---|---|---|---|---|---|")
 devs = unique(r.device for r in rows)
 med = Dict(d => median(thr(r) for r in rows if r.device == d) for d in devs)
-best = maximum(values(med))
+medk = Dict(d => (v = filter(!isnan, [thrk(r) for r in rows if r.device == d]); isempty(v) ? NaN : median(v)) for d in devs)
+best = maximum(values(med)); kvals = filter(!isnan, collect(values(medk))); bestk = isempty(kvals) ? NaN : maximum(kvals)
 for d in sort(devs; by = d -> -med[d])
-    @printf(io, "| %s | %d | %.3e | %.2f |\n", d, count(r -> r.device == d, rows), med[d], med[d] / best)
+    @printf(io, "| %s | %d | %.3e | %.2f | %s | %s |\n", d, count(r -> r.device == d, rows), med[d], med[d] / best,
+        fmt_e(medk[d]), isnan(medk[d]) ? "—" : @sprintf("%.2f", medk[d] / bestk))
 end
 report = String(take!(io))
 mkpath(outdir)
@@ -134,14 +167,18 @@ ax2 = Axis(fig[1, 2]; xlabel = "devices D", ylabel = "speedup t₁/t_D", title =
     xticks = [1, 2, 4, 8])
 for g in weak_groups
     rs = sort(filter(r -> r.group == g, rows); by = r -> r.D)
-    scatterlines!(ax1, [r.D for r in rs], [r.t_field for r in rs]; label = "$g field")
+    scatterlines!(ax1, [r.D for r in rs], [r.t_field for r in rs]; label = "$g field (wall)")
+    any(r -> !isnan(r.t_kernel), rs) &&
+        scatterlines!(ax1, [r.D for r in rs], [r.t_kernel for r in rs]; linestyle = :dashdot, label = "$g kernel-active")
     any(r -> !isnan(r.t_total), rs) &&
         scatterlines!(ax1, [r.D for r in rs], [r.t_total for r in rs]; linestyle = :dash, label = "$g end-to-end")
 end
 for g in strong_groups
     rs = sort(filter(r -> r.group == g, rows); by = r -> r.D)
     b = rs[1]
-    scatterlines!(ax2, [r.D for r in rs], [b.t_field / r.t_field for r in rs]; label = "$g field")
+    scatterlines!(ax2, [r.D for r in rs], [b.t_field / r.t_field for r in rs]; label = "$g field (wall)")
+    any(r -> !isnan(r.t_kernel), rs) && !isnan(b.t_kernel) &&
+        scatterlines!(ax2, [r.D for r in rs], [b.t_kernel / r.t_kernel for r in rs]; linestyle = :dashdot, label = "$g kernel-active")
     any(r -> !isnan(r.t_total), rs) &&
         scatterlines!(ax2, [r.D for r in rs], [b.t_total / r.t_total for r in rs]; linestyle = :dash, label = "$g end-to-end")
 end
