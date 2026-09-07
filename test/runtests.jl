@@ -35,6 +35,12 @@ using JET
     @testset "GPU Radiation Accumulation" begin
         include("gpu_radiation.jl")
     end
+    @testset "Window coverage" begin
+        include("window_coverage.jl")
+    end
+    @testset "FLOP accounting" begin
+        include("flops.jl")
+    end
     @testset "Lorenz Gauge" begin
         include("lorenz_gauge.jl")
     end

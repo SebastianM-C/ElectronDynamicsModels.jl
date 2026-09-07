@@ -25,6 +25,30 @@ EDM.gpu_sm_count(::ROCBackend) =
 EDM.gpu_max_threads_per_sm(::ROCBackend) =
     Int(AMDGPU.HIP.properties(AMDGPU.device()).maxThreadsPerMultiProcessor)
 
+# FP64 vector FLOP per clock per HIP "multiprocessor" by gfx architecture (FMA = 2 FLOP).
+# HIP's multiProcessorCount is the CU count on CDNA (MI100: 64 lanes at half rate → 64;
+# MI200/MI300: full-rate FP64 → 128) but the WORK-GROUP-PROCESSOR count on RDNA (one WGP = two
+# CUs: the W7900 reports 48 for its 96 CUs), where FP64 runs at 1/32 of the dual-issue FP32 rate
+# — 8 per CU, 16 per WGP. Clock = the device's reported max engine clock (rocminfo "Max Clock"),
+# not the marketing boost. Anchors: MI300X 304 CU × 2.1 GHz × 128 = 81.7 TFLOP/s; W7900 48 WGP ×
+# 1.76 GHz × 16 = 1.35 TFLOP/s.
+const FP64_FLOP_PER_CLK_PER_MP = Dict{String, Int}(
+    "gfx908" => 64, "gfx90a" => 128, "gfx940" => 128, "gfx941" => 128, "gfx942" => 128,
+    "gfx950" => 128,
+    "gfx1100" => 16, "gfx1101" => 16, "gfx1102" => 16,
+)
+# `gcn_arch` may carry feature suffixes ("gfx942:sramecc+:xnack-"); the table is keyed on the bare name.
+_gfx_name(dev = AMDGPU.device()) = String(first(split(AMDGPU.HIP.gcn_arch(dev), ':')))
+_fp64_flop_per_clk(arch::AbstractString) = get(FP64_FLOP_PER_CLK_PER_MP, arch, NaN)
+
+EDM.gpu_arch(::ROCBackend) = _gfx_name()
+function EDM.gpu_peak_fp64_flops(::ROCBackend)
+    dev = AMDGPU.device()
+    p = AMDGPU.HIP.properties(dev)
+    clock_hz = 1.0e3 * Int(p.clockRate)   # kHz → Hz
+    return Int(p.multiProcessorCount) * clock_hz * _fp64_flop_per_clk(_gfx_name(dev))
+end
+
 function EDM.gpu_memory_info(::ROCBackend)
     free = Ref{Csize_t}(0)
     total = Ref{Csize_t}(0)

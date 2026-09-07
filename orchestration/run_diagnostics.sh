@@ -11,6 +11,9 @@
 #   • lattice-alias check (scripts/alias_metrics.jl): the line map with the predicted r_alias
 #     and the measured halo onset drawn on it, halo/core rms, r₅₀ — scores the N-ladder
 #     prediction per run (needs hmaps_<id>.jls, i.e. a reduced run).
+#   • observer-window coverage (scripts/window_coverage.jl): does every pixel see every
+#     electron's full history inside the sampled window (else the kernel skipped slots and the
+#     cube lacks those contributions) — per-electron lead/tail margins, slot fill.
 # Run-to-run agreement (sharding / cross-vendor) is a separate call, it needs a reference:
 #     scripts/compare_hmaps.jl --sweep mgpu_strong <dir>   or   compare_hmaps.jl <ref.toml> <run.toml>...
 # Both attach derived_* sidecars + PNGs next to each run_<uuid>.toml, so a re-publish shows them
@@ -19,7 +22,8 @@
 #   bash orchestration/run_diagnostics.sh ~/campaign_out/<campaign> [more dirs…]
 #   env: EDM_TRACE_TOTAL=0 to skip the coherent-sum overlay; EDM_COORDS=absolute|displacement
 #        (default displacement — the kick is what the histograms are for); EDM_N to cap the
-#        re-solved electrons; DIAG_SKIP_TRACES=1 / DIAG_SKIP_TRAJ=1 / DIAG_SKIP_ALIAS=1 to skip one.
+#        re-solved electrons; DIAG_SKIP_TRACES=1 / DIAG_SKIP_TRAJ=1 / DIAG_SKIP_ALIAS=1 /
+#        DIAG_SKIP_WINDOW=1 to skip one.
 set -uo pipefail
 ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; REPO="$(cd "$ORCH/.." && pwd)"
 JL=(julia +"${JULIA_CHANNEL:-release}" --startup=no -t "${DIAG_JL_THREADS:-auto}" --project="$REPO/scripts")
@@ -41,6 +45,12 @@ for dir in "$@"; do
             elif ! ls "$dir"/hmaps_*"$id"*.jls >/dev/null 2>&1; then echo "[diag] no hmaps (not reduced?) — alias metrics skipped: $id8"
             else echo "[diag] alias metrics ← $m"
                  ( cd "$REPO" && "${JL[@]}" scripts/alias_metrics.jl "$m" ) || { echo "[diag] FAILED alias metrics $id8"; fail=1; }
+            fi
+        fi
+        if [ "${DIAG_SKIP_WINDOW:-0}" != 1 ]; then
+            if [ -e "$dir/derived_window_coverage_$id8.toml" ]; then echo "[diag] window coverage exists: $id8"
+            else echo "[diag] window coverage ← $m"
+                 ( cd "$REPO" && "${JL[@]}" scripts/window_coverage.jl "$m" ) || { echo "[diag] FAILED window coverage $id8"; fail=1; }
             fi
         fi
         if [ "${DIAG_SKIP_TRAJ:-0}" != 1 ]; then

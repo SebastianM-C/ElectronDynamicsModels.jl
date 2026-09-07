@@ -130,3 +130,112 @@ end
 
 # Sampler cadence (s); coarse is fine — field runs are seconds→hours. Override with EDM_GPU_SAMPLE_DT.
 const GPU_SAMPLE_DT = parse(Float64, get(ENV, "EDM_GPU_SAMPLE_DT", "1.0"))
+
+# ── Observer-window coverage + algorithmic FLOP accounting (host side, no GPU impact) ──────────
+#
+# `check_window_coverage` runs BEFORE the field phase (milliseconds): every pixel must see every
+# electron's full history inside the sampled window, else the GPU kernels silently skip the
+# clipped slots and the cube lacks those contributions — a warning here is cheaper than a wasted
+# GPU run. Its executed-slot count is the exact work figure of the FLOP section. Both helpers
+# follow gpu_manifest_section's contract: a failure never breaks a run, the section is omitted.
+
+function check_window_coverage(trajs, screen)
+    try
+        t = @elapsed cov = window_coverage(trajs, screen)
+        if cov.ok
+            @info "observer window fully covered" slot_fill = 1.0 lead_margin_samples = cov.lead_margin_samples tail_margin_samples = cov.tail_margin_samples check_s = round(t; digits = 3)
+        else
+            @warn "observer window NOT fully covered — $(cov.electrons_clipped) electron(s) end (or start) before the window does at some pixel; those slots are skipped by the kernel and the cube lacks their contribution" slot_fill = cov.slot_fill slots_dropped = cov.slots_dropped lead_margin_samples = cov.lead_margin_samples tail_margin_samples = cov.tail_margin_samples worst_electron = cov.worst_electron
+        end
+        return cov
+    catch err
+        @warn "window coverage check failed — running without it" exception = err
+        return nothing
+    end
+end
+
+# → the manifest's [window] table (`nothing` ⇒ omitted).
+function window_manifest_section(cov)
+    cov === nothing && return nothing
+    try
+        w = Dict{String, Any}(
+            "ok" => cov.ok,
+            "slots_nominal" => cov.slots_nominal,
+            "electrons_clipped" => cov.electrons_clipped,
+            "lead_margin_samples" => cov.lead_margin_samples,
+            "tail_margin_samples" => cov.tail_margin_samples,
+            "worst_electron" => cov.worst_electron,
+        )
+        if cov.slots_executed !== missing
+            w["slots_executed"] = cov.slots_executed
+            w["slots_dropped"] = cov.slots_dropped
+            w["slot_fill"] = Float64(cov.slot_fill)
+        end
+        return w
+    catch err
+        @warn "window coverage section failed — omitting [window] from the manifest" exception = err
+        return nothing
+    end
+end
+
+# → the manifest's [flops] table: the algorithmic FLOP profile of the kernel actually used
+# (`flop_profile`, CountedFloats on the CPU backend, milliseconds), scaled by the run's executed
+# slots, with the per-device FLOP rate over the field wall time and the fraction of the device's
+# vector FP64 peak. `slots_executed = missing` falls back to the nominal N·N_samples·Nx·Ny.
+function flops_manifest_section(backend, alg, mode::Symbol, solver_kw, N, Nx, Ny, N_samples,
+        slots_executed, t_field, ndev)
+    try
+        p = flop_profile(alg; mode = Val(mode), solver_kw...)
+        slots_nominal = N * N_samples * Nx * Ny
+        executed = slots_executed === missing ? slots_nominal : Int(slots_executed)
+        flop_total = p.flop_per_slot * executed + p.flop_per_pixel_launch * N * Nx * Ny
+        rate = flop_total / (t_field * ndev)
+        f = Dict{String, Any}(
+            "convention" => p.convention,
+            "counter_version" => 1,
+            "alg" => p.alg,
+            "mode" => String(p.mode),
+            String(p.n_name) => p.n,
+            "flop_per_slot" => p.flop_per_slot,
+            "flop_per_slot_add" => p.per_slot.add,
+            "flop_per_slot_mul" => p.per_slot.mul,
+            "flop_per_slot_div" => p.per_slot.div,
+            "flop_per_slot_sqrt" => p.per_slot.sqrt,
+            "flop_per_slot_fma" => p.per_slot.fma,
+            "flop_per_slot_pow" => p.per_slot.pow,
+            "flop_per_slot_trans" => p.per_slot.trans,
+            "nonflop_per_slot_cmp" => p.per_slot.cmp,
+            "nonflop_per_slot_other" => p.per_slot.other,
+            "flop_per_pixel_launch" => p.flop_per_pixel_launch,
+            "bytes_per_slot" => p.bytes_per_slot,
+            "arithmetic_intensity" => p.arithmetic_intensity,
+            "slots_nominal" => slots_nominal,
+            "slots_executed" => executed,
+            "slots_executed_source" => slots_executed === missing ? "nominal" : "window_coverage",
+            "slot_fill" => executed / slots_nominal,
+            "flop_total" => flop_total,
+            "bytes_total" => p.bytes_per_slot * executed,
+            "device_count" => Int(ndev),
+            "flop_rate_field" => rate,   # FLOP/s per device over the field wall time
+        )
+        arch = try
+            gpu_arch(backend)
+        catch
+            nothing
+        end
+        arch === nothing || (f["gpu_arch"] = String(arch))
+        peak = try
+            Float64(gpu_peak_fp64_flops(backend))
+        catch
+            NaN
+        end
+        if isfinite(peak) && peak > 0
+            f["peak_fp64_flops"] = peak
+            f["peak_fraction_field"] = rate / peak
+        end
+        return f
+    catch err
+        @warn "FLOP accounting unavailable — omitting [flops] from the manifest" exception = err
+        return nothing
+    end
+end

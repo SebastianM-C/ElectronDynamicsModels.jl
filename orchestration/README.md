@@ -26,7 +26,13 @@ export RUNPOD_BRANCH=<the branch carrying this recipe> RUNPOD_GPU_COUNT=8 RUNPOD
     RUNPOD_GPU_CANDIDATES="NVIDIA H200,NVIDIA H200 NVL" RUNPOD_DISK_GB=400 RUNPOD_DRAIN_DELETE_LOCAL=1
 #   the pod instantiates the TRACKED scripts/Manifest-v1.12.toml at warm (no fresh resolve): a
 #   dependency update reaches cloud runs only by committing a regenerated manifest (which also
-#   re-keys the depot warm cache). If the grab log shows the create rejected for the disk size,
+#   re-keys the depot warm cache). In-repo sub-packages (lib/RunManifests, lib/CountedFloats)
+#   are path deps: Pkg only honours a [sources] entry in the ACTIVE environment, so every env
+#   that path-devs the package (scripts/, test/, benchmarks/, poster/, animation/) lists them in
+#   its own [deps] + [sources]; adding one means Pkg.resolve() + commit in each tracked manifest
+#   (benchmarks/, poster/, animation/ carry manifests that no longer resolve against the current
+#   registry — pre-existing; refresh them with Pkg.update() before their next use).
+#   If the grab log shows the create rejected for the disk size,
 #   lower RUNPOD_DISK_GB (DRAIN_DELETE_LOCAL=1 keeps the footprint at ~2 cubes). One pod = one
 #   GPU type for both phases.
 B=orchestration/backends/runpod.sh; C=orchestration/campaigns

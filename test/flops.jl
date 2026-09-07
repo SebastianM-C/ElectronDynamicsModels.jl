@@ -1,0 +1,76 @@
+# Algorithmic FLOP profile of the field kernels (src/diagnostics/flops.jl) — CPU only.
+using ElectronDynamicsModels
+using ElectronDynamicsModels: _lightcone_eval, _rt_rhs_kernel, _rk4_step, _window_edge, m_dot, to_gpu,
+    _profile_trajectory, _counted
+using CountedFloats
+using StaticArrays
+using LinearAlgebra
+using Test
+
+const CF64 = Counted{Float64}
+
+traj = _profile_trajectory()
+gt = _counted(to_gpu(traj; with_acceleration = true))
+r_obs = SVector{3}(CF64(1.0), CF64(-2.0), CF64(50.0))
+τ = CF64(3.3)
+
+@testset "helper counts reproduce the hand-derived numbers" begin
+    x = SVector{4}(CF64.((1.0, 2.0, 3.0, 4.0)))
+    y = SVector{4}(CF64.((0.5, 0.25, 2.0, 1.0)))
+    c = @count m_dot(x, y)
+    @test c[:mul] == 4 && c[:add] == 3 && flops(c) == 7
+    v = SVector{3}(CF64.((1.0, 2.0, 3.0)))
+    c = @count norm(v)
+    @test c[:mul] == 3 && c[:add] == 2 && c[:sqrt] == 1 && flops(c) == 6
+    # cubic spline, D = 8, as written: per component 10 mul + 3 add (dt³ recomputed), plus dt1,
+    # dt2 (2 sub) and inv(6h) (1 mul, 1 div)
+    cs = @count gt.itp(τ)
+    @test cs[:mul] == 81 && cs[:add] == 26 && cs[:div] == 1 && cs[:sqrt] == 0
+    ca = @count gt.a_itp(τ)
+    @test ca[:mul] == 41 && ca[:add] == 14 && ca[:div] == 1
+    # light-cone residual eval = spline + 7 mul / 12 add / 2 div / 1 sqrt
+    cl = @count _lightcone_eval(τ, gt, r_obs, CF64(1.0))
+    @test cl[:mul] == cs[:mul] + 7 && cl[:add] == cs[:add] + 12 && cl[:div] == cs[:div] + 2 && cl[:sqrt] == 1
+    # retarded-time RHS = spline + 7 mul / 8 add / 2 div / 1 sqrt
+    cr = @count _rt_rhs_kernel(τ, gt, r_obs)
+    @test cr[:mul] == cs[:mul] + 7 && cr[:add] == cs[:add] + 8 && cr[:div] == cs[:div] + 2 && cr[:sqrt] == 1
+    # RK4 step = 4 RHS evals + 8 mul + 7 add
+    ck = @count _rk4_step(τ, CF64(0.1), gt, r_obs)
+    @test flops(ck) == 4 * flops(cr) + 15
+    @test cl[:fma] == 0 && cr[:fma] == 0 && cl[:trans] == 0 && cl[:pow] == 0
+end
+
+@testset "flop_profile: deterministic, linear in the accuracy knob, mode-independent" begin
+    pN1 = flop_profile(GPUKernelNewton(); n_iters = 1)
+    pN2 = flop_profile(GPUKernelNewton(); n_iters = 2)
+    pN3 = flop_profile(GPUKernelNewton(); n_iters = 3)
+    @test pN2 == flop_profile(GPUKernelNewton(); n_iters = 2)
+    @test pN2.alg == "GPUKernelNewton" && pN2.mode == :split && pN2.n_name == :n_iters && pN2.n == 2
+    # one more Newton correction per slot = one light-cone eval + proposal (mul, add) + midpoint (add, div)
+    cl = flops(@count _lightcone_eval(τ, gt, r_obs, CF64(1.0)))
+    @test pN2.flop_per_slot - pN1.flop_per_slot == cl + 4
+    @test pN3.flop_per_slot - pN2.flop_per_slot == cl + 4
+    @test pN2.per_slot.fma == 0 && pN2.per_slot.pow == 0 && pN2.per_slot.trans == 0
+    @test pN2.per_slot.sqrt == 3 + 0   # one per light-cone eval (predictor + 2 corrections)
+    @test pN2.flop_per_slot > 500 && pN2.flop_per_pixel_launch > 0
+    @test pN2.per_pixel_launch.sqrt == 2   # the two window edges
+
+    pR1 = flop_profile(GPUKernelRK4(); n_substeps = 1)
+    pR2 = flop_profile(GPUKernelRK4(); n_substeps = 2)
+    pR4 = flop_profile(GPUKernelRK4(); n_substeps = 4)
+    step = flops(@count _rk4_step(τ, CF64(0.1), gt, r_obs))
+    @test pR2.flop_per_slot - pR1.flop_per_slot == step
+    @test pR4.flop_per_slot - pR2.flop_per_slot == 2 * step
+    @test pR1.n_name == :n_substeps && pR1.alg == "GPUKernelRK4"
+
+    # :total sums far + near in-kernel: same FLOPs per slot, half the buffer traffic
+    tN = flop_profile(GPUKernelNewton(); mode = :total, n_iters = 2)
+    @test tN.flop_per_slot == pN2.flop_per_slot && tN.per_slot == pN2.per_slot
+    @test tN.bytes_per_slot == 96 && pN2.bytes_per_slot == 192
+    @test tN.arithmetic_intensity == 2 * pN2.arithmetic_intensity
+    @test flop_profile(GPUKernelRK4(); mode = Val(:total)).flop_per_slot == pR1.flop_per_slot
+
+    @test_throws ArgumentError flop_profile(GPUKernelNewton(); mode = :bogus)
+    @test_throws ArgumentError flop_profile(GPUKernelNewton(); n_iters = 0)
+    @test occursin("CountedFloats", pN2.convention)
+end
