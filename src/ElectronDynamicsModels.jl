@@ -50,7 +50,7 @@ export ReferenceFrame, Worldline,
     retarded_time_problem,
     gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_power, gpu_utilization,
     gpu_memory_info, gpu_telemetry_child_cmd, gpu_sm_count, gpu_max_threads_per_sm,
-    gpu_arch, gpu_peak_fp64_flops, thread_fill_occupancy,
+    gpu_arch, gpu_peak_fp64_flops, measure_peak_fp64_flops, thread_fill_occupancy,
     accumulate_field_sharded,
     window_coverage, flop_profile,
     hann, blackman_harris
@@ -75,6 +75,7 @@ include("rpr_api.jl")   # RPR rendering plumbing; impls in ext/EDMRPRMakieExt.jl
 include("gpu/multidevice.jl")   # accumulate_field_sharded: electron sharding across GPUs
 include("diagnostics/window_coverage.jl")   # host-side executed-slot / window-coverage check
 include("diagnostics/flops.jl")             # algorithmic FLOP profile of the field kernels (CountedFloats)
+include("diagnostics/peakflops.jl")         # measured vector FP64 peak (FMA-chain probe) — no per-arch table
 
 # Experimental: batched/Tsit5 GPU path — production staging, under active development.
 module Experimental

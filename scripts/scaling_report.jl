@@ -56,8 +56,9 @@ struct Row
     flops_src::String   # "manifest" ([flops] section) | "model" (profiled from [config], nominal slots) | "—"
 end
 
-# Vector FP64 peaks [FLOP/s] by device-name fragment, for manifests without [flops].peak_fp64_flops
-# (boost-clock × SMs × lanes; the extensions compute the same for live runs).
+# Vector FP64 peaks [FLOP/s] by device-name fragment — ONLY for archived manifests without
+# [flops].peak_fp64_flops (live runs MEASURE their peak with the FMA-chain probe and record it).
+# Datasheet vector (non-tensor) figures at boost clock; add a device only if an archived run needs it.
 const PEAK_FP64 = (
     "H200" => 33.5e12, "H100" => 33.5e12, "A100" => 9.7e12, "GB200" => 40.0e12, "B200" => 40.0e12,
     "MI300X" => 81.7e12, "MI250X" => 47.9e12, "MI250" => 45.3e12,

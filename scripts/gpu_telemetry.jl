@@ -181,7 +181,8 @@ end
 # → the manifest's [flops] table: the algorithmic FLOP profile of the kernel actually used
 # (`flop_profile`, CountedFloats on the CPU backend, milliseconds), scaled by the run's executed
 # slots, with the per-device FLOP rate over the field wall time and the fraction of the device's
-# vector FP64 peak. `slots_executed = missing` falls back to the nominal N·N_samples·Nx·Ny.
+# attainable vector FP64 peak (MEASURED on the device by the FMA-chain probe, ~1.5 s, after the
+# field phase). `slots_executed = missing` falls back to the nominal N·N_samples·Nx·Ny.
 function flops_manifest_section(backend, alg, mode::Symbol, solver_kw, N, Nx, Ny, N_samples,
         slots_executed, t_field, ndev)
     try
@@ -226,11 +227,13 @@ function flops_manifest_section(backend, alg, mode::Symbol, solver_kw, N, Nx, Ny
         arch === nothing || (f["gpu_arch"] = String(arch))
         peak = try
             Float64(gpu_peak_fp64_flops(backend))
-        catch
+        catch err
+            @warn "FP64 peak measurement failed — omitting peak_fp64_flops / peak_fraction_field" exception = (err, catch_backtrace())
             NaN
         end
         if isfinite(peak) && peak > 0
             f["peak_fp64_flops"] = peak
+            f["peak_fp64_method"] = backend isa ElectronDynamicsModels.KernelAbstractions.CPU ? "blas-peakflops" : "fma-chain-measured"
             f["peak_fraction_field"] = rate / peak
         end
         return f

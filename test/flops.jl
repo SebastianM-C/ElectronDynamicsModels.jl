@@ -3,6 +3,8 @@ using ElectronDynamicsModels
 using ElectronDynamicsModels: _lightcone_eval, _rt_rhs_kernel, _rk4_step, _window_edge, m_dot, to_gpu,
     _profile_trajectory, _counted
 using CountedFloats
+using ElectronDynamicsModels.KernelAbstractions: CPU
+using ElectronDynamicsModels: _fma_chain_reference, _fma_chain_kernel!, _PEAK_CHAINS
 using StaticArrays
 using LinearAlgebra
 using Test
@@ -73,4 +75,21 @@ end
     @test_throws ArgumentError flop_profile(GPUKernelNewton(); mode = :bogus)
     @test_throws ArgumentError flop_profile(GPUKernelNewton(); n_iters = 0)
     @test occursin("CountedFloats", pN2.convention)
+end
+
+@testset "measured FP64 peak: FMA-chain probe (CPU backend) + host peakflops" begin
+    # The probe's own result check: the kernel computes exactly the chains it is credited with.
+    n = 64
+    out = zeros(n); seed = Float64.(0:(n - 1))
+    _fma_chain_kernel!(CPU(), 16)(out, seed, Int32(1000); ndrange = n)
+    @test all(i -> isapprox(out[i], _fma_chain_reference(seed[i], 1000); rtol = 1.0e-12), 1:n)
+    @test _PEAK_CHAINS == 8
+    # A small measurement on the CPU backend runs end to end and reports a sane rate
+    # (each Julia thread retires ≥ 1 FMA per ~10 ns here; loose bound: 10 MFLOP/s).
+    p = measure_peak_fp64_flops(CPU(); n_threads = 4096, trials = 2, target_seconds = 0.02)
+    @test isfinite(p) && p > 1.0e7
+    @test_throws ArgumentError measure_peak_fp64_flops(CPU(); trials = 0)
+    # Host figure = BLAS peakflops.
+    h = gpu_peak_fp64_flops(CPU())
+    @test isfinite(h) && h > 1.0e8
 end

@@ -29,26 +29,7 @@ EDM.gpu_sm_count(::CUDABackend) =
 EDM.gpu_max_threads_per_sm(::CUDABackend) =
     CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR)
 
-# FP64 FMA lanes per SM by compute capability (vector units, not tensor cores). Datacenter
-# parts (GV100, GA100, GH100, GB100) run FP64 at 1/2 the FP32 rate; consumer parts at 1/32
-# (Turing, Ampere GA10x, Ada, Blackwell GB20x) — 2 lanes of 64 FP32 lanes. Anchors: H100 SXM
-# 132 × 1.98 GHz × 64 × 2 = 33.5 TFLOP/s; RTX 5090 170 × 2.41 GHz × 2 × 2 = 1.64 TFLOP/s.
-const FP64_LANES_PER_SM = Dict{Tuple{Int, Int}, Int}(
-    (7, 0) => 32, (7, 5) => 2,
-    (8, 0) => 32, (8, 6) => 2, (8, 7) => 2, (8, 9) => 2,
-    (9, 0) => 64,
-    (10, 0) => 64, (10, 3) => 64,
-    (12, 0) => 2,
-)
-_fp64_lanes(cc::VersionNumber) = get(FP64_LANES_PER_SM, (Int(cc.major), Int(cc.minor)), NaN)
-
 EDM.gpu_arch(::CUDABackend) = (cc = CUDA.capability(CUDA.device()); "$(cc.major).$(cc.minor)")
-function EDM.gpu_peak_fp64_flops(::CUDABackend)
-    dev = CUDA.device()
-    sms = CUDA.attribute(dev, CUDA.DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
-    clock_hz = 1.0e3 * CUDA.attribute(dev, CUDA.DEVICE_ATTRIBUTE_CLOCK_RATE)   # kHz → Hz
-    return sms * clock_hz * _fp64_lanes(CUDA.capability(dev)) * 2
-end
 
 # Telemetry child: the CUDA runtime is touched only HERE to map our ordinals to NVML uuids
 # (stable under CUDA_VISIBLE_DEVICES); the spawned scripts/gputrace_cuda.sh then runs one

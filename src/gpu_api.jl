@@ -75,25 +75,24 @@ function gpu_max_threads_per_sm end
 """    gpu_arch(backend) -> String
 
 Architecture tag of the current device: the compute capability (`"9.0"`) on NVIDIA, the
-gfx name without feature suffixes (`"gfx942"`) on AMD. The key of the FP64 peak table."""
+gfx name without feature suffixes (`"gfx942"`) on AMD. Provenance only (`[flops].gpu_arch`)."""
 function gpu_arch end
 
 """    gpu_peak_fp64_flops(backend) -> Float64
 
-Vector (non-matrix/tensor) FP64 peak of the current device in FLOP/s:
-`SMs × boost clock × FP64 FMA lanes per SM × 2`, with the lane count taken from a small
-per-architecture table (`_fp64_lanes` / `_fp64_flop_per_clk` in the extensions). `NaN` when
-the architecture is not in the table — never a guess. This is the denominator of the
-`[flops].peak_fraction` manifest field; the production kernels are scalar FP64, so the
-matrix/tensor peak would be the wrong yardstick."""
-function gpu_peak_fp64_flops end
+Attainable vector (non-matrix/tensor) FP64 peak of the current device in FLOP/s, MEASURED on
+the device with the dependent-FMA-chain probe of [`measure_peak_fp64_flops`](@ref) (any
+KernelAbstractions backend, no per-architecture table) — or, on the CPU backend, BLAS
+`LinearAlgebra.peakflops`. This is the denominator of the `[flops].peak_fraction_field`
+manifest field; the production kernels are scalar FP64, so the matrix/tensor peak would be the
+wrong yardstick. Costs ~1.5 s of device time per call."""
+gpu_peak_fp64_flops(backend::KA.Backend) = measure_peak_fp64_flops(backend)
 
 # Fallbacks: a KA Backend with no vendor extension loaded → a clear "load the package" error.
 # The extensions add more-specific methods (e.g. ::CUDABackend) that win over these.
 for f in (
         :gpu_device_count, :gpu_device, :gpu_name, :gpu_power, :gpu_utilization,
         :gpu_memory_info, :gpu_sm_count, :gpu_max_threads_per_sm, :gpu_arch,
-        :gpu_peak_fp64_flops,
     )
     @eval function $f(b::KA.Backend)
         error(
@@ -113,7 +112,9 @@ gpu_device(::KA.CPU) = 1
 gpu_device!(::KA.CPU, ::Integer) = 1
 gpu_name(::KA.CPU) = "CPU"
 gpu_arch(::KA.CPU) = "cpu"
-gpu_peak_fp64_flops(::KA.CPU) = NaN   # no table for host CPUs: the FLOP/s figure is GPU-only
+# Host: the SIMD gemm peak over all BLAS threads (best of 3) — what vectorised FP64 code can
+# attain; a per-workitem scalar FMA chain would under-report the host by the SIMD width.
+gpu_peak_fp64_flops(::KA.CPU) = LinearAlgebra.peakflops(2048; ntrials = 3)
 
 gpu_telemetry_child_cmd(b::KA.Backend, ::AbstractVector{<:Integer}, ::Real, ::AbstractString) = error(
     "gpu_telemetry_child_cmd: no GPU vendor extension loaded for ", typeof(b),
