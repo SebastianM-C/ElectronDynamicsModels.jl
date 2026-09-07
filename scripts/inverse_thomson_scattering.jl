@@ -226,7 +226,6 @@ end
 # Doppler-shortened to ~τ/γ of proper time, so campaigns tighten this ∝ 1/γ (see the knob note).
 τi = -TSPAN_TAU * τ
 τf = TSPAN_TAU * τ
-tspan = (τi, τf)
 
 # ── Screen geometry + observer window — sized HERE, before the (expensive) ensemble solve,
 # so the coverage/memory guards below fail fast instead of after hours of integration. ──
@@ -238,7 +237,9 @@ Nx = NX
 Ny = NX
 
 # Observer-time sample window (x⁰_start + N_samples), mode-dependent:
-#  :full   — legacy wide window. x⁰_start = c·τi + hypot(Z, screen_edge) (plain c·τi, NOT γc·τi: the boosted
+#  :full   — legacy wide window. x⁰_start = c·τi + hypot(Z, √2·screen_hw + Rmax), the CORNER pixel /
+#            far-rim electron (edge-anchored before 2026-09: advisory `window-anchor-inverse-full`).
+#            (plain c·τi, NOT γc·τi: the boosted
 #            electron starts far behind at γc·τi but only radiates near t=0, whose light reaches the screen
 #            at x⁰≈Z; c·τi is a small lead-in — γc·τi would start ~γ× too early and miss it). N = EDM_NSAMPLES.
 #  :narrow — recentre on the burst: the observed burst is CENTERED on the on-axis arrival ≈ Z
@@ -270,7 +271,7 @@ else
     (2 * Rmax * r_edge - r_edge^2) / (2Z)
 end
 const N_samples, x⁰_start = if WINDOW == :full
-    NSAMPLES, c * τi + hypot(Z, screen_hw + Rmax)
+    NSAMPLES, observer_window_start(τi, Z, screen_hw, Rmax; c)
 else
     lead = WINDOW_LEAD * λ; tail = WINDOW_TAIL * λ      # lead-in / tail (x⁰ lengths, 1λ = 1 T; env knobs)
     # The burst is CENTERED at ≈Z, so open burst/2 before it: the 1%-rise then sits ~`lead` into
@@ -343,10 +344,26 @@ else
 end
 sys = mtkcompile(elec)
 
+# Solve span. :full must cover its window at every pixel: the history has to begin a margin
+# before the (corner-anchored) window opens and reach past its last sample; for force-free flight
+# toward the screen the light-front coordinate advances as c·τ/(γ(1+β)), so both bounds scale
+# with `stretch = γ(1+β)` (1 at γ=1, where this is the rest-electron thomson window exactly).
+# :narrow keeps the physics span — it samples the Doppler-compressed burst only, by design.
+τi_solve, τf_solve = if WINDOW == :full
+    trajectory_span_for_window(τi, τf, range(x⁰_start; step = c * δt, length = N_samples), Z,
+        screen_hw, Rmax; c, stretch = GAMMA * (1 + β))
+else
+    (τi, τf)
+end
+tspan = (τi_solve, τf_solve)
+let growth = (τf_solve - τi_solve) / (τf - τi)
+    growth > 2 && @warn "EDM_WINDOW=full: covering the legacy window at γ=$(GAMMA) stretches the solve span $(round(growth, digits = 1))× beyond ±$(TSPAN_TAU)τ (knots and host RAM scale with it); prefer EDM_WINDOW=narrow for boosted runs" τi_solve_over_τ = τi_solve / τ τf_solve_over_τ = τf_solve / τ
+end
+
 # Meet-at-origin timing: with x⁰(τ)=γc·τ and z(τ)=γβc·τ (force-free flight), every electron
 # crosses z=0 at τ=0 ⇔ t=0, exactly when the −z pulse peaks at the focus. So the on-axis start
 # (τ=τi) is x⁰=γc·τi (< 0, in the past) and z=γβc·τi (< 0, far behind the focus in −z).
-x⁰ = [u⁰_t * τi, 0.0, 0.0, u³_z * τi]
+x⁰ = [u⁰_t * τi_solve, 0.0, 0.0, u³_z * τi_solve]
 u⁰ = [u⁰_t, 0.0, 0.0, u³_z]
 u0 = [sys.x => x⁰, sys.u => u⁰]
 
@@ -401,7 +418,7 @@ end
 bunch_dz(r) = BUNCH_NB == 0 ? 0.0 :
     ((1 + β) / 2) * ((r[1]^2 + r[2]^2) / (2Z) + BUNCH_L * atan(r[2], r[1]) / (2π) * λ / BUNCH_NB) -
     BUNCH_CHIRP * A0^2 * u_rel2(r) * sqrt(π / 2) * c * τ / (N0 + 1)
-xμ = [[u⁰_t * τi, r..., u³_z * τi + bunch_dz(r)] for r in R₀]
+xμ = [[u⁰_t * τi_solve, r..., u³_z * τi_solve + bunch_dz(r)] for r in R₀]
 
 set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
 
@@ -427,7 +444,7 @@ const ABSTOL = isempty(ABSTOL_ENV) ? 1.0e-11 : parse(Float64, ABSTOL_ENV)
 # → ~6 MB of splines per trajectory, ~60 GB at N=10⁴ — fine on the cluster nodes, tight on 123 GB
 # boxes; lower EDM_INTERP_SAVEAT (or EDM_N) if host RAM binds. With the campaign convention
 # TSPAN_TAU·γ = 16 the count is γ-free (~24k at knots=16 → ~47 GB at N=10⁴).
-saveat = collect(τi:((2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)):τf)
+saveat = collect(τi_solve:((2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)):τf_solve)
 ensemble = EnsembleProblem(prob; prob_func, safetycopy = false)
 t_trajectories = @elapsed solution = solve(
     ensemble, Vern9(), EnsembleThreads();
@@ -631,8 +648,11 @@ laser_params = Dict{String, Any}(
     "k_direction" => "[0, 0, -1]",     # reversed propagation (−z) — not a symbolic param, recorded literally
 )
 setup = Dict{String, Any}(
-    "τi" => τi,
+    "τi" => τi,                 # physics span (±TSPAN_TAU·τ)
     "τf" => τf,
+    "τi_solve" => τi_solve,     # solve span (= physics span for :narrow; ⊇ it for :full, covering the window)
+    "τf_solve" => τf_solve,
+    "window_anchor" => WINDOW == :full ? "corner" : "burst-centred",   # :full x0_start = c·τi + hypot(Z, √2·hw + Rmax) (absent ⇒ legacy edge anchor); :narrow = Z − burst/2 − lead
     "Rmax" => Rmax,
     "Z" => SCREEN_ZSIGN * Z,   # signed screen z-coordinate (the distance is |Z|)
     "screen_hw" => screen_hw,          # screen half-width (a.u.); = SCREEN_HW·w₀

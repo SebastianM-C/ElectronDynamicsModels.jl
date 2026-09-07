@@ -121,9 +121,31 @@ Rmax = 3.25w₀
 R₀ = Rmax * sunflower(N, 2)
 xi = [[r..., 0.0] for r in R₀]
 
-Nτ = 10_000
 τ = 150 / ω
-τs = collect(range(-8τ, 8τ, length = Nτ))
+# Physics span (proper time): the pulse, ±8τ.
+τi = -8τ
+τf = 8τ
+
+# Screen geometry + observer window — sized HERE, before the trajectories, because the knot span
+# is derived from it. Window START = the latest first arrival over all (pixel, electron) pairs —
+# the CORNER pixel and the far-rim electron, hypot(Z, √2·hw + Rmax) — so the first sample already
+# sees every electron at every pixel (runs before 2026-09 anchored on the edge midpoint hw + Rmax:
+# dashboard advisory `window-anchor`, report /reports/window-anchor). The trajectory span must
+# also reach past the window's LAST sample at every pixel; the analytic orbit is at rest outside
+# the pulse, so the extension only makes the Coulomb field present at every sample.
+const Z = 2.0e5λ
+const samples_per_period = SPP
+const δt = 2π / ω / samples_per_period
+const N_samples = NSAMPLES
+const screen_hw = SCREEN_HW * w₀
+const x⁰_start = observer_window_start(τi, Z, screen_hw, Rmax; c)
+x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
+τi_solve, τf_solve = trajectory_span_for_window(τi, τf, x⁰_samples, Z, screen_hw, Rmax; c)
+@info "observer window / trajectory span" x⁰_start_rel_Z_periods = (x⁰_start - Z) / λ window_periods = N_samples / samples_per_period τi_solve_over_τ = τi_solve / τ τf_solve_over_τ = τf_solve / τ
+
+# Spline knots: the historical 10 000 over ±8τ, extended at the same density over the solve span.
+Nτ = round(Int, 10_000 * (τf_solve - τi_solve) / (τf - τi))
+τs = collect(range(τi_solve, τf_solve, length = Nτ))
 
 using PhysicalConstants.CODATA2018: ε_0
 using UnitfulAtomic
@@ -133,9 +155,6 @@ u_idxs = SA[5, 6, 7, 8]
 q_e = -1
 ε₀ = austrip(ε_0)
 K = q_e / (4π * ε₀ * c)
-
-τi = -8τ
-τf = 8τ
 
 # verify trajectory
 Random.seed!(20260723)   # the assert must not be a dice roll (cost 2/6 ladder cells, 2026-07-23)
@@ -177,18 +196,9 @@ end
 trajs = identity.(trajs)
 t_trajectories = time() - _t0_traj   # analytic build (cheap vs the ODE solve in thomson)
 
-# Screen parameters
-const Z = 2.0e5λ
-const samples_per_period = SPP
-const δt = 2π / ω / samples_per_period
-const N_samples = NSAMPLES
-const screen_hw = SCREEN_HW * w₀
-const x⁰_start = c * τi + hypot(Z, screen_hw + Rmax)
-
+# Screen (geometry + window sized above, before the trajectories)
 Nx = NX
 Ny = NX
-
-x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
 
 screen = ObserverScreen(
     LinRange(-screen_hw, screen_hw, Nx),
@@ -304,8 +314,11 @@ model_params = Dict{String, Any}(
 )
 
 setup = Dict{String, Any}(
-    "τi" => τi,
+    "τi" => τi,                 # physics span (the pulse, ±8τ)
     "τf" => τf,
+    "τi_solve" => τi_solve,     # trajectory (knot) span ⊇ physics span: covers the observer window at every pixel
+    "τf_solve" => τf_solve,
+    "window_anchor" => "corner",   # x0_start = c·τi + hypot(Z, √2·hw + Rmax); absent ⇒ legacy edge anchor
     "Rmax" => Rmax,
     "Z" => Z,
     # Screen geometry the deferred reducers rebuild the grid/window from (RunManifests.screen_halfwidth /

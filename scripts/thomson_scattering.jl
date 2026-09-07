@@ -92,9 +92,11 @@ const OMEGA_SCALE = something(SPEC.omega_scale, 1.0)
 # scaled-ω cells ∝ 1/OMEGA_SCALE: with the geometry pinned, the source Fraunhofer distance
 # a²/λ′ grows with the scale (≳Z beyond γ≈2), the screen enters the Fresnel zone, and the
 # pattern shrinks slower than 1/scale. Zoom only when the sampling window demands it — the
-# corner-anchored x⁰_start sits ~11λ_lab after the center-pixel arrival, so once that spread
-# (in scaled periods, ∝scale) exceeds the 8τ pulse half-span (γ≳10 at full frame) the window
-# would open after the peak passed the central pixels; ±8 w₀ suffices at γ=10 (gamma_equiv).
+# corner-anchored x⁰_start sits ~21λ_lab after the center-pixel arrival (it was ~11λ_lab with the
+# pre-2026-09 edge anchor), so once that spread (in scaled periods, ∝scale) approaches the 8τ
+# pulse half-span minus the pulse width (≈ 191 − 24 T′ ⇒ scale ≳ 8, γ ≳ 4 at full frame) the
+# window opens as the peak passes the central pixels; ±8 w₀ suffices at γ=10 (gamma_equiv; with
+# the corner anchor the g5 rung needs the zoom too).
 const HALFW = something(SPEC.screen_halfw, 25.0)
 mkpath(OUTDIR)
 @info "Thomson (field) run config" RUN_TAG GPU_BACKEND GPU_SOLVER ϕ₀ A0 SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS NEWTON_ITERS OMEGA_SCALE HALFW
@@ -135,12 +137,32 @@ z_focus = 0.0
 @named elec = ClassicalElectron(; laser)
 sys = mtkcompile(elec)
 
-# Time span
+# Physics span (proper time): the pulse, ±8τ.
 τi = -8τ
 τf = 8τ
-tspan = (τi, τf)
 
-x⁰ = [τi * c, 0.0, 0.0, 0.0]
+# Screen geometry + observer window — sized HERE, before the solve, because the solve span is
+# derived from it (HALFW = the EDM_SCREEN_HALFW knob, resolved with the spec above).
+const Z = 2.0e5λ_lab
+const samples_per_period = SPP
+const δt = 2π / ω / samples_per_period
+const N_samples = NSAMPLES
+# Window START = the latest first arrival over all (pixel, electron) pairs — the CORNER pixel and
+# the far-rim electron, hypot(Z, √2·hw + Rmax) — so the first sample already sees every electron
+# at every pixel. Runs before 2026-09 anchored on the edge midpoint (hw + Rmax): the pixels outside
+# the inscribed circle missed the far-side electrons' static field for up to ~156 samples at the
+# ±25 w₀ framing (E-only; dashboard advisory `window-anchor`, report /reports/window-anchor).
+const x⁰_start = observer_window_start(τi, Z, HALFW * w₀, Rmax; c)
+x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
+# Solve span ⊇ physics span: the electron history must begin a margin before the window opens and
+# reach past its LAST sample at every pixel — the window used to outlive τf (68 empty tail samples
+# at N_samples = 6000, ≈2000 at 8000; static field only). Outside ±8τ the electron sits at rest
+# (envelope < e⁻⁶⁴), so the extra span only makes its Coulomb field present at every sample.
+τi_solve, τf_solve = trajectory_span_for_window(τi, τf, x⁰_samples, Z, HALFW * w₀, Rmax; c)
+tspan = (τi_solve, τf_solve)
+@info "observer window / solve span" x⁰_start_rel_Z_periods = (x⁰_start - Z) / λ_lab window_periods = N_samples / samples_per_period τi_solve_over_τ = τi_solve / τ τf_solve_over_τ = τf_solve / τ
+
+x⁰ = [τi_solve * c, 0.0, 0.0, 0.0]
 u⁰ = [c, 0.0, 0.0, 0.0]
 u0 = [sys.x => x⁰, sys.u => u⁰]
 
@@ -175,7 +197,7 @@ end
 # Ensemble solve
 N = NELEC
 R₀ = Rmax * sunflower(N, 2)
-xμ = [[τi * c, r..., 0.0] for r in R₀]
+xμ = [[τi_solve * c, r..., 0.0] for r in R₀]
 
 set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
 
@@ -198,7 +220,7 @@ const ABSTOL = something(ABSTOL_SPEC, abserr(a₀))
 # Passed ONLY when the knob is set, so the default path is byte-identical to the production solve
 # (no saveat ⇒ Vern9's adaptive output). The solve always steps adaptively to RELTOL/ABSTOL regardless.
 const SAVEAT_KW = isempty(INTERP_SAVEAT) ? (;) :
-    (; saveat = collect(τi:((2π / ω) / parse(Float64, INTERP_SAVEAT)):τf))
+    (; saveat = collect(τi_solve:((2π / ω) / parse(Float64, INTERP_SAVEAT)):τf_solve))
 ensemble = EnsembleProblem(prob; prob_func, safetycopy = false)
 t_trajectories = @elapsed solution = solve(
     ensemble, Vern9(), EnsembleThreads();
@@ -209,17 +231,9 @@ t_trajectories = @elapsed solution = solve(
 # Radiation computation
 trajs = trajectory_interpolants(solution)
 
-# Screen parameters (HALFW = the EDM_SCREEN_HALFW knob, resolved with the spec above)
-const Z = 2.0e5λ_lab
-const samples_per_period = SPP
-const δt = 2π / ω / samples_per_period
-const N_samples = NSAMPLES
-const x⁰_start = c * τi + hypot(Z, HALFW * w₀ + Rmax)
-
+# Screen (geometry + window sized above, before the solve)
 Nx = NX
 Ny = NX
-
-x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
 
 screen = ObserverScreen(
     LinRange(-HALFW * w₀, HALFW * w₀, Nx),
@@ -344,8 +358,11 @@ laser_params = Dict{String, Any}(
     "phi0" => prob.ps[sys.laser.ϕ₀],
 )
 setup = Dict{String, Any}(
-    "τi" => τi,
+    "τi" => τi,                 # physics span (the pulse, ±8τ)
     "τf" => τf,
+    "τi_solve" => τi_solve,     # solve span ⊇ physics span: covers the observer window at every pixel
+    "τf_solve" => τf_solve,
+    "window_anchor" => "corner",   # x0_start = c·τi + hypot(Z, √2·hw + Rmax); absent ⇒ legacy edge anchor
     "Rmax" => Rmax,
     "Z" => Z,
     # Screen geometry the deferred reducers rebuild the grid/window from (harmonic_products.jl,
