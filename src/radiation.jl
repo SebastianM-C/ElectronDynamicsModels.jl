@@ -89,6 +89,45 @@ meaningless without the unit system, and a wrong default would silently corrupt
 ObserverScreen(x_grid, y_grid, z, x⁰_samples; c) =
     ObserverScreen(x_grid, y_grid, z, x⁰_samples, c)
 
+"""
+    observer_window_start(τi, Z, half_width, Rmax; c)
+
+Observer time `x⁰` at which the LAST retarded image of proper time `τi` reaches a square screen
+of half-width `half_width` at distance `Z` from a source disc of radius `Rmax` centred on the
+axis, for electrons at rest at `τi`: the corner pixel (√2·half_width from the axis) and the
+electron on the far rim, `c·τi + hypot(Z, √2·half_width + Rmax)`. Opening the observer window
+here makes its first sample already see every electron at every pixel, so no sample is partially
+populated. (The edge-midpoint distance `hypot(Z, half_width + Rmax)` is NOT a bound: the pixels
+outside the screen's inscribed circle then miss the far-side electrons' first samples.)
+"""
+observer_window_start(τi, Z, half_width, Rmax; c) = c * τi + hypot(Z, √2 * half_width + Rmax)
+
+"""
+    trajectory_span_for_window(τi, τf, x⁰_samples, Z, half_width, Rmax; c, margin_samples = 2, stretch = 1)
+
+Proper-time span `(τ_lo, τ_hi) ⊇ (τi, τf)` a trajectory solve must cover so that every pixel of
+the screen sees every electron at EVERY sample of `x⁰_samples`, i.e. the field kernels' strict-
+interior slot range `k_start:k_end` is `1:N_samples` for every (electron, pixel) pair. The
+history must begin `margin_samples` before the window opens at the latest-arriving pair (the
+corner pixel / far-rim electron, see [`observer_window_start`](@ref)) and must last until the
+EARLIEST retarded image of its end — the axis pixel, where the arrival is the light-front
+coordinate `x⁰ − x³` plus `Z` — reaches the last sample. `stretch` is the proper time per unit
+of light-front advance: 1 for electrons at rest, `γ(1+β)` for force-free flight toward the
+screen (`x⁰ − x³ = c·τ/(γ(1+β))`). The physics span `(τi, τf)` is never shrunk; the extension
+only adds history where the electron moves freely.
+"""
+function trajectory_span_for_window(τi, τf, x⁰_samples::AbstractRange, Z, half_width, Rmax;
+        c, margin_samples::Integer = 2, stretch::Real = 1)
+    margin_samples >= 0 || throw(ArgumentError("margin_samples must be ≥ 0"))
+    stretch > 0 || throw(ArgumentError("stretch must be > 0"))
+    δ = length(x⁰_samples) > 1 ? step(x⁰_samples) : zero(first(x⁰_samples))
+    δ >= 0 || throw(ArgumentError("x⁰_samples must be increasing"))
+    m = margin_samples * δ
+    τ_lo = stretch * (first(x⁰_samples) - m - hypot(Z, √2 * half_width + Rmax)) / c
+    τ_hi = stretch * (last(x⁰_samples) + m - Z) / c
+    return (min(τi, τ_lo), max(τf, τ_hi))
+end
+
 function Base.show(io::IO, s::ObserverScreen)
     Nx, Ny = length(s.x_grid), length(s.y_grid)
     N = length(s.x⁰_samples)

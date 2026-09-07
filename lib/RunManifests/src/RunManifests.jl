@@ -333,10 +333,13 @@ end
     window_start(manifest) -> Float64
 
 The observer-time window start x⁰_start (raw solver units) — `[setup].x0_start` when the
-run recorded it, else the corner-anchored `:full`-window formula every solver used before
+run recorded it, else the LEGACY edge-anchored `:full`-window formula every solver used before
 recording it: `c·τi + hypot(Z, screen_hw + Rmax)` with [`screen_halfwidth`](@ref) and the
-`[setup]` window/geometry values (`Z` may be signed; only its distance enters). A `:narrow`
-window without a recorded start cannot be reconstructed and errors.
+`[setup]` window/geometry values (`Z` may be signed; only its distance enters). That formula
+reaches the screen's edge midpoint, not its corner (the 2026-09 fix anchors on
+`√2·screen_hw + Rmax` and always records `x0_start`, so it is reconstructed here verbatim as
+the runs actually used it — never "corrected"). A `:narrow` window without a recorded start
+cannot be reconstructed and errors.
 """
 function window_start(manifest::AbstractDict)
     st = get(manifest, "setup", Dict{String, Any}())
@@ -344,7 +347,7 @@ function window_start(manifest::AbstractDict)
     win = string(get(get(manifest, "config", Dict{String, Any}()), "window", "full"))
     win == "full" || error(
         "window_start: a :$win observer window records its start in [setup].x0_start; " *
-            "this manifest has none and the corner-anchor reconstruction only holds for :full"
+            "this manifest has none and the legacy edge-anchor reconstruction only holds for :full"
     )
     for k in ("τi", "Z", "Rmax")
         haskey(st, k) || error("window_start: [setup] is missing $(repr(k))")
