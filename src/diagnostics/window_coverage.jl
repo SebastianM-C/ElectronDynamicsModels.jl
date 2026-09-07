@@ -3,15 +3,17 @@
 #
 # Each GPU thread (pixel) marches only the observer samples inside its pixel's arrival window
 # `k_start:k_end` (kernel_newton.jl / kernel_rk4.jl) and silently returns when the window is
-# empty. The solver scripts anchor the window START at x⁰_start = c·τi + hypot(Z, hw + Rmax)
-# with hw the screen HALF-WIDTH — the edge midpoint, not the corner of a square screen (which
-# sits √2·hw out), so the extreme corner pixels see the farthest electrons only from sample
-# ≈ (√2−1)·hw·(hw+Rmax)/(Z·δx⁰) on: a negative `lead_margin` here (≈ −150 samples at the
-# production framing). Those are pre-pulse static-field samples, harmless for the radiation
-# analysis but real missing contributions. The END is not anchored at all: an observer window
-# that outlives a pixel's retarded image of τf drops that electron's tail contribution from
-# the cube — a source-side truncation nobody wants. This check is therefore a validity chip as
-# much as the exact "slots executed" input of the FLOP accounting.
+# empty. Until EDM PR #91 the solver scripts anchored the window START at
+# x⁰_start = c·τi + hypot(Z, hw + Rmax) with hw the screen HALF-WIDTH — the edge midpoint, not
+# the corner of a square screen (which sits √2·hw out), so the extreme corner pixels saw the
+# farthest electrons only from sample ≈ (√2−1)·hw·(hw+Rmax)/(Z·δx⁰) on: a negative
+# `lead_margin` here (≈ −150 samples at the production framing; pre-pulse static-field samples),
+# and the END was not anchored at all: an observer window that outlives a pixel's retarded image
+# of τf drops that electron's tail contribution from the cube. Since #91 the scripts anchor on
+# the corner (`observer_window_start`) and integrate a span covering the window
+# (`trajectory_span_for_window`), so a healthy run reports `ok = true` with small positive
+# margins; a negative margin now means a mis-sized window. This check is therefore a validity
+# chip as much as the exact "slots executed" input of the FLOP accounting.
 #
 # Exact verdict from five pixels per electron: for fixed τ the arrival offset
 # t_px = ψ(τ) + ρ²/(R + d³) (see `_window_edge`) is an increasing function of the transverse
