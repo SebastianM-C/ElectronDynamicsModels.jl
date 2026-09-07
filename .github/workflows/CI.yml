@@ -73,6 +73,30 @@ jobs:
       - uses: julia-actions/julia-runtest@v1
         with:
           project: lib/RunManifests
+  countedfloats:
+    name: CountedFloats - Julia ${{ matrix.version }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      actions: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v3
+      - uses: julia-actions/julia-buildpkg@v1
+        with:
+          project: lib/CountedFloats
+      - uses: julia-actions/julia-runtest@v1
+        with:
+          project: lib/CountedFloats
   docs:
     name: Documentation
     runs-on: ubuntu-latest
