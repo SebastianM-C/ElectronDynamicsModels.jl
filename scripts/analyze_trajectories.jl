@@ -230,6 +230,11 @@ function reconstruct(mfile)
     Rmax = Float64(setup["Rmax"])
     τi = Float64(setup["τi"])
     τf = Float64(setup["τf"])
+    # Solve span: runs since the window-anchor fix (2026-09) integrate a rest margin beyond the
+    # physics span so the observer window is covered at every pixel; reconstruct on the SAME span
+    # so the knot grid (and the spline) matches the production one. Legacy manifests: physics span.
+    τi_solve = Float64(get(setup, "τi_solve", τi))
+    τf_solve = Float64(get(setup, "τf_solve", τf))
     φ₀ = phi0_for(m)
     parent_run_id = get(prov, "run_id", "unknown")
     N = min(Nfull, N_CAP)
@@ -251,7 +256,7 @@ function reconstruct(mfile)
     # period T/(γ(1+β))); used instead of dense output for inverse runs.
     ω = 2π * c / λ
     saveat_kw = interp_saveat == "adaptive" ? (;) :
-        (; saveat = collect(τi:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τf))
+        (; saveat = collect(τi_solve:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τf_solve))
     inverse && Int(get(cfg, "bunch_nb", 0)) > 0 &&
         @warn "bunched inverse run (bunch_nb > 0): Δz offsets are NOT reconstructed — worldlines start unbunched" parent_run_id
 
@@ -267,8 +272,8 @@ function reconstruct(mfile)
     @named elec = ClassicalElectron(; laser)
     sys = mtkcompile(elec)
 
-    tspan = (τi, τf)
-    x⁰ = [u⁰_t * τi, 0.0, 0.0, u³_z * τi]
+    tspan = (τi_solve, τf_solve)
+    x⁰ = [u⁰_t * τi_solve, 0.0, 0.0, u³_z * τi_solve]
     u⁰ = [u⁰_t, 0.0, 0.0, u³_z]
     u0 = [sys.x => x⁰, sys.u => u⁰]
     prob = ODEProblem{false, SciMLBase.FullSpecialize}(
@@ -277,7 +282,7 @@ function reconstruct(mfile)
 
     # Initial transverse positions (sunflower scaled to Rmax) + per-electron initial radius.
     R₀ = sunflower(N, 2)
-    xμ = [[u⁰_t * τi, Rmax * p[1], Rmax * p[2], u³_z * τi] for p in R₀]
+    xμ = [[u⁰_t * τi_solve, Rmax * p[1], Rmax * p[2], u³_z * τi_solve] for p in R₀]
     r0 = [hypot(x[2], x[3]) for x in xμ]
 
     set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])

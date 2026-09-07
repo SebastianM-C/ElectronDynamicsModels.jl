@@ -55,6 +55,10 @@ a₀ = Float64(cfg["a0"])
 N = Int(cfg["N"])
 Rmax = Float64(setup["Rmax"])
 τi, τf = Float64(setup["τi"]), Float64(setup["τf"])
+# Solve span (runs since the window-anchor fix carry τi_solve/τf_solve ⊇ the physics span so the
+# window is covered at every pixel; the CPU reference must integrate the same span or its field
+# would lack the electron's static shelf at the window's tail). Legacy manifests: physics span.
+τi_solve, τf_solve = Float64(get(setup, "τi_solve", τi)), Float64(get(setup, "τf_solve", τf))
 Z = Float64(setup["Z"])
 N_samples = Int(cfg["N_samples"])
 spp = Int(cfg["samples_per_period"])
@@ -108,7 +112,7 @@ all(1 .<= sel .<= N) || error("EDM_TRACE_ELECTRONS out of 1:$N")
 sys = mtkcompile(elec)
 
 prob = ODEProblem{false, SciMLBase.FullSpecialize}(
-    sys, [sys.x => [u⁰_t * τi, 0.0, 0.0, u³_z * τi], sys.u => [u⁰_t, 0.0, 0.0, u³_z]], (τi, τf);
+    sys, [sys.x => [u⁰_t * τi_solve, 0.0, 0.0, u³_z * τi_solve], sys.u => [u⁰_t, 0.0, 0.0, u³_z]], (τi_solve, τf_solve);
     u0_constructor = SVector{8}, fully_determined = true
 )
 
@@ -124,7 +128,7 @@ function sunflower(n, α)
 end
 
 R₀ = Rmax * sunflower(N, 2)
-xμ = [[u⁰_t * τi, r..., u³_z * τi] for r in R₀]
+xμ = [[u⁰_t * τi_solve, r..., u³_z * τi_solve] for r in R₀]
 r0 = [hypot(x[2], x[3]) for x in xμ]
 
 # Solve only what the traces need: the full ensemble when the coherent sum is on,
@@ -139,7 +143,7 @@ end
 # Knots divide the PROPER-TIME carrier period T/(γ(1+β)) — the inverse script's convention;
 # γ=1, β=0 (thomson) reduces to the original T/knots spacing.
 saveat_kw = interp_saveat == "adaptive" ? (;) :
-    (; saveat = collect(τi:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τf))
+    (; saveat = collect(τi_solve:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τf_solve))
 t_traj = @elapsed sol = solve(
     EnsembleProblem(prob; prob_func, safetycopy = false), Vern9(), EnsembleThreads();
     reltol, abstol, trajectories = length(solve_idx), saveat_kw..., dtmax_kw...
