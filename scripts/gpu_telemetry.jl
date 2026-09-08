@@ -45,6 +45,39 @@ function gpu_manifest_section(backend, backend_name::AbstractString, n_threads::
     end
 end
 
+# ── GPM counters → [gpu].gpm_* ────────────────────────────────────────────────────────────────
+#
+# `with_gpm_sampler` (lib/GPUDiagnostics) runs a second child beside the telemetry sampler on GPUs
+# with GPU Performance Monitoring counters (NVIDIA Hopper and newer; elsewhere it is a no-op and
+# this adds nothing). Its rows carry what the busy percentage cannot: ACHIEVED SM
+# occupancy (to hold against the compile-time `kernel_occupancy`), FP64 / FP32 / tensor pipe
+# utilization and DRAM-bandwidth utilization. `gpm_stats` reduces them over all devices' rows;
+# every `<metric>_mean` / `_peak` lands as `gpm_<metric>_mean` / `_peak`, and the `_busy_mean`
+# variants (rows with sm_util ≥ 0.5 — the kernel-active part of the field window, without the
+# JIT / upload / drain idle diluting them) as `gpm_<metric>_busy_mean`, plus `gpm_samples`,
+# `gpm_busy_samples`, `gpm_sample_dt` and `gpm_first_sample_s` (the child's startup lag). The
+# per-tick series is the `gpmtrace_<tag>.tsv` beside the gputrace. Same contract as the other
+# helpers: a failure logs and leaves the manifest without the fields.
+function gpm_manifest_section!(gpu, telem)
+    gpu === nothing && return nothing
+    try
+        telem.ticks > 0 || return nothing
+        gpu["gpm_samples"] = telem.ticks
+        gpu["gpm_sample_dt"] = telem.dt
+        gpu["gpm_first_sample_s"] = telem.first_sample_s
+        gpu["gpm_sampler_starved"] = telem.starved
+        st = gpm_stats(telem)
+        for (k, v) in st
+            gpu["gpm_" * k] = k == "busy_samples" ? Int(v) : v
+        end
+        @info "GPM counters (field window)" samples = telem.ticks busy_samples = get(st, "busy_samples", 0) sm_occupancy_busy_mean = get(st, "sm_occupancy_busy_mean", NaN) fp64_util_busy_mean = get(st, "fp64_util_busy_mean", NaN) dram_bw_util_busy_mean = get(st, "dram_bw_util_busy_mean", NaN) sm_util_mean = get(st, "sm_util_mean", NaN)
+        return st
+    catch err
+        @warn "GPM reduction failed — omitting [gpu].gpm_* from the manifest" exception = err
+        return nothing
+    end
+end
+
 # ── Device-event kernel timing → [timing].kernel + [gpu].kernel_* + the kerneltimes TSV ──────────
 #
 # `LaunchTimer` (lib/GPUDiagnostics) records a device-event pair per kernel launch. It is the only

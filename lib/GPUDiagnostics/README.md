@@ -49,6 +49,31 @@ behind a backed-up kernel stream, or is suspended with the sleeping task by Juli
 while the host thread allocates. The child appends rows as it samples (the trace survives a crash)
 and stops cooperatively via a stopfile, or on its own if the parent dies.
 
+## GPM counters (NVIDIA Hopper and newer)
+
+```julia
+gpu_gpm_supported(backend)          # false on the CPU backend, AMD, and NVIDIA boards without GPM
+result, telem = with_gpm_sampler(backend, 1.0; devices = 1:2, tracefile = "gpmtrace.tsv") do
+    run_the_workload()
+end
+telem.columns                       # [:t_rel_s, :device, :sm_util, :sm_occupancy, :fp64_util, :dram_bw_util, …]
+gpm_column(telem, :sm_occupancy)    # achieved occupancy per row (fraction)
+gpm_stats(telem)                    # "<metric>_mean" / "_peak" / "_busy_mean" (rows with sm_util ≥ 0.5), "busy_samples"
+```
+
+GPU Performance Monitoring is NVML's hardware-counter aggregation on Hopper and newer GPUs — H100 /
+H200 / GH200 / B200 and, with recent drivers, consumer Blackwell (RTX 5090 on driver 580 verified;
+no profiling privileges needed): ACHIEVED SM occupancy — the number to hold against the
+compile-time theoretical occupancy of `kernel_resources` — FP64 / FP32 / FP16 / tensor / integer
+pipe utilization, DRAM-bandwidth utilization and PCIe / NVLink traffic, each averaged over the
+interval between two samples. Note that `fp64_util` is normalised to the SM's full-rate issue
+slots, not to the part's FP64 pipe: a saturated FP64 FMA chain reads ≈ 1.5 % on a 1/64-rate
+consumer board and correspondingly higher on datacenter parts. The sampler is again a child process, this time a Julia one
+(`bin/gpmtrace.jl`, started with the parent's julia binary and load path): `nvidia-smi` has no
+GPM query, and the child loads CUDA.jl for its NVML bindings only — no CUDA context, no device
+memory. It declares its own column header, so the parent parses whatever metric set the child
+emits. Where GPM is unsupported the function runs without a sampler and the telemetry is empty.
+
 ## Measured FP64 peak
 
 ```julia

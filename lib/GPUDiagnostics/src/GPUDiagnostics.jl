@@ -15,6 +15,10 @@ fallbacks so the plumbing (and its tests) run without a GPU.
 - **Out-of-process telemetry** — `with_gpu_sampler` runs a function while a child process
   samples power / utilization / VRAM per device into a TSV. In-process sampling wedges behind a
   backed-up kernel stream or is suspended by Julia's GC/timer coupling; a child is immune.
+- **GPM counters** — `with_gpm_sampler` / `gpu_gpm_supported` / `gpm_stats`: the same pattern
+  over NVIDIA's GPU Performance Monitoring counters (Hopper and newer): ACHIEVED SM
+  occupancy and per-pipe (FP64 / FP32 / tensor) utilization, DRAM-bandwidth utilization and
+  PCIe / NVLink traffic — what a coarse busy percentage cannot tell apart.
 - **Measured FP64 peak** — `measure_peak_fp64_flops` / `gpu_peak_fp64_flops`: a dependent-FMA-chain
   kernel gives the attainable vector FP64 rate of the device at the clocks it actually holds
   (never routed to matrix/tensor units); BLAS `peakflops` on the CPU backend.
@@ -37,11 +41,13 @@ export gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_arch,
     gpu_telemetry_child_cmd, thread_fill_occupancy,
     gpu_event, gpu_elapsed, LaunchTimer, launch_times, launch_lane, launch_tick, launch_tock!,
     with_gpu_sampler,
+    with_gpm_sampler, gpu_gpm_supported, gpu_gpm_child_cmd, gpm_stats, gpm_column,
     measure_peak_fp64_flops, gpu_peak_fp64_flops,
     CompiledKernel, compiled_kernels, kernel_resources
 
 include("device_api.jl")   # generics + CPU fallbacks + LaunchTimer; vendor methods in ext/
 include("sampler.jl")      # with_gpu_sampler: out-of-process telemetry child (bin/gputrace*.sh)
+include("gpm.jl")          # with_gpm_sampler: out-of-process GPM counter child (bin/gpmtrace.jl)
 include("peakflops.jl")    # FMA-chain FP64 peak probe
 include("resources.jl")    # compile-time resource report: registers / spills / LDS / occupancy
 

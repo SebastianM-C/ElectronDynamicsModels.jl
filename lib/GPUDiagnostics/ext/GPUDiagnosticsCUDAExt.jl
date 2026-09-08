@@ -51,6 +51,41 @@ function GD.gpu_telemetry_child_cmd(::CUDABackend, device_ids::AbstractVector{<:
     return `sh $script $(round(Int, 1000 * dt)) $(getpid()) $stopfile $specs`
 end
 
+# ── GPM (GPU Performance Monitoring) sampler hooks (src/gpm.jl) ─────────────────────────────
+# GPM = NVML's hardware-counter aggregation on Hopper and newer parts (achieved SM occupancy,
+# per-pipe utilization, DRAM bandwidth). The support query touches NVML only; the child is a
+# Julia process (bin/gpmtrace.jl — nvidia-smi has no GPM query) started with this process's
+# julia binary and LOAD_PATH so it can load CUDA.jl for the NVML bindings, and nothing else.
+function GD.gpu_gpm_supported(::CUDABackend, device_ids::AbstractVector{<:Integer} = 1:1)
+    try
+        NVML.has_nvml() || return false
+        cudevs = collect(CUDA.devices())
+        return all(device_ids) do i
+            1 <= i <= length(cudevs) || return false
+            dev = NVML.Device(CUDA.uuid(cudevs[i]))
+            sup = Ref(NVML.nvmlGpmSupport_t(NVML.NVML_GPM_SUPPORT_VERSION, 0))
+            NVML.nvmlGpmQueryDeviceSupport(dev, sup)
+            sup[].isSupportedDevice != 0
+        end
+    catch err
+        # NVML_ERROR_NOT_SUPPORTED / FUNCTION_NOT_FOUND on old drivers ⇒ simply no GPM
+        @debug "GPM support query failed" exception = err
+        return false
+    end
+end
+
+function GD.gpu_gpm_child_cmd(::CUDABackend, device_ids::AbstractVector{<:Integer},
+        dt::Real, stopfile::AbstractString)
+    script = joinpath(pkgdir(GD), "bin", "gpmtrace.jl")
+    cudevs = collect(CUDA.devices())
+    specs = ["GPU-$(CUDA.uuid(cudevs[i]))=$i" for i in device_ids]
+    # The child must resolve CUDA.jl exactly as this process did: hand it the expanded LOAD_PATH
+    # (project stack incl. the default environment), not just the active project.
+    load_path = join(Base.load_path(), Sys.iswindows() ? ';' : ':')
+    cmd = `$(Base.julia_cmd()) --startup-file=no --threads=1 $script $(Float64(dt)) $(getpid()) $stopfile $specs`
+    return addenv(cmd, "JULIA_LOAD_PATH" => load_path)
+end
+
 # ── Compile-time resource report (src/resources.jl hooks) ───────────────────────────────────
 # Inventory = the compiled-kernel cache of CUDA.jl's compiler (CUDACore from CUDA 6.3; the
 # same names live in CUDA itself before the split). Attributes via the public `registers` /

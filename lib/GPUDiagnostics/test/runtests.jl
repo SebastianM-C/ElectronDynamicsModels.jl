@@ -1,6 +1,7 @@
 using GPUDiagnostics
 using GPUDiagnostics: _fma_chain_reference, _fma_chain_kernel!, _PEAK_CHAINS
 using GPUDiagnostics: _static_workgroup_size, _parse_amdgpu_kernel_info, _compiled_kernel, _parse_ptxas_verbose
+using GPUDiagnostics: _parse_gpm_trace
 import KernelAbstractions as KA
 using KernelAbstractions: CPU, Backend
 using Test
@@ -77,6 +78,67 @@ struct NoVendorBackend <: Backend end
         @test !telem.starved
         rm(trace; force = true)
         Base.delete_method(only(methods(GPUDiagnostics.gpu_telemetry_child_cmd, (CPU, AbstractVector{<:Integer}, Real, AbstractString))))
+    end
+
+    @testset "with_gpm_sampler: unsupported ⇒ no child; synthetic child parsed; gpm_stats" begin
+        # capability query never throws; CPU / vendor-less ⇒ unsupported ⇒ f runs, telemetry empty
+        @test gpu_gpm_supported(CPU()) == false
+        @test gpu_gpm_supported(NoVendorBackend(), [1, 2]) == false
+        @test_throws ErrorException gpu_gpm_child_cmd(NoVendorBackend(), [1], 1.0, "stop")
+        r, telem = with_gpm_sampler(() -> 42, CPU(), 0.1)
+        @test r == 42 && !telem.supported && telem.ticks == 0 && size(telem.samples) == (0, 2)
+        @test telem.columns == [:t_rel_s, :device] && telem.trace === nothing && isnan(telem.first_sample_s)
+        @test isempty(gpm_stats(telem)) && isempty(gpm_column(telem, :sm_util))
+        # an exception inside f propagates (and the sampler bookkeeping does not mask it)
+        @test_throws ArgumentError with_gpm_sampler(() -> throw(ArgumentError("boom")), CPU(), 0.1)
+
+        # A fake GPM child for the CPU backend: declares its own columns, two devices per tick,
+        # a nan metric, a torn row, an out-of-range utilization row and a stray comment line.
+        GPUDiagnostics.gpu_gpm_supported(::CPU, ids::AbstractVector{<:Integer}) = true
+        GPUDiagnostics.gpu_gpm_child_cmd(::CPU, ids::AbstractVector{<:Integer}, dt::Real, stop::AbstractString) =
+            `sh -c $("printf '# epoch_s\\tdevice\\tsm_util\\tsm_occupancy\\tfp64_util\\tpcie_tx_MiBps\\n'; " *
+                     "sleep 0.15; i=0; while [ ! -e '$stop' ] && [ \$i -lt 50 ]; do now=\$(date +%s.%N); " *
+                     "printf '%s\\t1\\t0.9\\t0.3\\t0.8\\t12.5\\n' \$now; " *
+                     "printf '%s\\t2\\t0.1\\t0.1\\tnan\\t0.0\\n' \$now; " *
+                     "printf 'torn\\trow\\n'; printf '# noise\\n'; printf '%s\\t1\\t7.0\\t0.3\\t0.8\\t1\\n' \$now; " *
+                     "i=\$((i+1)); sleep $dt; done")`
+        trace = tempname() * ".tsv"
+        r, telem = with_gpm_sampler(CPU(), 0.05; devices = 1:2, tracefile = trace) do
+            sleep(0.6); :done
+        end
+        @test r == :done && telem.supported
+        @test telem.columns == [:t_rel_s, :device, :sm_util, :sm_occupancy, :fp64_util, :pcie_tx_MiBps]
+        @test telem.ticks >= 3 && size(telem.samples) == (2 * telem.ticks, 6)
+        @test telem.trace == trace && isfile(trace) && startswith(readline(trace), "# epoch_s\tdevice")
+        @test 0.1 <= telem.first_sample_s < 0.6          # the child's startup shows up here
+        @test all(∈((1.0, 2.0)), gpm_column(telem, :device))
+        @test all(v -> 0 <= v <= 1, gpm_column(telem, :sm_util))   # the 7.0 row was dropped
+        @test count(isnan, gpm_column(telem, :fp64_util)) == telem.ticks   # nan metric kept
+        @test isempty(gpm_column(telem, :no_such_column))
+        @test !telem.starved
+        # reducer arithmetic: means/peaks skip nan; busy rows = sm_util ≥ 0.5 = device 1 only
+        st = gpm_stats(telem)
+        @test st["busy_samples"] == telem.ticks
+        @test st["sm_util_mean"] ≈ 0.5 && st["sm_util_peak"] ≈ 0.9 && st["sm_util_busy_mean"] ≈ 0.9
+        @test st["sm_occupancy_mean"] ≈ 0.2 && st["sm_occupancy_busy_mean"] ≈ 0.3
+        @test st["fp64_util_mean"] ≈ 0.8 && st["fp64_util_peak"] ≈ 0.8 && st["fp64_util_busy_mean"] ≈ 0.8
+        @test st["pcie_tx_MiBps_mean"] ≈ 6.25 && st["pcie_tx_MiBps_peak"] ≈ 12.5
+        @test !haskey(st, "t_rel_s_mean") && !haskey(st, "device_mean")
+        # a different busy column / threshold
+        st2 = gpm_stats(telem; busy_column = :sm_occupancy, busy_threshold = 0.05)
+        @test st2["busy_samples"] == 2 * telem.ticks && st2["sm_util_busy_mean"] ≈ 0.5
+        rm(trace; force = true)
+
+        # a child that dies before writing any row ⇒ empty telemetry, no trace left behind
+        Base.delete_method(only(methods(GPUDiagnostics.gpu_gpm_child_cmd, (CPU, AbstractVector{<:Integer}, Real, AbstractString))))
+        GPUDiagnostics.gpu_gpm_child_cmd(::CPU, ids::AbstractVector{<:Integer}, dt::Real, stop::AbstractString) =
+            `sh -c "exit 0"`
+        trace2 = tempname() * ".tsv"
+        r, telem = @test_logs (:warn, r"no samples") match_mode = :any with_gpm_sampler(() -> 1, CPU(), 0.05; tracefile = trace2)
+        @test r == 1 && telem.supported && telem.ticks == 0 && !isfile(trace2)
+        Base.delete_method(only(methods(GPUDiagnostics.gpu_gpm_child_cmd, (CPU, AbstractVector{<:Integer}, Real, AbstractString))))
+        Base.delete_method(only(methods(GPUDiagnostics.gpu_gpm_supported, (CPU, AbstractVector{<:Integer}))))
+        @test gpu_gpm_supported(CPU()) == false
     end
 
     @testset "measured FP64 peak: FMA-chain probe (CPU backend) + host peakflops" begin

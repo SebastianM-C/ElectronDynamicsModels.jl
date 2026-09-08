@@ -26,7 +26,7 @@
 #   • raw rocm/pytorch crash-loops without a start CMD → we inject a dockerStartCmd sshd bootstrap
 #   • Secure Cloud assigns the public IP only once the container is stable → wait_ready polls for it
 #
-# config.env: RUNPOD_DC, RUNPOD_ROCM_IMAGE/RUNPOD_CUDA_IMAGE, RUNPOD_VOLUME_NAME/GB,
+# config.env: RUNPOD_DC, RUNPOD_CLOUD_TYPE, RUNPOD_ROCM_IMAGE/RUNPOD_CUDA_IMAGE, RUNPOD_VOLUME_NAME/GB,
 # RUNPOD_REPO_URL/BRANCH, RUNPOD_DEPOT_CACHE/RUNPOD_DEPOT_KEY. Secrets external: API token at
 # ~/.config/runpod/token; ntfy via NTFY_ENV. The pod authorizes $RUNPOD_SSH_PUBKEY (a key you can
 # auth as, e.g. served by your ssh agent; ControlMaster ⇒ one auth/run). RUNPOD_SSH_KEY (optional)
@@ -57,6 +57,8 @@ DC="${RUNPOD_DC-EU-RO-1}"   # unset ⇒ EU-RO-1; EXPLICIT empty ⇒ unpinned (sc
 ROCM_IMAGE="${RUNPOD_ROCM_IMAGE:-rocm/pytorch@sha256:4449f856653602317e4101a76fce599c7fcd58ccec2e539951fce5f73083179e}"
 CUDA_IMAGE="${RUNPOD_CUDA_IMAGE:-runpod/pytorch:1.0.2-cu1281-torch280-ubuntu2404}"
 DISK="${RUNPOD_DISK_GB:-120}"
+CLOUD="${RUNPOD_CLOUD_TYPE:-SECURE}"   # SECURE (default) | COMMUNITY — community hosts are cheaper; the
+[[ "$CLOUD" =~ ^(SECURE|COMMUNITY)$ ]] || { echo "RUNPOD_CLOUD_TYPE must be SECURE or COMMUNITY, got '$CLOUD'" >&2; exit 64; }   # create call already requires a public IP
 GPUS="${RUNPOD_GPU_COUNT:-1}"   # GPUs per pod (1–8; the solver shards electrons across all visible devices)
 [[ "$GPUS" =~ ^[1-8]$ ]] || { echo "RUNPOD_GPU_COUNT must be 1..8, got '$GPUS'" >&2; exit 64; }
 VOLNAME="${RUNPOD_VOLUME_NAME:-edm-vol}"; VOLGB="${RUNPOD_VOLUME_GB:-0}"
@@ -182,8 +184,8 @@ grab_pod() {
             BACKEND="${prof%% *}"; IMAGE="${prof#* }"
             resp="$(curl --fail-with-body -sS -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" -X POST "$API/pods" \
                 -d "$(jq -n --arg gpu "$gpu" --arg img "$IMAGE" --arg pub "$PUBKEY" --arg vol "${VOLID:-}" \
-                        --arg dc "$DC" --arg start "$START_CMD" --argjson disk "$DISK" --argjson gpus "$GPUS" \
-                    '{name:"edm-runpod",imageName:$img,gpuTypeIds:[$gpu],cloudType:"SECURE",gpuCount:$gpus,
+                        --arg dc "$DC" --arg cloud "$CLOUD" --arg start "$START_CMD" --argjson disk "$DISK" --argjson gpus "$GPUS" \
+                    '{name:"edm-runpod",imageName:$img,gpuTypeIds:[$gpu],cloudType:$cloud,gpuCount:$gpus,
                       containerDiskInGb:$disk,
                       ports:["22/tcp"],supportPublicIp:true,env:{PUBLIC_KEY:$pub}}
                      + (if ($img|startswith("runpod/")) then {}
@@ -499,7 +501,7 @@ run_campaign() {   # run <campaign.sh>... — several files = concurrent lanes o
         trap - ERR    # pod up + warm; a campaign hiccup below must NOT auto-destroy it
     fi
     push_orchestration
-    notify hourglass_flowing_sand default "EDM runpod started" "$LANES on $POD ($BACKEND @$DC, ${GPUS}× GPU)"
+    notify hourglass_flowing_sand default "EDM runpod started" "$LANES on $POD ($BACKEND @${DC:-any} $CLOUD, ${GPUS}× GPU)"
     ledger "$POD" campaign_start "campaign=$CAMPAIGN lanes=$LANES dir=$OUT"
     local i; for i in "${!LANE_STEM[@]}"; do launch_lane "$i"; done
     start_drainer || notify warning high "EDM drainer NOT started" "$LANES on $POD: cubes stay on the pod only; teardown gate will hold them"

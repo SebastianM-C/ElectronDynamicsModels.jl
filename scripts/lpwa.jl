@@ -222,6 +222,9 @@ ndev = gpu_device_count(gpu_backend)
 # Sample GPU power/util/VRAM across the accumulate_field window on all sharded devices
 # (→ manifest [gpu] stats + the gputrace TSV time series; see gpu_telemetry.jl).
 gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
+# GPM counters (achieved occupancy, FP64/DRAM-bandwidth utilization) on GPUs that have them
+# (NVIDIA Hopper and newer; a no-op elsewhere) → [gpu].gpm_* + the gpmtrace TSV.
+gpmtracefile = joinpath(OUTDIR, "gpmtrace_$(RUN_TAG).tsv")
 # Device-event kernel clock: a per-launch event pair on each device's stream — the only kernel
 # timer that works with the async electron loop (→ [timing].kernel, [gpu].kernel_*, kerneltimes TSV).
 launch_timer = LaunchTimer()
@@ -230,19 +233,21 @@ kerneltimesfile = joinpath(OUTDIR, "kerneltimes_$(RUN_TAG).tsv")
 # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
 window_cov = check_window_coverage(trajs, screen)
 t_field = @elapsed begin
-    fld, gpu_telem = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT;
+    (fld, gpm_telem), gpu_telem = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT;
             devices = 1:ndev, tracefile = gputracefile) do
-        if ndev > 1
-            @info "sharding electrons across $ndev devices"
-            accumulate_field_sharded(
-                trajs, screen, GPUKernelRK4(), gpu_backend;
-                mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC, timer = launch_timer
-            )
-        else
-            accumulate_field(
-                trajs, screen, GPUKernelRK4(), gpu_backend;
-                mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC, timer = launch_timer
-            )
+        with_gpm_sampler(gpu_backend, GPU_SAMPLE_DT; devices = 1:ndev, tracefile = gpmtracefile) do
+            if ndev > 1
+                @info "sharding electrons across $ndev devices"
+                accumulate_field_sharded(
+                    trajs, screen, GPUKernelRK4(), gpu_backend;
+                    mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC, timer = launch_timer
+                )
+            else
+                accumulate_field(
+                    trajs, screen, GPUKernelRK4(), gpu_backend;
+                    mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC, timer = launch_timer
+                )
+            end
         end
     end
 end
@@ -341,6 +346,7 @@ outputs = Dict{String, Any}(
     "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
 )
 gpu_telem.trace === nothing || (outputs["gpu_trace"] = basename(gpu_telem.trace))
+gpm_telem.ticks > 0 && gpm_telem.trace !== nothing && (outputs["gpm_trace"] = basename(gpm_telem.trace))
 if !SKIP_POST
     outputs["harmonic_maps"] = basename(hprod.hmapsfile)
     outputs["plots"] = basename.(plotfiles)
@@ -359,6 +365,7 @@ sharding = Dict{String, Any}("electrons" => ndev)
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
 gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
 record_kernel_timing!(timing, gpu, launch_timer; tracefile = kerneltimesfile)
+gpm_manifest_section!(gpu, gpm_telem)   # [gpu].gpm_* (achieved occupancy / pipe utilization; GPM-capable NVIDIA only)
 # Compile-time resource report of the field kernel that ran → [gpu].kernel_registers/_shared_mem_bytes/
 # _occupancy/… (read back from the vendor's compiled-kernel cache; see gpu_telemetry.jl).
 record_kernel_resources!(gpu, gpu_backend)
