@@ -128,6 +128,48 @@ function gpu_manifest_section(backend, backend_name::AbstractString, n_threads::
     end
 end
 
+# ── Device-event kernel timing → [timing].kernel + [gpu].kernel_* + the kerneltimes TSV ──────────
+#
+# `LaunchTimer` (src/gpu_api.jl) records a device-event pair per kernel launch. It is the only
+# kernel clock that works with the production `sync_per_electron = false`: [timing].field is the
+# whole phase (first-launch JIT, per-electron spline conversion + upload, the drain, the sampler's
+# stop wait, and the slowest shard), while [timing].kernel is the BUSIEST device's summed kernel
+# seconds — the denominator for achieved FLOP/s and the clean multi-device scaling metric
+# (scaling_report.jl prefers it over the ≥ 99 %-utilization gputrace proxy). Per-device sums,
+# launch counts, first-launch (JIT) and median/max per-launch seconds go to [gpu]; the full
+# per-launch series to `kerneltimes_<tag>.tsv` (device, launch, seconds). Same contract as the
+# other helpers: a failure logs and leaves the manifest without the fields.
+function record_kernel_timing!(timing::AbstractDict, gpu, timer; tracefile = nothing)
+    try
+        lt = launch_times(timer)
+        isempty(lt) && return nothing
+        devs = sort!(collect(keys(lt)))
+        per = [lt[d] for d in devs]
+        med(v) = (s = sort(v); n = length(s); isodd(n) ? s[(n + 1) ÷ 2] : (s[n ÷ 2] + s[n ÷ 2 + 1]) / 2)
+        timing["kernel"] = maximum(sum, per)
+        if gpu !== nothing
+            gpu["kernel_devices"] = devs
+            gpu["kernel_s"] = map(sum, per)
+            gpu["kernel_launches"] = map(length, per)
+            gpu["kernel_first_s"] = map(first, per)
+            gpu["kernel_median_s"] = map(med, per)
+            gpu["kernel_max_s"] = map(maximum, per)
+        end
+        if tracefile !== nothing
+            open(tracefile, "w") do io
+                println(io, "# device\tlaunch\tkernel_s")
+                for (d, v) in zip(devs, per), (i, s) in enumerate(v)
+                    println(io, d, '\t', i, '\t', s)
+                end
+            end
+        end
+        return timing["kernel"]
+    catch err
+        @warn "kernel timing unavailable — manifest keeps the phase wall time only" exception = err
+        return nothing
+    end
+end
+
 # Sampler cadence (s); coarse is fine — field runs are seconds→hours. Override with EDM_GPU_SAMPLE_DT.
 const GPU_SAMPLE_DT = parse(Float64, get(ENV, "EDM_GPU_SAMPLE_DT", "1.0"))
 

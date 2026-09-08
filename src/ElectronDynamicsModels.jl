@@ -51,6 +51,7 @@ export ReferenceFrame, Worldline,
     gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_power, gpu_utilization,
     gpu_memory_info, gpu_telemetry_child_cmd, gpu_sm_count, gpu_max_threads_per_sm,
     gpu_arch, gpu_peak_fp64_flops, measure_peak_fp64_flops, thread_fill_occupancy,
+    gpu_event, gpu_elapsed, LaunchTimer, launch_times,
     accumulate_field_sharded,
     window_coverage, flop_profile,
     hann, blackman_harris

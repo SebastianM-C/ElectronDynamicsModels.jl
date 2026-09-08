@@ -219,6 +219,7 @@ per-slot error does not accumulate along the march, so accuracy is set by the
 convergence of the last Newton step alone.
 
 `sync_per_electron` as in the `GPUKernelRK4` method.
+`timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)).
 """
 function accumulate_potential(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -227,6 +228,7 @@ function accumulate_potential(
         backend::Backend;
         n_iters::Int = 2,
         sync_per_electron::Bool = true,
+        timer = nothing,
     )
     n_iters ≥ 1 || throw(ArgumentError(
         "n_iters must be ≥ 1 — n_iters = 0 degrades to an unchecked Euler march"))
@@ -246,17 +248,20 @@ function accumulate_potential(
 
     # Iteration target: one element per pixel. Sentinel array; never read.
     pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny))
+    lane = _timer_lane(timer, backend)
 
     for traj in trajs
         gpu_traj = Adapt.adapt(backend, to_gpu(traj))
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
+        e0 = _tick(timer, backend)
         _gpu_newton_one_electron!(
             A_buf, gpu_traj,
             screen.x_grid, screen.y_grid, screen.z,
             t_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_iters,
         )
+        _tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)
         finalize(gpu_traj.itp.t)
         finalize(gpu_traj.itp.h)
@@ -344,7 +349,7 @@ end
 Field counterpart of the `GPUKernelNewton` [`accumulate_potential`](@ref)
 method: per-slot Newton light-cone solve instead of the RK4 retarded-time
 march, otherwise identical in buffers, `mode`, and streaming to the
-`GPUKernelRK4` [`accumulate_field`](@ref) method.
+`GPUKernelRK4` [`accumulate_field`](@ref) method. `timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)).
 """
 function accumulate_field(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -355,6 +360,7 @@ function accumulate_field(
         mode::Val = Val(:split),
         sync_per_electron::Bool = true,
         sink = nothing,
+        timer = nothing,
     )
     n_iters ≥ 1 || throw(ArgumentError(
         "n_iters must be ≥ 1 — n_iters = 0 degrades to an unchecked Euler march"))
@@ -380,17 +386,20 @@ function accumulate_field(
     δx⁰ = step(screen.x⁰_samples)
 
     pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny))
+    lane = _timer_lane(timer, backend)
 
     for traj in trajs
         gpu_traj = Adapt.adapt(backend, to_gpu(traj; with_acceleration = true))
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
+        e0 = _tick(timer, backend)
         _gpu_newton_field_one_electron!(
             mode, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
             screen.x_grid, screen.y_grid, screen.z,
             t_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_iters,
         )
+        _tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)
         finalize(gpu_traj.itp.t)
         finalize(gpu_traj.itp.h)

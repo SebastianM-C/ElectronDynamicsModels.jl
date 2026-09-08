@@ -49,7 +49,9 @@ struct Row
     D::Int; N::Int; Nx::Int; Ns::Int
     t_field::Float64; t_total::Float64; t_traj::Float64
     device::String
-    t_kernel::Float64   # busiest device's seconds at ≥ 99 % utilization (NaN without a trace)
+    t_kernel::Float64   # busiest device's kernel seconds: [timing].kernel (device events) or, for
+                        # older manifests, the ≥ 99 %-utilization gputrace proxy (NaN without either)
+    kernel_src::String  # "events" | "trace" | "—"
     flop_total::Float64 # algorithmic FLOPs of the whole run (NaN if uncostable)
     ai::Float64         # arithmetic intensity [FLOP/B] of the kernel (device-buffer traffic)
     peak::Float64       # vector FP64 peak of the device [FLOP/s] (NaN if unknown)
@@ -80,7 +82,12 @@ function model_flops(cfg, N, Ns, Nx)
     return p.flop_per_slot * N * Ns * Nx^2 + p.flop_per_pixel_launch * N * Nx^2, p.arithmetic_intensity
 end
 
-# Kernel-active seconds from a gputrace TSV: per device, count rows with compute_util ≥ 0.99,
+# Kernel-active seconds. Manifests written with the device-event timer carry the busiest
+# device's exact kernel seconds in [timing].kernel; older ones fall back to the gputrace proxy.
+kernel_seconds(tm, dir, id) = haskey(tm, "kernel") ? (Float64(tm["kernel"]), "events") :
+    (t = kernel_active(dir, id); (t, isnan(t) ? "—" : "trace"))
+
+# Proxy from a gputrace TSV: per device, count rows with compute_util ≥ 0.99,
 # skipping rows that are torn (≠ 6 fields) or implausible (util ∉ [0,1], VRAM > 1 TB); the
 # busiest device sets the cell's kernel time (sharded devices finish within seconds of each
 # other, so max ≈ every device's).
@@ -136,7 +143,7 @@ for dir in args
         push!(rows, Row(id, get(labels, id, id[1:8]), group, dir,
             D, N, Nx, Ns,
             Float64(tm["field"]), Float64(get(tm, "total", NaN)), Float64(get(tm, "trajectories", NaN)), dev,
-            kernel_active(dir, id), flop_total, ai, peak, src))
+            kernel_seconds(tm, dir, id)..., flop_total, ai, peak, src))
     end
 end
 isempty(rows) && error("no manifests with [timing].field under $(join(args, ", "))")
@@ -152,6 +159,7 @@ fmt_t(s) = isnan(s) ? "—" : s < 3600 ? @sprintf("%.0f s", s) : @sprintf("%.2f 
 fmt_pct(x) = isnan(x) ? "—" : @sprintf("%.2f %%", 100x)
 fmt_f(x) = isnan(x) ? "—" : @sprintf("%.1f", x)
 mark(r) = r.flops_src == "model" ? "*" : ""
+kmark(r) = r.kernel_src == "trace" ? "†" : ""
 
 io = IOBuffer()
 println(io, "# GPU-count scaling report\n")
@@ -166,12 +174,14 @@ for g in groups
     println(io, "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for r in rs
         @printf(io, "| %s | %s | %d | %d | %d | %d | %s | %s | %s | %s | %.3e / %s | %s / %s%s | %s / %s | %s |\n",
-            r.label, r.device, r.D, r.N, r.Nx, r.Ns, fmt_t(r.t_field), fmt_t(r.t_kernel), fmt_t(r.t_total), fmt_t(r.t_traj), thr(r), fmt_e(thrk(r)),
+            r.label, r.device, r.D, r.N, r.Nx, r.Ns, fmt_t(r.t_field), fmt_t(r.t_kernel) * kmark(r), fmt_t(r.t_total), fmt_t(r.t_traj), thr(r), fmt_e(thrk(r)),
             fmt_e(fl(r)), fmt_e(flk(r)), mark(r), fmt_pct(pk(fl(r), r)), fmt_pct(pk(flk(r), r)), fmt_f(r.ai))
     end
     println(io)
     any(r -> r.flops_src == "model", rs) &&
         println(io, "`*` FLOPs modelled from [config] over the nominal slot count (manifest predates the [flops] section).\n")
+any(r -> r.kernel_src == "trace", rows) &&
+    println(io, "`†` kernel-active time from the gputrace ≥ 99 %-utilization proxy (manifest predates [timing].kernel).\n")
     length(Ds) > 1 || continue
     base = filter(r -> r.D == minimum(Ds), rs)
     length(base) == 1 || continue
@@ -184,7 +194,7 @@ for g in groups
         for r in rs
             ek = isnan(r.t_kernel) || isnan(b.t_kernel) ? "—" : @sprintf("%.2f", b.t_kernel / r.t_kernel)
             @printf(io, "| %d | %d | %s | %.2f | %s | %s | %s | %.2f |\n", r.D, r.N, fmt_t(r.t_field), b.t_field / r.t_field,
-                fmt_t(r.t_kernel), ek, fmt_t(r.t_total), b.t_total / r.t_total)
+                fmt_t(r.t_kernel) * kmark(r), ek, fmt_t(r.t_total), b.t_total / r.t_total)
         end
         println(io)
     elseif all(r -> r.N == b.N && r.Nx == b.Nx && r.Ns == b.Ns, rs)
@@ -196,7 +206,7 @@ for g in groups
             sp = b.t_field / r.t_field; ideal = r.D / b.D
             spk = isnan(r.t_kernel) || isnan(b.t_kernel) ? NaN : b.t_kernel / r.t_kernel
             @printf(io, "| %d | %s | %.2f | %.2f | %s | %s | %s | %s | %.2f |\n", r.D, fmt_t(r.t_field), sp, sp / ideal,
-                fmt_t(r.t_kernel), isnan(spk) ? "—" : @sprintf("%.2f", spk), isnan(spk) ? "—" : @sprintf("%.2f", spk / ideal),
+                fmt_t(r.t_kernel) * kmark(r), isnan(spk) ? "—" : @sprintf("%.2f", spk), isnan(spk) ? "—" : @sprintf("%.2f", spk / ideal),
                 fmt_t(r.t_total), b.t_total / r.t_total)
         end
         println(io)

@@ -334,6 +334,31 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         @test ElectronDynamicsModels._shard_indices(2, 3) == [1:1, 2:2]   # empty shards dropped
     end
 
+    @testset "LaunchTimer: one event pair per launch, results untouched" begin
+        # Device-event kernel timing (src/gpu_api.jl). On the CPU backend the events are host
+        # clocks (kernels are synchronous), so the plumbing — one pair per electron, keyed by
+        # device, shared safely across the sharded driver's tasks — is testable without a GPU.
+        e0 = gpu_event(CPU()); sleep(0.01); e1 = gpu_event(CPU())
+        @test 0.005 < gpu_elapsed(e0, e1) < 5.0
+        @test isempty(launch_times(LaunchTimer()))
+        for (alg, kw) in ((GPUKernelRK4(), (; n_substeps = 2)), (GPUKernelNewton(), (; n_iters = 2)))
+            ref = accumulate_field(trajs, screen, alg, CPU(); kw...)
+            t = LaunchTimer()
+            got = accumulate_field(trajs, screen, alg, CPU(); timer = t, kw...)
+            @test all(k -> getproperty(got, k) == getproperty(ref, k), propertynames(ref))
+            lt = launch_times(t)
+            @test collect(keys(lt)) == [1]
+            @test length(lt[1]) == length(trajs) && all(>(0), lt[1])
+            # sharded: both tasks run on device 1 → one lane with every launch (locked pushes)
+            t = LaunchTimer()
+            accumulate_field_sharded(trajs, screen, alg, CPU(); devices = [1, 1], timer = t, kw...)
+            @test length(launch_times(t)[1]) == length(trajs)
+            t = LaunchTimer()
+            accumulate_potential(trajs, screen, alg, CPU(); timer = t, kw...)
+            @test length(launch_times(t)[1]) == length(trajs)
+        end
+    end
+
     @testset "GPUKernelNewton field matches reference (split E/B)" begin
         # Field path through the Newton light-cone kernel, same setup as the
         # RK4 field test above.
