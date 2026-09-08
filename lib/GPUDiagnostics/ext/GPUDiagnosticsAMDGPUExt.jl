@@ -151,4 +151,56 @@ function GD._kernel_isa_info(::ROCBackend, ck::GD.CompiledKernel{<:AMDGPU.Runtim
     end
 end
 
+
+# ── Static instruction mix (src/instruction_mix.jl hook) ────────────────────────────────────
+# Native: the ISA text `code_native` prints for the kernel's own compile (AMDGPU.jl compiles
+# every kernel `always_inline`, so one function). Cross-target: the same method instance
+# compiled through GPUCompiler with a `GCNCompilerTarget` for the requested ISA — HIP's own
+# `compiler_config` recipe (features from the `gfx…:feat+` string, wave64 on GCN/CDNA, wave32
+# on RDNA, unsafe FP atomics, always_inline) minus the device. The device libraries are
+# per-ISA bitcode shipped with the ROCm artifact (`oclc_isa_version_<isa>.bc`), so linking
+# needs no hardware; but `link_device_libs!` caches the OCLC ISA-version library under the
+# ISA-agnostic key "oclc", which would hand a gfx942 compile the gfx1100 constants after a
+# native compile — the entry is evicted around the cross-compile (under the compiler lock)
+# and restored afterwards.
+const _GPUC = AMDGPU.GPUCompiler
+
+_wave64_default(dev_isa::AbstractString) = startswith(dev_isa, "gfx9")   # GCN/CDNA are wave64-only; HIP compiles RDNA wave32
+
+function GD._kernel_machine_code(::ROCBackend, ck::GD.CompiledKernel{<:AMDGPU.Runtime.HIPKernel}, target)
+    k = ck.kernel
+    TT = typeof(k).parameters[2]
+    io = IOBuffer()
+    if target === nothing
+        AMDGPU.code_native(io, k.f, TT; kernel = true, raw = true, dump_module = true)
+        text = String(take!(io))
+        return (; text, vendor = :amd, isa = _gfx_name(), native = true, registers = _isa_vgprs(text))
+    end
+    dev_isa, features = AMDGPU.Compiler.parse_llvm_features(String(target))
+    wave64 = _wave64_default(dev_isa)
+    features = (isempty(features) ? "" : features * ",") *
+        (wave64 ? "-wavefrontsize32,+wavefrontsize64" : "+wavefrontsize32,-wavefrontsize64")
+    tgt = _GPUC.GCNCompilerTarget(; dev_isa, features)
+    params = AMDGPU.Compiler.HIPCompilerParams(wave64, true)
+    config = _GPUC.CompilerConfig(tgt, params; kernel = true, always_inline = true)
+    job = _GPUC.CompilerJob(_GPUC.methodinstance(typeof(k.f), TT), config)
+    libs = AMDGPU.Compiler.DEVICE_LIBS
+    Base.@lock AMDGPU.Compiler.hipfunction_lock begin
+        saved = pop!(libs, "oclc", nothing)
+        try
+            _GPUC.code_native(io, job; raw = true, dump_module = true)
+        finally
+            delete!(libs, "oclc")
+            saved === nothing || (libs["oclc"] = saved)
+        end
+    end
+    text = String(take!(io))
+    return (; text, vendor = :amd, isa = dev_isa, native = dev_isa == _gfx_name(), registers = _isa_vgprs(text))
+end
+
+function _isa_vgprs(text::AbstractString)
+    info = GD._parse_amdgpu_kernel_info(text)
+    return get(info, "vgpr_count", nothing)
+end
+
 end

@@ -247,4 +247,37 @@ function _ptxas_report(backend::CUDABackend, k::CUDA.HostKernel{F, TT}, workgrou
     end
 end
 
+
+# ── Static instruction mix (src/instruction_mix.jl hook) ────────────────────────────────────
+# CUDA.jl's `code_sass` disassembles the cubin from a CUPTI module-load callback, i.e. it
+# LOADS the module on the current device — impossible for a cubin of another architecture.
+# So the job is compiled here directly (`CUDACore.compile`: LLVM → PTX → the bundled ptxas →
+# cubin, no device involved) and the bundled `nvdisasm` reads the cubin. The compiler config
+# is the kernel's own (`always_inline` from the backend, `maxthreads` = the static workgroup
+# size, the runtime's default `sm_NNa` for the current device) or, for `target = "sm_90"`,
+# the same with `arch` overridden; ptxas's `.sectioninfo @"SHI_REGISTERS=N"` gives the
+# register count to check against the runtime attribute.
+const _GPUC = _CC.GPUCompiler
+
+function GD._kernel_machine_code(backend::CUDABackend, ck::GD.CompiledKernel{<:CUDA.HostKernel}, target)
+    k = ck.kernel
+    TT = typeof(k).parameters[2]
+    kw = ck.workgroup_size === nothing ? (;) : (; maxthreads = Int(ck.workgroup_size))
+    arch_kw = target === nothing ? (;) : (; arch = String(target))
+    config = _CC.compiler_config(CUDA.device(); kernel = true, always_inline = backend.always_inline, kw..., arch_kw...)
+    job = _GPUC.CompilerJob(_GPUC.methodinstance(typeof(k.f), TT), config)
+    compiled = _CC.compile(job)
+    cubin = tempname(; cleanup = false) * ".cubin"
+    write(cubin, compiled.image)
+    text = try
+        read(`$(_CC.CUDA_Compiler.nvdisasm()) --print-code $cubin`, String)
+    finally
+        rm(cubin; force = true)
+    end
+    isa = _CC.cpu_name(config.params.sm)
+    m = match(r"SHI_REGISTERS=(\d+)", text)
+    return (; text, vendor = :nvidia, isa, native = target === nothing,
+        registers = m === nothing ? nothing : parse(Int, m[1]))
+end
+
 end

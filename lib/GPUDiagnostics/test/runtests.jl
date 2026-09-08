@@ -1,6 +1,7 @@
 using GPUDiagnostics
 using GPUDiagnostics: _fma_chain_reference, _fma_chain_kernel!, _PEAK_CHAINS
 using GPUDiagnostics: _static_workgroup_size, _parse_amdgpu_kernel_info, _compiled_kernel, _parse_ptxas_verbose
+using GPUDiagnostics: _classify_amd, _classify_sass, _parse_machine_code, _natural_loops, FP64_CLASSES
 import KernelAbstractions as KA
 using KernelAbstractions: CPU, Backend
 using Test
@@ -310,5 +311,227 @@ struct NoVendorBackend <: Backend end
         @test r2.active_warps_per_sm == 32 && r2.occupancy ≈ 0.5
         @test_throws ArgumentError kernel_resources(FakeGPU(), ck; block_size = 0)
         @test length(kernel_resources(FakeGPU(), "StaticSize")) == 1
+    end
+
+    @testset "static instruction mix: classifiers, parsers, loop nest, FP64 floor" begin
+        # AMD mnemonics (encoding suffixes dropped; RDNA dual-issue by its first op)
+        amd_expect = ("v_fma_f64" => :fp64_fma, "v_fmac_f64_e32" => :fp64_fma, "v_div_fmas_f64" => :fp64_fma,
+            "v_add_f64" => :fp64_add, "v_sub_f64_e64" => :fp64_add, "v_mul_f64" => :fp64_mul,
+            "v_rcp_f64_e32" => :fp64_trans, "v_rsq_f64_e32" => :fp64_trans, "v_sqrt_f64" => :fp64_trans,
+            "v_div_scale_f64" => :fp64_other, "v_div_fixup_f64" => :fp64_other, "v_ldexp_f64" => :fp64_other,
+            "v_cmp_lt_f64_e64" => :fp64_other, "v_cvt_f64_i32_e32" => :fp64_other, "v_max_f64" => :fp64_other,
+            "v_pk_fma_f64" => :fp64_packed, "v_pk_mul_f64" => :fp64_packed, "v_pk_add_f64" => :fp64_packed,
+            "v_mul_f32_e32" => :fp32, "v_rcp_iflag_f32_e32" => :fp32, "v_cvt_f32_u32_e32" => :fp32, "v_fma_f16" => :fp32,
+            "v_dual_mov_b32" => :int, "v_cndmask_b32_e64" => :int, "v_accvgpr_read_b32" => :int, "v_mov_b64_e32" => :int,
+            "v_writelane_b32" => :int, "v_add_co_u32" => :int, "v_mad_u64_u32" => :int,
+            "s_mov_b32" => :salu, "s_cselect_b64" => :salu, "s_and_saveexec_b32" => :salu, "s_mul_hi_u32" => :salu,
+            "s_load_b128" => :smem, "s_buffer_load_dword" => :smem,
+            "s_waitcnt" => :wait, "s_waitcnt_vscnt" => :wait, "s_waitcnt_depctr" => :wait, "s_wait_loadcnt" => :wait,
+            "s_cbranch_execz" => :control, "s_branch" => :control, "s_endpgm" => :control, "s_swappc_b64" => :control,
+            "s_setpc_b64" => :control, "s_barrier" => :control,
+            "s_delay_alu" => :wait, "s_nop" => :nop, "v_nop" => :nop, "s_clause" => :other, "s_set_inst_prefetch_distance" => :other,
+            "global_load_b64" => :mem_load, "global_load_dwordx4" => :mem_load, "scratch_load_b64" => :mem_load,
+            "buffer_load_dword" => :mem_load, "scratch_store_dwordx2" => :mem_store, "global_store_b64" => :mem_store,
+            "flat_atomic_cmpswap_x2" => :mem_atomic, "global_atomic_add_f64" => :mem_atomic,
+            "buffer_gl0_inv" => :other, "buffer_wbl2" => :other, "ds_load_b64" => :lds, "ds_store_b64" => :lds,
+            "nonsense" => :other)
+        for (op, cls) in amd_expect
+            @test _classify_amd(op) === cls
+        end
+        # SASS opcodes (base + modifiers; FP64 conversions/compares/MUFU seeds by their modifiers)
+        sass_expect = ("DFMA" => :fp64_fma, "DADD" => :fp64_add, "DMUL" => :fp64_mul,
+            "MUFU.RCP64H" => :fp64_trans, "MUFU.RSQ64H" => :fp64_trans, "MUFU.RCP" => :fp32, "MUFU.RSQ" => :fp32,
+            "DSETP.GEU.AND" => :fp64_other, "DMNMX" => :fp64_other, "F2I.S64.F64.CEIL" => :fp64_other,
+            "I2F.F64.S64" => :fp64_other, "FRND.F64.FLOOR" => :fp64_other, "F2F.F64.F32" => :fp64_other,
+            "F2I.FTZ.U32.TRUNC.NTZ" => :fp32, "I2F.U64.RP" => :fp32, "FFMA" => :fp32, "FSEL" => :fp32, "HFMA2" => :fp32,
+            "IMAD.WIDE.U32" => :int, "IADD3" => :int, "IADD.64" => :int, "LOP3.LUT" => :int, "SHF.R.U32.HI" => :int,
+            "ISETP.NE.AND" => :int, "MOV" => :int, "SEL" => :int, "PRMT" => :int, "LEA.HI.X" => :int, "VIMNMX" => :int,
+            "R2UR" => :salu, "S2UR" => :salu, "UIADD3" => :salu, "USHF.R.U32.HI" => :salu, "UMOV" => :salu, "UNEWTHING" => :salu,
+            "LDG.E.64" => :mem_load, "LD.E.64" => :mem_load, "LDL.64" => :mem_load,
+            "STG.E.64" => :mem_store, "ST.E.64" => :mem_store, "STL.64" => :mem_store, "ATOM.E.ADD.64" => :mem_atomic, "RED.E.ADD" => :mem_atomic,
+            "LDC" => :smem, "LDCU.64" => :smem, "ULDC.64" => :smem, "LDS.64" => :lds, "STS" => :lds, "ATOMS.ADD" => :lds,
+            "BRA" => :control, "BRA.U" => :control, "CALL.REL.NOINC" => :control, "RET.REL.NODEC" => :control, "EXIT" => :control,
+            "BSSY.RECONVERGENT" => :control, "BSYNC" => :control, "WARPSYNC.ALL" => :control, "BREAK" => :control, "BAR.SYNC" => :control,
+            "DEPBAR.LE" => :wait, "NOP" => :nop, "S2R" => :other, "CS2R" => :other, "MEMBAR.SC.GPU" => :other,
+            "ERRBAR" => :other, "CCTL.IVALL" => :other, "LEPC" => :other, "SHFL.IDX" => :other, "XYZZY" => :other)
+        for (op, cls) in sass_expect
+            @test _classify_sass(op) === cls
+        end
+        @test length(MIX_CLASSES) == 18 && all(c in MIX_CLASSES for c in FP64_CLASSES)
+
+        # AMD ISA listing: two-level loop nest with the LLVM asm-printer annotations, a cold
+        # exception tail, debug labels and the metadata YAML (whose "key:" lines are not labels)
+        amd = """
+        \t.text
+        \t.globl\tk
+        \t.p2align\t8
+        \t.type\tk,@function
+        k:                                      ; @k
+        .Lfunc_begin0:
+        ; %bb.0:
+        \ts_load_b64 s[0:1], s[4:5], 0x0
+        \ts_waitcnt lgkmcnt(0)
+        \tv_cmp_gt_u32_e32 vcc_lo, 4, v0
+        \ts_cbranch_vccz .LBB0_5
+        .Ltmp0:
+        .LBB0_1:                                ; %outer
+                                                ; =>This Loop Header: Depth=1
+        \t.loc\t1 10 0
+        \tv_mul_f64 v[2:3], v[2:3], v[4:5]
+        \tv_add_f64 v[2:3], v[2:3], 1.0
+        \tglobal_load_b64 v[6:7], v[0:1], off
+        \ts_waitcnt vmcnt(0)
+        .LBB0_2:                                ; %inner
+                                                ;   Parent Loop BB0_1 Depth=1
+                                                ; =>This Inner Loop Header: Depth=2
+        \tv_fma_f64 v[2:3], v[2:3], v[6:7], v[2:3]
+        \tv_rcp_f64_e32 v[8:9], v[2:3]
+        \ts_add_i32 s2, s2, 1
+        \ts_cmp_lt_i32 s2, 8
+        \ts_cbranch_scc1 .LBB0_2
+        ; %bb.3:                                ;   in Loop: Header=BB0_1 Depth=1
+        \ts_delay_alu instid0(VALU_DEP_1)
+        \tv_cndmask_b32_e64 v1, 0, 1, vcc_lo
+        \tglobal_store_b64 v[0:1], v[2:3], off
+        \ts_cbranch_vccnz .LBB0_1
+        ; %bb.4:
+        \ts_endpgm
+        .LBB0_5:
+        \ts_mov_b32 s0, 0
+        \tds_store_b64 v0, v[2:3]
+        \tflat_atomic_cmpswap_b64 v[0:1], v[2:5], off
+        \ts_endpgm
+        .Lfunc_end0:
+        \t.size\tk, .Lfunc_end0-k
+        \t.amdgpu_metadata
+        ---
+        amdhsa.kernels:
+          - .vgpr_count:     10
+        amdhsa.version:
+          - 1
+        \t.end_amdgpu_metadata
+        """
+        blocks = _parse_machine_code(amd, :amd)
+        @test [b.label for b in blocks] == ["k", "%bb.0", ".LBB0_1", ".LBB0_2", "%bb.3", "%bb.4", ".LBB0_5"]
+        @test blocks[2].targets == [".LBB0_5"] && blocks[2].fallthrough
+        @test blocks[4].targets == [".LBB0_2"] && blocks[5].targets == [".LBB0_1"]
+        @test !blocks[6].fallthrough && !blocks[7].fallthrough
+        @test blocks[3].loop_note == (".LBB0_1", 1) && blocks[4].loop_note == (".LBB0_2", 2) && blocks[5].loop_note == (".LBB0_1", 1)
+        loops = _natural_loops(blocks)
+        @test length(loops) == 2
+        @test loops[1].header == 3 && loops[1].body == [3, 4, 5] && loops[1].depth == 1
+        @test loops[2].header == 4 && loops[2].body == [4] && loops[2].depth == 2
+
+        m = instruction_mix(amd, :amd)
+        @test m.vendor === :amd && m.total == 22 && m.blocks == 7
+        @test m.counts.fp64_mul == 1 && m.counts.fp64_add == 1 && m.counts.fp64_fma == 1 && m.counts.fp64_trans == 1
+        @test m.counts.fp64_other == 0 && m.counts.fp64_packed == 0 && m.fp64 == 4
+        @test m.counts.smem == 1 && m.counts.wait == 3 && m.counts.int == 2 && m.counts.control == 5 && m.counts.salu == 3
+        @test m.counts.other == 0 && m.counts.nop == 0 && m.counts.mem_load == 1 && m.counts.mem_store == 1 && m.counts.lds == 1 && m.counts.mem_atomic == 1
+        @test sum(m.counts) == m.total && m.opcodes["s_endpgm"] == 2 && m.opcodes["v_fma_f64"] == 1
+        @test length(m.loops) == 2 && m.loops[1].header == ".LBB0_1" && m.loops[1].depth == 1 && m.loops[1].blocks == 3
+        @test m.loops[1].total == 13 && m.loops[1].exclusive_total == 8 && m.loops[1].counts.fp64_fma == 1 && m.loops[1].exclusive_counts.fp64_fma == 0
+        @test m.loops[2].header == ".LBB0_2" && m.loops[2].depth == 2 && m.loops[2].total == 5 && m.loops[2].exclusive_total == 5
+        @test m.hot_loop.header == ".LBB0_1" && m.hot_loop_confidence === :high && m.llvm_loops_agree === true
+
+        # an annotation that contradicts the CFG (block 3 claims a header that is not one) → :low
+        amd_bad = replace(amd, "; %bb.3:                                ;   in Loop: Header=BB0_1 Depth=1" =>
+            "; %bb.3:                                ;   in Loop: Header=BB0_9 Depth=1")
+        mb = instruction_mix(amd_bad, :amd)
+        @test mb.llvm_loops_agree === false && mb.hot_loop_confidence === :low && mb.total == 22
+        # a wrong depth is caught too
+        amd_bad2 = replace(amd, "=>This Inner Loop Header: Depth=2" => "=>This Inner Loop Header: Depth=1")
+        @test instruction_mix(amd_bad2, :amd).llvm_loops_agree === false
+        # no loops at all
+        m0 = instruction_mix("k:\n\ts_load_b64 s[0:1], s[4:5], 0x0\n\ts_endpgm\n", :amd)
+        @test m0.total == 2 && isempty(m0.loops) && m0.hot_loop === nothing && m0.hot_loop_confidence === :none && m0.llvm_loops_agree === nothing
+
+        # SASS listing (nvdisasm --print-code): predicated/uniform branches, BSSY targets that
+        # are not edges, an unconditional EXIT ending a block, the trap spin after it (dropped)
+        sass = """
+        \t.target\tsm_90
+        \t.section\t.text.k,"ax",@progbits
+                .type           k,@function
+        k:
+        .text.k:
+                /*0000*/                   LDC R1, c[0x0][0x28] ;
+                /*0010*/                   S2R R0, SR_TID.X ;
+        \t//## File "./int.jl", line 520
+                /*0020*/                   ISETP.GE.U32.AND P0, PT, R0, 0x4, PT ;
+                /*0030*/               @P0 EXIT ;
+                /*0040*/                   ULDC.64 UR4, c[0x0][0x210] ;
+        .L_x_0:
+                /*0050*/                   LDG.E.64 R2, [R4.64] ;
+                /*0060*/                   DMUL R2, R2, R6 ;
+                /*0070*/                   DADD R2, R2, 1 ;
+                /*0080*/                   BSSY B0, `(.L_x_2) ;
+        .L_x_1:
+                /*0090*/                   DFMA R2, R2, R8, R2 ;
+                /*00a0*/                   MUFU.RCP64H R9, R3 ;
+                /*00b0*/                   DSETP.GT.AND P1, PT, R2, RZ, PT ;
+                /*00c0*/                   IADD3 R10, R10, 0x1, RZ ;
+                /*00d0*/                   ISETP.NE.AND P2, PT, R10, 0x8, PT ;
+                /*00e0*/               @P2 BRA `(.L_x_1) ;
+        .L_x_2:
+                /*00f0*/                   BSYNC B0 ;
+                /*0100*/                   STG.E.64 [R4.64], R2 ;
+                /*0110*/                   F2I.S64.F64.FLOOR R11, R2 ;
+                /*0120*/                   FFMA R12, R12, R13, R14 ;
+                /*0130*/                   BRA.U !UP0, `(.L_x_0) ;
+                /*0140*/                   EXIT ;
+        .L_x_3:
+                /*0150*/                   BRA `(.L_x_3);
+                /*0160*/                   NOP;
+                /*0170*/                   NOP;
+        """
+        sb = _parse_machine_code(sass, :nvidia)
+        @test [b.label for b in sb] == ["k", ".text.k", ".L_x_0", ".L_x_1", ".L_x_2", ".L_x_3", "%bb.6"]
+        @test sb[2].fallthrough && isempty(sb[2].targets)                 # @P0 EXIT does not end the block
+        @test sb[3].targets == String[] && sb[3].fallthrough               # BSSY's operand is not a branch target
+        @test sb[4].targets == [".L_x_1"] && sb[4].fallthrough
+        @test sb[5].targets == [".L_x_0"] && !sb[5].fallthrough            # BRA.U !UP0 conditional, then EXIT
+        @test sb[6].targets == [".L_x_3"] && !sb[6].fallthrough
+        ms = instruction_mix(sass, :nvidia)
+        @test ms.vendor === :nvidia && ms.total == 24 && ms.blocks == 7
+        @test ms.counts.smem == 2 && ms.counts.other == 1 && ms.counts.nop == 2 && ms.counts.int == 3 && ms.counts.control == 7
+        @test ms.counts.fp64_mul == 1 && ms.counts.fp64_add == 1 && ms.counts.fp64_fma == 1 && ms.counts.fp64_trans == 1
+        @test ms.counts.fp64_other == 2 && ms.counts.fp32 == 1 && ms.counts.mem_load == 1 && ms.counts.mem_store == 1
+        @test ms.fp64 == 6 && sum(ms.counts) == ms.total
+        @test length(ms.loops) == 2                                        # the .L_x_3 trap spin is dropped
+        @test ms.loops[1].header == ".L_x_0" && ms.loops[1].depth == 1 && ms.loops[1].blocks == 3 && ms.loops[1].total == 16 && ms.loops[1].exclusive_total == 10
+        @test ms.loops[2].header == ".L_x_1" && ms.loops[2].depth == 2 && ms.loops[2].total == 6
+        @test ms.hot_loop.header == ".L_x_0" && ms.hot_loop_confidence === :medium && ms.llvm_loops_agree === nothing
+        @test_throws ArgumentError instruction_mix(sass, :intel)
+
+        # FP64-issue floor: lane-instruction rate = peak / 2 (FMA chain), floor = count × slots / rate
+        fl = fp64_issue_floor(ms; n_slots = 1.0e6, peak_fp64_flops = 2.0e12, kernel_time_s = 1.2e-5)
+        @test fl.scope === :hot_loop && fl.fp64_per_slot == 6 && fl.fp64_lane_instructions == 6.0e6
+        @test fl.floor_s ≈ 6.0e-6 && fl.fp64_issue_fraction ≈ 0.5 && fl.confidence === :medium
+        fl2 = fp64_issue_floor(ms; n_slots = 10, peak_fp64_flops = 4.0)
+        @test fl2.floor_s ≈ 30.0 && isnan(fl2.fp64_issue_fraction) && fl2.kernel_time_s === nothing
+        flt = fp64_issue_floor(ms; n_slots = 1, peak_fp64_flops = 2.0, scope = :total)
+        @test flt.fp64_per_slot == 6 && flt.confidence === :static_total
+        @test_throws ArgumentError fp64_issue_floor(m0; n_slots = 1, peak_fp64_flops = 1.0)
+        @test_throws ArgumentError fp64_issue_floor(ms; n_slots = 0, peak_fp64_flops = 1.0)
+        @test_throws ArgumentError fp64_issue_floor(ms; n_slots = 1, peak_fp64_flops = 1.0, scope = :loop)
+
+        # kernel_instruction_mix through the vendor hook (fake backend: AMD text natively, SASS for a target)
+        ck = CompiledKernel("gpu_k", "Tuple{CompilerMetadata{…StaticSize{(256,)}…}}", 256, nothing)
+        struct FakeMixGPU <: Backend end
+        GPUDiagnostics._kernel_machine_code(::FakeMixGPU, c::CompiledKernel, target) = target === nothing ?
+            (; text = amd, vendor = :amd, isa = "gfx1100", native = true, registers = 10) :
+            (; text = sass, vendor = :nvidia, isa = String(target), native = false, registers = 124)
+        km = kernel_instruction_mix(FakeMixGPU(), ck)
+        @test km.name == ck.name && km.signature == ck.signature && km.target == "gfx1100" && km.native && km.registers == 10
+        @test km.total == 22 && km.counts == m.counts && km.hot_loop.header == ".LBB0_1"
+        buf = IOBuffer()
+        km2 = kernel_instruction_mix(FakeMixGPU(), ck; target = "sm_90", dump = buf)
+        @test km2.target == "sm_90" && !km2.native && km2.total == 24 && String(take!(buf)) == sass
+        path = tempname()
+        kernel_instruction_mix(FakeMixGPU(), ck; target = :sm_90, dump = path)
+        @test read(path, String) == sass
+        rm(path)
+        @test_throws ErrorException kernel_instruction_mix(CPU(), ck)
+        @test_throws ErrorException kernel_instruction_mix(NoVendorBackend(), ck)
     end
 end
