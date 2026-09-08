@@ -63,7 +63,7 @@ end
 
 # RHS of dτ_r/dt = 1 / (u⁰ - u⃗·n̂); allocation-free, kernel-callable. State components
 # are read with literal indices — canonical order guaranteed by `to_gpu` (see kernel_newton.jl).
-@inline function _rt_rhs_kernel(τ, gpu_traj, r_obs)
+@muladd @inline function _rt_rhs_kernel(τ, gpu_traj, r_obs)
     v = gpu_traj.itp(τ)
     x¹ = v[2]
     x² = v[3]
@@ -80,7 +80,7 @@ end
 end
 
 # One classical RK4 step for the autonomous ODE dτ_r/dt = f(τ_r).
-@inline function _rk4_step(τ, dt, gpu_traj, r_obs)
+@muladd @inline function _rk4_step(τ, dt, gpu_traj, r_obs)
     k1 = _rt_rhs_kernel(τ, gpu_traj, r_obs)
     k2 = _rt_rhs_kernel(τ + 0.5 * dt * k1, gpu_traj, r_obs)
     k3 = _rt_rhs_kernel(τ + 0.5 * dt * k2, gpu_traj, r_obs)
