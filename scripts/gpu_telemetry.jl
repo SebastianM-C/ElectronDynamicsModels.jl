@@ -87,6 +87,52 @@ function record_kernel_timing!(timing::AbstractDict, gpu, timer; tracefile = not
     end
 end
 
+# ── Compile-time resource report → [gpu].kernel_registers / _local_mem_bytes / _shared_mem_bytes /
+#    _occupancy … (+ kernel_isa_* extras) ─────────────────────────────────────────────────────────
+#
+# After the field phase the production kernel sits in the vendor's compiled-kernel cache;
+# `compiled_kernels` + `kernel_resources` (lib/GPUDiagnostics) read it back from there — the exact
+# code that ran, not a re-creation of it, and no kernel change — and report what the compiler gave
+# it (registers per thread, spill/stack bytes, the shared/LDS bytes the descriptor reserves) with
+# the theoretical occupancy the runtime derives at the launched block size (the kernel's static
+# 256-thread AcceleratedKernels workgroup, read from its signature). The kernels are closures inside
+# the `accumulate_*` drivers; on Julia ≥ 1.12 their types carry the driver's name, which `pattern`
+# selects (`kernel_driver` records the match). Multi-device runs compile one instance per device —
+# the first is reported, `kernel_compiled_matches` keeps the count. AMD ISA figures (SGPR/VGPR/
+# spill counts, the compiler's own waves-per-SIMD estimate) flatten to `kernel_isa_*`. Same
+# contract as the other helpers: a failure logs and leaves the manifest without the fields.
+const FIELD_KERNEL_PATTERN = r"_gpu_\w*field_one_electron!"
+function record_kernel_resources!(gpu, backend; pattern = FIELD_KERNEL_PATTERN, block_size = nothing)
+    gpu === nothing && return nothing
+    try
+        cks = compiled_kernels(backend; pattern)
+        if isempty(cks)
+            @warn "kernel resource report: no compiled kernel matches $pattern — omitting [gpu].kernel_registers/…"
+            return nothing
+        end
+        r = block_size === nothing ? kernel_resources(backend, first(cks)) :
+            kernel_resources(backend, first(cks); block_size)
+        m = match(pattern, r.signature)
+        gpu["kernel_name"] = r.name
+        gpu["kernel_driver"] = m === nothing ? "" : String(m.match)
+        gpu["kernel_compiled_matches"] = length(cks)
+        for k in (:block_size, :registers, :local_mem_bytes, :shared_mem_bytes, :const_mem_bytes,
+                :max_threads_per_block, :active_blocks_per_sm, :active_warps_per_sm, :max_warps_per_sm,
+                :warp_size, :max_threads_per_sm, :shared_mem_per_sm)
+            gpu["kernel_" * String(k)] = Int(getfield(r, k))
+        end
+        gpu["kernel_occupancy"] = Float64(r.occupancy)
+        for (k, v) in r.isa
+            gpu["kernel_isa_" * k] = v
+        end
+        @info "kernel resources (compile time)" kernel = gpu["kernel_driver"] registers = r.registers local_mem_bytes = r.local_mem_bytes shared_mem_bytes = r.shared_mem_bytes block_size = r.block_size active_blocks_per_sm = r.active_blocks_per_sm occupancy = round(r.occupancy; digits = 3) isa_info = r.isa
+        return r
+    catch err
+        @warn "kernel resource report unavailable — omitting [gpu].kernel_registers/…" exception = (err, catch_backtrace())
+        return nothing
+    end
+end
+
 # Sampler cadence (s); coarse is fine — field runs are seconds→hours. Override with EDM_GPU_SAMPLE_DT.
 const GPU_SAMPLE_DT = parse(Float64, get(ENV, "EDM_GPU_SAMPLE_DT", "1.0"))
 

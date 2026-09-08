@@ -18,6 +18,11 @@ fallbacks so the plumbing (and its tests) run without a GPU.
 - **Measured FP64 peak** — `measure_peak_fp64_flops` / `gpu_peak_fp64_flops`: a dependent-FMA-chain
   kernel gives the attainable vector FP64 rate of the device at the clocks it actually holds
   (never routed to matrix/tensor units); BLAS `peakflops` on the CPU backend.
+- **Compile-time resource report** — `compiled_kernels` inventories the kernels this process
+  compiled (from the vendor's kernel cache, so closures inside driver functions are reachable
+  too) and `kernel_resources` reports registers, spill/stack and shared (LDS) memory, and the
+  runtime's theoretical occupancy for the block size actually launched — plus the SGPR/VGPR/
+  spill counts from the AMD ISA dump.
 """
 module GPUDiagnostics
 
@@ -32,10 +37,12 @@ export gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_arch,
     gpu_telemetry_child_cmd, thread_fill_occupancy,
     gpu_event, gpu_elapsed, LaunchTimer, launch_times, launch_lane, launch_tick, launch_tock!,
     with_gpu_sampler,
-    measure_peak_fp64_flops, gpu_peak_fp64_flops
+    measure_peak_fp64_flops, gpu_peak_fp64_flops,
+    CompiledKernel, compiled_kernels, kernel_resources
 
 include("device_api.jl")   # generics + CPU fallbacks + LaunchTimer; vendor methods in ext/
 include("sampler.jl")      # with_gpu_sampler: out-of-process telemetry child (bin/gputrace*.sh)
 include("peakflops.jl")    # FMA-chain FP64 peak probe
+include("resources.jl")    # compile-time resource report: registers / spills / LDS / occupancy
 
 end

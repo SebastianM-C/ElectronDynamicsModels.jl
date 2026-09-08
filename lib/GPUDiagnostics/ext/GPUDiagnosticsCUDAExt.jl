@@ -51,4 +51,48 @@ function GD.gpu_telemetry_child_cmd(::CUDABackend, device_ids::AbstractVector{<:
     return `sh $script $(round(Int, 1000 * dt)) $(getpid()) $stopfile $specs`
 end
 
+# ── Compile-time resource report (src/resources.jl hooks) ───────────────────────────────────
+# Inventory = the compiled-kernel cache of CUDA.jl's compiler (CUDACore from CUDA 6.3; the
+# same names live in CUDA itself before the split). Attributes via the public `registers` /
+# `memory` / `maxthreads` accessors (cuFuncGetAttribute underneath), occupancy via the driver's
+# `cuOccupancyMaxActiveBlocksPerMultiprocessor`, capacities from the CURRENT device.
+const _CC = isdefined(CUDA, :CUDACore) ? CUDA.CUDACore : CUDA
+
+GD._compiled_kernels(::CUDABackend) = Base.@lock _CC.cufunction_lock begin
+    [GD._compiled_kernel(k) for k in values(_CC._kernel_instances) if k isa CUDA.HostKernel]
+end
+
+function GD._kernel_attributes(::CUDABackend, k::CUDA.HostKernel)
+    mem = CUDA.memory(k)   # (local, shared, constant) bytes; `local` is a keyword → positional
+    return (;
+        registers = Int(CUDA.registers(k)),
+        local_mem_bytes = Int(mem[1]),
+        shared_mem_bytes = Int(mem.shared),
+        const_mem_bytes = Int(mem.constant),
+        max_threads_per_block = Int(CUDA.maxthreads(k)),
+    )
+end
+
+function GD._kernel_occupancy(::CUDABackend, k::CUDA.HostKernel, block_size::Int)
+    dev = CUDA.device()
+    return (;
+        active_blocks_per_sm = Int(CUDA.active_blocks(k.fun, block_size)),
+        warp_size = Int(CUDA.attribute(dev, CUDA.DEVICE_ATTRIBUTE_WARP_SIZE)),
+        max_threads_per_sm = Int(CUDA.attribute(dev, CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR)),
+        shared_mem_per_sm = Int(CUDA.attribute(dev, CUDA.DEVICE_ATTRIBUTE_MAX_SHARED_MEMORY_PER_MULTIPROCESSOR)),
+    )
+end
+
+# PTX / SASS binary versions the kernel was built for (CUDA.jl ships no SASS resource-usage
+# parser; the driver attributes above already carry registers and spill (local) bytes).
+function GD._kernel_isa_info(::CUDABackend, k::CUDA.HostKernel)
+    try
+        v = _CC.version(k)
+        return Dict{String, Any}("ptx_version" => string(v.ptx), "binary_version" => string(v.binary))
+    catch err
+        @warn "kernel_resources: PTX/binary version query failed" exception = err
+        return Dict{String, Any}()
+    end
+end
+
 end

@@ -1,5 +1,7 @@
 using GPUDiagnostics
 using GPUDiagnostics: _fma_chain_reference, _fma_chain_kernel!, _PEAK_CHAINS
+using GPUDiagnostics: _static_workgroup_size, _parse_amdgpu_kernel_info, _compiled_kernel
+import KernelAbstractions as KA
 using KernelAbstractions: CPU, Backend
 using Test
 using Aqua
@@ -88,5 +90,95 @@ struct NoVendorBackend <: Backend end
         @test_throws ArgumentError measure_peak_fp64_flops(CPU(); trials = 0)
         h = gpu_peak_fp64_flops(CPU())
         @test isfinite(h) && h > 1.0e8
+    end
+
+    @testset "compile-time resource report" begin
+        # CPU backend compiles nothing; vendor-less backends error
+        @test compiled_kernels(CPU()) == CompiledKernel[]
+        @test isempty(compiled_kernels(CPU(); pattern = r"anything"))
+        @test kernel_resources(CPU(), r"anything") == []
+        @test_throws ErrorException kernel_resources(CPU(), CompiledKernel("k", "sig", 256, nothing))
+        @test_throws ErrorException compiled_kernels(NoVendorBackend())
+
+        # static workgroup size from a KA kernel signature (what mkcontext + StaticSize produce)
+        CI1 = CartesianIndices{1, Tuple{Base.OneTo{Int}}}
+        ctx(W) = KA.CompilerMetadata{KA.NDIteration.DynamicSize, KA.NDIteration.DynamicCheck, Nothing, CI1,
+            KA.NDIteration.NDRange{1, KA.NDIteration.DynamicSize, W, CI1, Nothing}}
+        @test _static_workgroup_size(Tuple{ctx(KA.NDIteration.StaticSize{(256,)}), Int}) == 256
+        @test _static_workgroup_size(Tuple{ctx(KA.NDIteration.StaticSize{(16, 16)}), Int}) == 256
+        @test _static_workgroup_size(Tuple{ctx(KA.NDIteration.DynamicSize), Int}) === nothing
+        @test _static_workgroup_size(Tuple{Int, Float64}) === nothing
+        @test _static_workgroup_size(Tuple{}) === nothing
+
+        # CompiledKernel from a vendor-shaped kernel object K{F, TT}: name + signature + workgroup
+        struct FakeKernel{F, TT}
+            f::F
+        end
+        closure = let x = 1; i -> x + i; end
+        fk = FakeKernel{typeof(closure), Tuple{ctx(KA.NDIteration.StaticSize{(128,)}), typeof(closure), Int}}(closure)
+        ck = _compiled_kernel(fk)
+        @test ck isa CompiledKernel && ck.workgroup_size == 128 && ck.kernel === fk
+        @test ck.name == string(nameof(typeof(closure)))
+        @test occursin("StaticSize{(128,)}", ck.signature)
+        @test occursin("workgroup_size = 128", sprint(show, ck))
+
+        # AMD ISA dump parser: the LLVM "; Kernel info:" comment block + the code-object metadata
+        asm = """
+        ; -- End function
+        \t.amdhsa_next_free_vgpr 123
+        ; Kernel info:
+        ; codeLenInByte = 42124
+        ; TotalNumSgprs: 107
+        ; NumVgprs: 123
+        ; ScratchSize: 584
+        ; LDSByteSize: 65536 bytes/workgroup (compile time only)
+        ; Occupancy: 10
+        \t.amdgpu_metadata
+        ---
+        amdhsa.kernels:
+          - .group_segment_fixed_size: 65536
+            .kernarg_segment_size: 1016
+            .max_flat_workgroup_size: 1024
+            .private_segment_fixed_size: 584
+            .sgpr_count:     107
+            .sgpr_spill_count: 83
+            .vgpr_count:     123
+            .vgpr_spill_count: 0
+            .wavefront_size: 32
+        \t.end_amdgpu_metadata
+        """
+        info = _parse_amdgpu_kernel_info(asm)
+        @test info["vgpr_count"] == 123 && info["sgpr_count"] == 107
+        @test info["sgpr_spill_count"] == 83 && info["vgpr_spill_count"] == 0
+        @test info["scratch_bytes"] == 584 && info["lds_bytes"] == 65536
+        @test info["occupancy_waves_per_simd"] == 10 && info["code_bytes"] == 42124
+        @test info["max_flat_workgroup_size"] == 1024 && info["wavefront_size"] == 32
+        @test info["kernarg_bytes"] == 1016 && !haskey(info, "agpr_count")
+        @test isempty(_parse_amdgpu_kernel_info("s_endpgm\n"))
+        # comment-only dumps (no metadata) still yield the figures; CDNA's AGPR line is picked up
+        info2 = _parse_amdgpu_kernel_info("; NumSgprs: 40\n; NumVgprs: 64\n; NumAgprs: 8\n; TotalNumVgprs: 72\n; ScratchSize: 0\n; Occupancy: 8\n")
+        @test info2["sgpr_count"] == 40 && info2["agpr_count"] == 8 && info2["total_vgpr_count"] == 72 && info2["scratch_bytes"] == 0
+
+        # kernel_resources arithmetic on a fake GPU backend: occupancy = active warps / capacity
+        struct FakeGPU <: Backend end
+        GPUDiagnostics._compiled_kernels(::FakeGPU) = [ck]
+        GPUDiagnostics._kernel_attributes(::FakeGPU, k::FakeKernel) =
+            (; registers = 123, local_mem_bytes = 584, shared_mem_bytes = 65536, const_mem_bytes = -1, max_threads_per_block = 1024)
+        GPUDiagnostics._kernel_occupancy(::FakeGPU, k::FakeKernel, block_size::Int) =
+            (; active_blocks_per_sm = min(65536 ÷ 65536, 2048 ÷ block_size), warp_size = 32, max_threads_per_sm = 2048, shared_mem_per_sm = 65536)
+        GPUDiagnostics._kernel_isa_info(::FakeGPU, k::FakeKernel) = Dict{String, Any}("vgpr_count" => 123)
+        @test length(compiled_kernels(FakeGPU())) == 1
+        @test length(compiled_kernels(FakeGPU(); pattern = "StaticSize")) == 1
+        @test isempty(compiled_kernels(FakeGPU(); pattern = r"no such kernel"))
+        r = kernel_resources(FakeGPU(), ck)
+        @test r.block_size == 128                      # defaults to the static workgroup size
+        @test r.registers == 123 && r.local_mem_bytes == 584 && r.shared_mem_bytes == 65536
+        @test r.active_blocks_per_sm == 1 && r.warp_size == 32 && r.max_warps_per_sm == 64
+        @test r.active_warps_per_sm == 4 && r.occupancy ≈ 4 / 64
+        @test r.isa["vgpr_count"] == 123 && r.name == ck.name && r.signature == ck.signature
+        r2 = kernel_resources(FakeGPU(), ck; block_size = 1024)
+        @test r2.active_warps_per_sm == 32 && r2.occupancy ≈ 0.5
+        @test_throws ArgumentError kernel_resources(FakeGPU(), ck; block_size = 0)
+        @test length(kernel_resources(FakeGPU(), "StaticSize")) == 1
     end
 end

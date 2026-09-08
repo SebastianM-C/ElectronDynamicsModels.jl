@@ -355,6 +355,9 @@ sharding = Dict{String, Any}("electrons" => ndev)
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
 gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
 record_kernel_timing!(timing, gpu, launch_timer; tracefile = kerneltimesfile)
+# Compile-time resource report of the field kernel that ran → [gpu].kernel_registers/_shared_mem_bytes/
+# _occupancy/… (read back from the vendor's compiled-kernel cache; see gpu_telemetry.jl).
+record_kernel_resources!(gpu, gpu_backend)
 # Window coverage → [window]; algorithmic FLOP accounting → [flops] (both host-side; omitted on error).
 window_sec = window_manifest_section(window_cov)
 flops_sec = flops_manifest_section(gpu_backend, GPUKernelRK4(), FIELD_MODE, (; n_substeps = NSUBSTEPS),

@@ -96,4 +96,58 @@ function GD.gpu_telemetry_child_cmd(::ROCBackend, device_ids::AbstractVector{<:I
     return `sh $script $dt $(getpid()) $stopfile $specs`
 end
 
+# ── Compile-time resource report (src/resources.jl hooks) ───────────────────────────────────
+# Inventory = AMDGPU.jl's compiled-kernel cache (one HIPKernel per compiled function × argument
+# types × device). Attributes come from the driver-API `hipFuncGetAttribute` on the module
+# function (the runtime-API `hipFuncGetAttributes` only knows host stubs); NUM_REGS is the VGPR
+# count. Occupancy from `hipModuleOccupancyMaxActiveBlocksPerMultiprocessor` (a "multiprocessor"
+# is what HIP calls one — a WGP on RDNA3, a CU on CDNA), capacities from the CURRENT device's
+# properties. The ISA dump (`code_native`, ~0.5 s, no launch) adds the SGPR/VGPR/spill/scratch
+# figures and the compiler's own occupancy estimate, which the HIP attributes do not expose.
+GD._compiled_kernels(::ROCBackend) = Base.@lock AMDGPU.Compiler.hipfunction_lock begin
+    [GD._compiled_kernel(k) for k in values(AMDGPU.Compiler._kernel_instances) if k isa AMDGPU.Runtime.HIPKernel]
+end
+
+function _hip_func_attr(fun::AMDGPU.HIP.HIPFunction, attr)
+    v = Ref{Cint}(0)
+    AMDGPU.HIP.hipFuncGetAttribute(v, attr, fun)
+    return Int(v[])
+end
+
+function GD._kernel_attributes(::ROCBackend, k::AMDGPU.Runtime.HIPKernel)
+    HIP = AMDGPU.HIP
+    a(attr) = _hip_func_attr(k.fun, attr)
+    return (;
+        registers = a(HIP.HIP_FUNC_ATTRIBUTE_NUM_REGS),
+        local_mem_bytes = a(HIP.HIP_FUNC_ATTRIBUTE_LOCAL_SIZE_BYTES),
+        shared_mem_bytes = a(HIP.HIP_FUNC_ATTRIBUTE_SHARED_SIZE_BYTES),
+        const_mem_bytes = a(HIP.HIP_FUNC_ATTRIBUTE_CONST_SIZE_BYTES),
+        max_threads_per_block = a(HIP.HIP_FUNC_ATTRIBUTE_MAX_THREADS_PER_BLOCK),
+    )
+end
+
+function GD._kernel_occupancy(::ROCBackend, k::AMDGPU.Runtime.HIPKernel, block_size::Int)
+    nb = Ref{Cint}(0)
+    AMDGPU.HIP.hipModuleOccupancyMaxActiveBlocksPerMultiprocessor(nb, k.fun, block_size, 0)
+    dev = AMDGPU.device()
+    p = AMDGPU.HIP.properties(dev)
+    return (;
+        active_blocks_per_sm = Int(nb[]),
+        warp_size = Int(AMDGPU.HIP.wavefrontsize(dev)),
+        max_threads_per_sm = Int(p.maxThreadsPerMultiProcessor),
+        shared_mem_per_sm = Int(p.maxSharedMemoryPerMultiProcessor),
+    )
+end
+
+function GD._kernel_isa_info(::ROCBackend, k::AMDGPU.Runtime.HIPKernel{F, TT}) where {F, TT}
+    try
+        io = IOBuffer()
+        AMDGPU.code_native(io, k.f, TT; kernel = true, raw = true)
+        return GD._parse_amdgpu_kernel_info(String(take!(io)))
+    catch err
+        @warn "kernel_resources: AMD ISA dump failed — reporting HIP attributes only" exception = err
+        return Dict{String, Any}()
+    end
+end
+
 end
