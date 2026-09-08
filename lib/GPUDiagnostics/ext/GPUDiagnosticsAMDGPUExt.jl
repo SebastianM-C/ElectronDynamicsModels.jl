@@ -139,7 +139,9 @@ function GD._kernel_occupancy(::ROCBackend, k::AMDGPU.Runtime.HIPKernel, block_s
     )
 end
 
-function GD._kernel_isa_info(::ROCBackend, k::AMDGPU.Runtime.HIPKernel{F, TT}) where {F, TT}
+function GD._kernel_isa_info(::ROCBackend, ck::GD.CompiledKernel{<:AMDGPU.Runtime.HIPKernel})
+    k = ck.kernel
+    TT = typeof(k).parameters[2]
     try
         io = IOBuffer()
         AMDGPU.code_native(io, k.f, TT; kernel = true, raw = true)

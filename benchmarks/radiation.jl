@@ -48,7 +48,7 @@ x⁰_samples = range(start = x⁰_start, step = c * δt, length = N_samples)
 
 # ── Run benchmarks ──────────────────────────────────────────────────
 
-backend = CUDA.CUDABackend()
+backend = CUDA.CUDABackend(; always_inline = true)   # see scripts/thomson_scattering.jl
 
 println("Threads: $(Threads.nthreads())")
 println("Time samples: $(N_samples)")

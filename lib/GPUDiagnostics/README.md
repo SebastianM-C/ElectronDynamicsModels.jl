@@ -76,4 +76,7 @@ without wrapping, recompiling or modifying them; on Julia ≥ 1.12 the closure t
 enclosing function's name, which is what `pattern` matches. `shared_mem_bytes` is what the kernel
 descriptor *reserves* — LLVM's AMDGPU backend promotes private arrays it cannot keep in registers
 to LDS, sized for the kernel's maximum block size, and that reservation, not the source, is what
-caps the resident blocks per CU. Nothing is launched; the AMD ISA dump costs ~0.5 s of compiler time.
+caps the resident blocks per CU. On NVIDIA the report also re-runs CUDA.jl's bundled `ptxas --verbose` on the
+regenerated module PTX, which separates the call-ABI stack frame from true register spills and lists the device
+functions assembled out of line (what `CUDABackend(always_inline = true)` removes). Nothing is launched; the ISA
+dumps cost a few seconds of compiler time.

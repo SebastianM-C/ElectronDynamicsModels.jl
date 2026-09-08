@@ -22,7 +22,7 @@ using Printf
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "cuda"))
 if GPU_BACKEND == "cuda"
     using CUDA
-    const backend = CUDA.CUDABackend()
+    const backend = CUDA.CUDABackend(; always_inline = true)   # see thomson_scattering.jl
 elseif GPU_BACKEND == "rocm"
     using AMDGPU
     const backend = AMDGPU.ROCBackend()
