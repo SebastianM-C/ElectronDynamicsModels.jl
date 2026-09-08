@@ -148,6 +148,11 @@ end
 # `with_acceleration = true` to also upload `GPUCubicSpline(traj.a_itp)` — at the
 # cost of a second N×4 spline (≈ doubling the per-trajectory device footprint).
 function to_gpu(traj::TrajectoryInterpolant; with_acceleration::Bool = false)
+    # The kernels read x⁰…x³ = v[1:4], u⁰…u³ = v[5:8] with literal indices (radiation.jl).
+    canonical_state_order(traj) || throw(ArgumentError(
+        "to_gpu: the GPU kernels require the canonical state order x_idxs = 1:4, u_idxs = 5:8 " *
+        "(got x_idxs = $(traj.x_idxs), u_idxs = $(traj.u_idxs)); build the trajectory with " *
+        "TrajectoryInterpolant(sol, x_syms, u_syms) or arrange the spline components in that order"))
     a_itp = with_acceleration ? GPUCubicSpline(traj.a_itp) : nothing
     return TrajectoryInterpolant(GPUCubicSpline(traj.itp), a_itp, traj.x_idxs, traj.u_idxs, traj.K)
 end

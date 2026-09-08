@@ -37,8 +37,8 @@ end
 function _window_edge_extremes(gpu_traj, x_grid, y_grid, z_screen, τ)
     Nx, Ny = length(x_grid), length(y_grid)
     v = gpu_traj.itp(τ)
-    xe = v[gpu_traj.x_idxs[2]]
-    ye = v[gpu_traj.x_idxs[3]]
+    xe = v[2]
+    ye = v[3]
     ix = _nearest_index(x_grid, xe)
     iy = _nearest_index(y_grid, ye)
     t_min, _ = _window_edge(gpu_traj, SVector{3}(x_grid[ix], y_grid[iy], z_screen), τ)

@@ -59,13 +59,17 @@ struct GPUKernelNewton end
 # τ ← τ + f·rhs with rhs = 1/(u⁰ − u⃗·n̂) = r_norm/xr_dot_u > 0, and the final
 # (converged) eval doubles as the accumulation eval: `v` carries the full
 # [xμ; uμ] state and K/xr_dot_u = K·rhs/r_norm.
+# State components are read with LITERAL indices (x⁰…x³ = v[1:4], u⁰…u³ = v[5:8]):
+# `to_gpu` guarantees the canonical order. Indexing through the runtime `x_idxs`/`u_idxs`
+# vectors forced the SVector{8} into a private array (scratch, and on AMD a 64 KB LDS
+# reservation via promote-alloca that capped residency at one workgroup per WGP).
 @inline function _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
     v = gpu_traj.itp(τ)
-    x⁰ = v[gpu_traj.x_idxs[1]] # x⁰(τ)
-    x³ = v[gpu_traj.x_idxs[4]] # x³(τ)
-    d¹ = r_obs[1] - v[gpu_traj.x_idxs[2]]
-    d² = r_obs[2] - v[gpu_traj.x_idxs[3]]
-    d³ = r_obs[3] - v[gpu_traj.x_idxs[4]]
+    x⁰ = v[1] # x⁰(τ)
+    x³ = v[4] # x³(τ)
+    d¹ = r_obs[1] - v[2]
+    d² = r_obs[2] - v[3]
+    d³ = r_obs[3] - v[4]
     # ρ⃗ = x⊥ − r⊥(τ) = (d¹, d²): the transverse pixel offsets are already the
     # subtract-first small differences.  R − d³ = ρ²/(R + d³) exactly
     # (difference of squares); the regrouped form has no O(Z) cancellation left
@@ -76,10 +80,10 @@ struct GPUKernelNewton end
     # ψ(τ) = x⁰(τ) − x³(τ): light-front coordinate of the emission event,
     # small and slowly varying for forward motion (dψ/dτ = u⁰ − u³).
     ψ = x⁰ - x³
-    u⁰ = v[gpu_traj.u_idxs[1]]
-    u¹ = v[gpu_traj.u_idxs[2]]
-    u² = v[gpu_traj.u_idxs[3]]
-    u³ = v[gpu_traj.u_idxs[4]]
+    u⁰ = v[5]
+    u¹ = v[6]
+    u² = v[7]
+    u³ = v[8]
     # X^μ = x^μ - x^μ(τ) = (x⁰_k - x⁰(τ), R)
     # m_dot(xr, uμ) with xr = (r_norm, d¹, d², d³)
     xr_dot_u = r_norm * u⁰ - (d¹ * u¹ + d² * u² + d³ * u³)
@@ -96,18 +100,18 @@ end
 # and field kernels.
 @inline function _window_edge(gpu_traj, r_obs, τ)
     v = gpu_traj.itp(τ)
-    x⁰ = v[gpu_traj.x_idxs[1]]
-    x³ = v[gpu_traj.x_idxs[4]]
-    d¹ = r_obs[1] - v[gpu_traj.x_idxs[2]]
-    d² = r_obs[2] - v[gpu_traj.x_idxs[3]]
-    d³ = r_obs[3] - v[gpu_traj.x_idxs[4]]
+    x⁰ = v[1]
+    x³ = v[4]
+    d¹ = r_obs[1] - v[2]
+    d² = r_obs[2] - v[3]
+    d³ = r_obs[3] - v[4]
     ρ² = d¹ * d¹ + d² * d²
     R = sqrt(ρ² + d³ * d³)
     t_px = (x⁰ - x³) + ρ² / (R + d³)
-    u⁰ = v[gpu_traj.u_idxs[1]]
-    u¹ = v[gpu_traj.u_idxs[2]]
-    u² = v[gpu_traj.u_idxs[3]]
-    u³ = v[gpu_traj.u_idxs[4]]
+    u⁰ = v[5]
+    u¹ = v[6]
+    u² = v[7]
+    u³ = v[8]
     rhs = R / (R * u⁰ - (d¹ * u¹ + d² * u² + d³ * u³))
     return t_px, rhs
 end
@@ -190,10 +194,10 @@ function _gpu_newton_one_electron!(
 
             # Accumulate from the last residual eval — zero extra spline evals.
             coeff = K * rhs / r_norm   # = K / m_dot(xr, uμ)
-            @inbounds A_buf[ix, iy, 1, k] += coeff * v[gpu_traj.u_idxs[1]]
-            @inbounds A_buf[ix, iy, 2, k] += coeff * v[gpu_traj.u_idxs[2]]
-            @inbounds A_buf[ix, iy, 3, k] += coeff * v[gpu_traj.u_idxs[3]]
-            @inbounds A_buf[ix, iy, 4, k] += coeff * v[gpu_traj.u_idxs[4]]
+            @inbounds A_buf[ix, iy, 1, k] += coeff * v[5]
+            @inbounds A_buf[ix, iy, 2, k] += coeff * v[6]
+            @inbounds A_buf[ix, iy, 3, k] += coeff * v[7]
+            @inbounds A_buf[ix, iy, 4, k] += coeff * v[8]
 
             tₖ += δx⁰
             Δ = δx⁰
@@ -317,7 +321,7 @@ function _gpu_newton_field_one_electron!(
                 _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters)
 
             # Field write from the converged eval (X reuses r_norm and d).
-            uμ = v[gpu_traj.u_idxs]
+            uμ = SVector{4}(v[5], v[6], v[7], v[8])
             𝔞μ = gpu_traj.a_itp(τ)
             X = SVector{4}(r_norm, d¹, d², d³)
             F_near, F_far = lienard_wiechert_F_split(X, uμ, 𝔞μ, K, c)
