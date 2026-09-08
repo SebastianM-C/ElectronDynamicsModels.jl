@@ -59,3 +59,21 @@ gpu_peak_fp64_flops(backend)       # same; BLAS peakflops on the CPU backend
 No per-architecture table: the probe measures the attainable vector FP64 rate at the clocks the device
 actually holds, and is never routed to matrix/tensor units (the wrong yardstick for scalar kernels).
 The result is checked against a host reference so a mis-launched kernel cannot be credited.
+
+## Compile-time resource report
+
+```julia
+cks = compiled_kernels(backend; pattern = r"_my_driver!")   # kernels this process compiled
+r = kernel_resources(backend, only(cks))                    # at the kernel's static workgroup size
+r.registers, r.local_mem_bytes, r.shared_mem_bytes           # per-thread regs, spill/stack bytes, LDS/block
+r.active_blocks_per_sm, r.occupancy                          # the runtime's occupancy calculator
+r.isa                                                        # AMD: sgpr/vgpr/spill counts, compiler occupancy
+```
+
+Both vendor packages cache every kernel instance the process compiles, so the inventory reaches
+kernels that are closures inside driver functions (an AcceleratedKernels `foreachindex` body, say)
+without wrapping, recompiling or modifying them; on Julia ≥ 1.12 the closure type carries the
+enclosing function's name, which is what `pattern` matches. `shared_mem_bytes` is what the kernel
+descriptor *reserves* — LLVM's AMDGPU backend promotes private arrays it cannot keep in registers
+to LDS, sized for the kernel's maximum block size, and that reservation, not the source, is what
+caps the resident blocks per CU. Nothing is launched; the AMD ISA dump costs ~0.5 s of compiler time.
