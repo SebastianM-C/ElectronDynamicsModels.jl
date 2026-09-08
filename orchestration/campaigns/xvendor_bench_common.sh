@@ -15,6 +15,11 @@
 # Per-device files pick CAMPAIGN (one output dir per card) and the cell subset the card fits.
 # Reference times for the strong cell: H200 SXM 10287 s (mgpu_bench), MI300X ≈ 25 min (3.0e9
 # e·s·px/s), W7900 ≈ 2.7 h (4.4e8 measured on image_a0_g3p5 at 401²).
+# HOST RAM: the strong cell keeps N=16000 trajectory splines on the host (~75 GB) plus the 12 GiB
+# cube; with the inline reduce the process peaks at ~105–110 GB (measured 2026-09-08: 104 GB on the
+# RTX 5090 box, OOM-killed at 109 GB on a 128 GB desktop with a 13 GB baseline). On a ≤128 GB host
+# launch the local lane with REDUCE_OVERLAP=1 so the reduce runs in its own process after the
+# field process has exited. Cloud pods (251 GB) are unaffected.
 . "$(dirname "${BASH_SOURCE[0]}")/mgpu_bench_common.sh"
 KEEP_CUBE=0
 # Later assignments win inside a cell's override list (the mgpu_bench_h100 pattern).
