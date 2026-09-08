@@ -63,8 +63,8 @@ end
 
 # RHS of dτ_r/dt = 1 / (u⁰ - u⃗·n̂); allocation-free, kernel-callable. State components
 # are read with literal indices — canonical order guaranteed by `to_gpu` (see kernel_newton.jl).
-@muladd @inline function _rt_rhs_kernel(τ, gpu_traj, r_obs)
-    v = gpu_traj.itp(τ)
+@muladd @inline function _rt_rhs_kernel(τ, gpu_traj, r_obs, idx)
+    v, idx = gpu_traj.itp(τ, idx)   # warm-started knot search (see _searchsorted_left)
     x¹ = v[2]
     x² = v[3]
     x³ = v[4]
@@ -76,17 +76,21 @@ end
     d² = r_obs[2] - x²
     d³ = r_obs[3] - x³
     inv_r = inv(sqrt(d¹ * d¹ + d² * d² + d³ * d³))
-    return inv(u⁰ - (u¹ * d¹ + u² * d² + u³ * d³) * inv_r)
+    return inv(u⁰ - (u¹ * d¹ + u² * d² + u³ * d³) * inv_r), idx
 end
 
 # One classical RK4 step for the autonomous ODE dτ_r/dt = f(τ_r).
-@muladd @inline function _rk4_step(τ, dt, gpu_traj, r_obs)
-    k1 = _rt_rhs_kernel(τ, gpu_traj, r_obs)
-    k2 = _rt_rhs_kernel(τ + 0.5 * dt * k1, gpu_traj, r_obs)
-    k3 = _rt_rhs_kernel(τ + 0.5 * dt * k2, gpu_traj, r_obs)
-    k4 = _rt_rhs_kernel(τ + dt * k3, gpu_traj, r_obs)
-    return τ + dt * (k1 + 2 * (k2 + k3) + k4) * (1 / 6)
+@muladd @inline function _rk4_step(τ, dt, gpu_traj, r_obs, idx)
+    k1, idx = _rt_rhs_kernel(τ, gpu_traj, r_obs, idx)
+    k2, idx = _rt_rhs_kernel(τ + 0.5 * dt * k1, gpu_traj, r_obs, idx)
+    k3, idx = _rt_rhs_kernel(τ + 0.5 * dt * k2, gpu_traj, r_obs, idx)
+    k4, idx = _rt_rhs_kernel(τ + dt * k3, gpu_traj, r_obs, idx)
+    return τ + dt * (k1 + 2 * (k2 + k3) + k4) * (1 / 6), idx
 end
+
+# Cold-start forms (host diagnostics, tests): same values, search from the first interval.
+_rt_rhs_kernel(τ, gpu_traj, r_obs) = first(_rt_rhs_kernel(τ, gpu_traj, r_obs, 1))
+_rk4_step(τ, dt, gpu_traj, r_obs) = first(_rk4_step(τ, dt, gpu_traj, r_obs, 1))
 
 # Per-electron AK.foreachindex pass over (Nx × Ny) pixels.
 # Implemented as a regular function (not @kernel) because KA's @kernel macro
@@ -138,11 +142,12 @@ function _gpu_unified_one_electron!(
         # δx⁰/n_substeps, bringing ω·dt into RK4's accurate range (a single
         # step works only for ω·δx⁰ ≪ 1, which fails at ω·δx⁰ ≈ π/2).
         τ = τi
+        idx = 1   # spline interval of the previous evaluation: warm start of the knot search
         bridge_dt = x⁰_first + (k_start - 1) * δx⁰ - x⁰_i_px
         if bridge_dt > 0
             sub_dt = bridge_dt / n_substeps
             for _ in 1:n_substeps
-                τ = _rk4_step(τ, sub_dt, gpu_traj, r_obs)
+                τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx)
             end
             τ = clamp(τ, τi, τf)
         end
@@ -150,7 +155,7 @@ function _gpu_unified_one_electron!(
         # March through saveat slots, accumulating at each
         for k in k_start:k_end
             τ_safe = clamp(τ, τi, τf)
-            v = gpu_traj.itp(τ_safe)
+            v, idx = gpu_traj.itp(τ_safe, idx)
 
             x¹ = v[2]
             x² = v[3]
@@ -176,7 +181,7 @@ function _gpu_unified_one_electron!(
             if k < k_end
                 sub_dt = δx⁰ / n_substeps
                 for _ in 1:n_substeps
-                    τ = _rk4_step(τ, sub_dt, gpu_traj, r_obs)
+                    τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx)
                 end
                 τ = clamp(τ, τi, τf)
             end
@@ -331,11 +336,12 @@ function _gpu_unified_field_one_electron!(
         # Bridge τ from τi up to observer time x⁰_samples[k_start], then advance
         # by δx⁰ between successive slots (each as n_substeps RK4 sub-steps).
         τ = τi
+        idx = 1   # spline interval of the previous evaluation: warm start of the knot search
         bridge_dt = x⁰_first + (k_start - 1) * δx⁰ - x⁰_i_px
         if bridge_dt > 0
             sub_dt = bridge_dt / n_substeps
             for _ in 1:n_substeps
-                τ = _rk4_step(τ, sub_dt, gpu_traj, r_obs)
+                τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx)
             end
             τ = clamp(τ, τi, τf)
         end
@@ -344,10 +350,10 @@ function _gpu_unified_field_one_electron!(
         for k in k_start:k_end
             τ_safe = clamp(τ, τi, τf)
 
-            v = gpu_traj.itp(τ_safe)
+            v, idx = gpu_traj.itp(τ_safe, idx)
             xμ = SVector{4}(v[1], v[2], v[3], v[4])
             uμ = SVector{4}(v[5], v[6], v[7], v[8])
-            𝔞μ = gpu_traj.a_itp(τ_safe)
+            𝔞μ = _eval_at(gpu_traj.a_itp, τ_safe, idx)   # same knots as itp (checked in to_gpu)
 
             disp = r_obs - xμ[SA[2, 3, 4]]
             X = SVector{4}(norm(disp), disp[1], disp[2], disp[3])
@@ -375,7 +381,7 @@ function _gpu_unified_field_one_electron!(
             if k < k_end
                 sub_dt = δx⁰ / n_substeps
                 for _ in 1:n_substeps
-                    τ = _rk4_step(τ, sub_dt, gpu_traj, r_obs)
+                    τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx)
                 end
                 τ = clamp(τ, τi, τf)
             end

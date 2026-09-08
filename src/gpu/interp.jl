@@ -96,12 +96,85 @@ function _searchsorted_left(t, x)
 end
 
 """
-    (spline::GPUCubicSpline)(τ)
+    _searchsorted_left(t, x, guess)
 
-Evaluate the spline at time `τ`, returning an `SVector` of interpolated values.
+Warm-started variant: returns exactly what `_searchsorted_left(t, x)` returns (the largest
+`i ∈ [1, length(t)-1]` with `t[i] ≤ x`, or 1), but starts from `guess`. If `x` lies in
+`[t[guess], t[guess+1])` the answer is `guess` after two knot reads; otherwise the search
+gallops from `guess` towards `x` (steps 1, 2, 4, …) and finishes with a binary search inside
+the bracket it found — about 2·log₂(distance) reads instead of log₂(N). The per-pixel kernels
+feed the interval of their previous evaluation back in: consecutive slots move the retarded
+time by a fraction of a knot, so the fast path is the common case. The result is identical by
+construction (same predicate, same bracket invariants), so kernel output does not change.
 """
-@muladd function (spline::GPUCubicSpline{D})(τ) where {D}
-    idx = _searchsorted_left(spline.t, τ)
+function _searchsorted_left(t, x, guess::Integer)
+    hi_max = length(t) - 1
+    g = clamp(Int(guess), 1, hi_max)
+    if t[g] ≤ x
+        # answer ≥ g; fast path when x is below the next knot (or g is the last interval)
+        (g == hi_max || t[g + 1] > x) && return g
+        lo = g + 1      # t[lo] ≤ x
+        hi = hi_max     # hi_max, or an index with t[hi + 1] > x (set below)
+        step = 1
+        while true
+            nxt = lo + step
+            nxt > hi_max && break
+            if t[nxt] ≤ x
+                lo = nxt
+                step <<= 1
+            else
+                hi = nxt - 1
+                break
+            end
+        end
+    else
+        # answer < g (or 1 when x precedes every knot)
+        g == 1 && return 1
+        hi = g - 1      # t[hi + 1] = t[g] > x
+        lo = 1
+        step = 1
+        while true
+            prv = hi - step
+            prv < 1 && break
+            if t[prv] ≤ x
+                lo = prv
+                break
+            else
+                hi = prv - 1
+                step <<= 1
+            end
+        end
+    end
+    while lo < hi
+        mid = (lo + hi + 1) >> 1
+        if t[mid] ≤ x
+            lo = mid
+        else
+            hi = mid - 1
+        end
+    end
+    return lo
+end
+
+"""
+    (spline::GPUCubicSpline)(τ)
+    (spline::GPUCubicSpline)(τ, guess) -> (value, idx)
+
+Evaluate the spline at time `τ`, returning an `SVector` of interpolated values. The two-argument
+form starts the knot search at interval `guess` (see [`_searchsorted_left`](@ref)) and also
+returns the interval it used, to be fed back as the next call's guess; its value is bit-identical
+to the one-argument form.
+"""
+(spline::GPUCubicSpline)(τ) = _eval_at(spline, τ, _searchsorted_left(spline.t, τ))
+
+function (spline::GPUCubicSpline)(τ, guess::Integer)
+    idx = _searchsorted_left(spline.t, τ, guess)
+    return _eval_at(spline, τ, idx), idx
+end
+
+# Spline value on a known interval `idx` (1 ≤ idx ≤ length(t) - 1): the arithmetic of the
+# evaluation, shared by the cold and the warm-started calls.
+@muladd function _eval_at(spline::GPUCubicSpline{D}, τ, idx) where {D}
     h_idx = spline.h[idx + 1]
     dt1 = τ - spline.t[idx]
     dt2 = spline.t[idx + 1] - τ
@@ -153,6 +226,14 @@ function to_gpu(traj::TrajectoryInterpolant; with_acceleration::Bool = false)
         "to_gpu: the GPU kernels require the canonical state order x_idxs = 1:4, u_idxs = 5:8 " *
         "(got x_idxs = $(traj.x_idxs), u_idxs = $(traj.u_idxs)); build the trajectory with " *
         "TrajectoryInterpolant(sol, x_syms, u_syms) or arrange the spline components in that order"))
+    if with_acceleration
+        # The field kernels evaluate `a_itp` on the interval the warm-started search found for
+        # `itp`, so both splines must sit on the same knots. `TrajectoryInterpolant(sol)` builds
+        # them from the same `sol.t`; anything else is rejected up front.
+        traj.a_itp.t == traj.itp.t || throw(ArgumentError(
+            "to_gpu: the acceleration spline must share the trajectory spline's knots " *
+            "($(length(traj.a_itp.t)) vs $(length(traj.itp.t)) knots, or different knot values)"))
+    end
     a_itp = with_acceleration ? GPUCubicSpline(traj.a_itp) : nothing
     return TrajectoryInterpolant(GPUCubicSpline(traj.itp), a_itp, traj.x_idxs, traj.u_idxs, traj.K)
 end
