@@ -338,6 +338,18 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         # Device-event kernel timing (src/gpu_api.jl). On the CPU backend the events are host
         # clocks (kernels are synchronous), so the plumbing — one pair per electron, keyed by
         # device, shared safely across the sharded driver's tasks — is testable without a GPU.
+        # (@testset scopes are local: rebuild the 3-electron setup of the sharded test above.)
+        trajs = [
+            analytic_traj(; g = 1.2, A = 0.25, Ω = 2.0, vz = 0.0, τspan = (0.0, 20.0), N = 3000),
+            analytic_traj(; g = 1.3, A = 0.20, Ω = 2.5, vz = 0.0, τspan = (0.0, 20.0), N = 3000),
+            analytic_traj(; g = 1.1, A = 0.30, Ω = 1.5, vz = 0.0, τspan = (0.0, 20.0), N = 3000),
+        ]
+        τi, τf = first(trajs[1].itp.t), last(trajs[1].itp.t)
+        z = 50.0
+        Nx = Ny = 7
+        half = 6.0
+        x⁰ = LinRange(1.2τi + (z - 2half), 1.2τf + (z + 2half), 120)
+        screen = ObserverScreen(LinRange(-half, half, Nx), LinRange(-half, half, Ny), z, x⁰; c = 1.0)
         e0 = gpu_event(CPU()); sleep(0.01); e1 = gpu_event(CPU())
         @test 0.005 < gpu_elapsed(e0, e1) < 5.0
         @test isempty(launch_times(LaunchTimer()))
