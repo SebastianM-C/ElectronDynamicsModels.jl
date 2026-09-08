@@ -1,7 +1,7 @@
 # campaigns/gpm_validate.sh — two tiny Newton/total cells (~5 min of GPU) to validate the GPM
 # counter sampler on a GPM-capable (Hopper+) pod: the manifest must carry [gpu].gpm_* (achieved SM occupancy,
-# FP64 / DRAM-bandwidth utilization) beside the compile-time kernel_occupancy, and the run dir a
-# gpmtrace_<uuid>.tsv beside the gputrace. Launch (cheapest GPM-capable card, any DC):
+# FP64 / DRAM-bandwidth utilization) beside power/util/VRAM and the compile-time kernel_occupancy,
+# and the gputrace_<uuid>.tsv must carry the GPM columns. Launch (cheapest GPM-capable card, any DC):
 #   RUNPOD_DC="" RUNPOD_CLOUD_TYPE=COMMUNITY RUNPOD_GPU_CANDIDATES="NVIDIA H100 PCIe,NVIDIA H100 NVL,NVIDIA H100 80GB HBM3" \
 #     bash orchestration/backends/runpod.sh run orchestration/campaigns/gpm_validate.sh
 # Not a physics campaign: no cube kept, no sweep declared.

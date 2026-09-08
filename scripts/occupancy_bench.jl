@@ -113,19 +113,16 @@ t_field = @elapsed begin
 end
 
 # ── report ──
-samples = telem.samples   # rows (t, device, power_W, compute_util, mem_util, vram_used_B)
-pw = Float64[s[3] for s in samples]
-cu = Float64[s[4] for s in samples]
-mu = Float64[s[5] for s in samples]
-vr = Float64[s[6] for s in samples]
-@printf("\nrun: %d electrons in %.1f s  (%d telemetry samples @ %.2gs)\n", NELEC, t_field, length(samples), SAMPLE_DT)
+col(c) = haskey(telem, c) ? filter(!isnan, telem[c]) : Float64[]   # GPUTelemetry column table (nan = not exposed)
+pw = col(:power_W); cu = col(:compute_util); mu = col(:mem_util); vr = col(:vram_used_B)
+@printf("\nrun: %d electrons in %.1f s  (%d telemetry samples @ %.2gs)\n", NELEC, t_field, length(telem), SAMPLE_DT)
 if !isempty(pw)
     @printf("power (W):     mean %.1f   peak %.1f   min %.1f\n", mean(pw), maximum(pw), minimum(pw))
     @printf("compute util:  mean %.2f   peak %.2f\n", mean(cu), maximum(cu))
     @printf("memory util:   mean %.2f   peak %.2f\n", mean(mu), maximum(mu))
 end
 # Kernel-active window (compute util above noise) — isolates the kernel from the host pullback.
-let act = Float64[s[1] for s in samples if s[4] > 0.05]
+let act = length(telem) == 0 ? Float64[] : telem[:t_rel_s][telem[:compute_util] .> 0.05]
     isempty(act) || @printf("GPU-active window: %.1f–%.1f s  (≈%.1f s kernel; @elapsed incl. host pullback = %.1f s)\n",
         minimum(act), maximum(act), maximum(act) - minimum(act), t_field)
 end

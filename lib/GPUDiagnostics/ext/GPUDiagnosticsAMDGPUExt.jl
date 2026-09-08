@@ -80,20 +80,19 @@ function GD.gpu_utilization(::ROCBackend)
     return (compute = rd("gpu_busy_percent"), memory = rd("mem_busy_percent"))
 end
 
-# Telemetry child: HIP is touched only HERE to resolve each device's sysfs paths once; the
-# spawned bin/gputrace.sh then reads the amdgpu driver's counters (VRAM included, via
-# `mem_info_vram_used` — no hipMemGetInfo) from its own process, immune to this process's HIP
-# locks and Julia's GC/timer coupling. Sysfs paths contain no ':' so the devspec join is safe.
-function GD.gpu_telemetry_child_cmd(::ROCBackend, device_ids::AbstractVector{<:Integer},
-        dt::Real, stopfile::AbstractString)
-    script = joinpath(pkgdir(GD), "bin", "gputrace.sh")
+# Telemetry sources: HIP is touched only HERE, in the parent, to resolve each device's sysfs
+# paths once; the sampler child (a Julia process that never loads AMDGPU.jl) then reads the amdgpu
+# driver's counters (VRAM included, via `mem_info_vram_used` — no hipMemGetInfo) directly, immune
+# to this process's HIP locks and Julia's GC/timer coupling. Sysfs paths contain no ':' so the
+# spec join is safe. No hardware counters here (`counters` is ignored).
+function GD.gpu_sampler_sources(::ROCBackend, device_ids::AbstractVector{<:Integer}, ::Symbol)
     specs = map(device_ids) do i
         card = _amd_device_sysfs(AMDGPU.devices()[i])
         mb = joinpath(card, "mem_busy_percent")   # absent on some devices (e.g. iGPUs) → nan
-        join([string(i), _amd_power_file(card), joinpath(card, "gpu_busy_percent"),
+        "sysfs:" * join([string(i), _amd_power_file(card), joinpath(card, "gpu_busy_percent"),
             isfile(mb) ? mb : "-", joinpath(card, "mem_info_vram_used")], ":")
     end
-    return `sh $script $dt $(getpid()) $stopfile $specs`
+    return (specs = specs, packages = Base.PkgId[])
 end
 
 # ── Compile-time resource report (src/resources.jl hooks) ───────────────────────────────────

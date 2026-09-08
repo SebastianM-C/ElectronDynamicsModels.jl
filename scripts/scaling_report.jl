@@ -88,7 +88,8 @@ kernel_seconds(tm, dir, id) = haskey(tm, "kernel") ? (Float64(tm["kernel"]), "ev
     (t = kernel_active(dir, id); (t, isnan(t) ? "—" : "trace"))
 
 # Proxy from a gputrace TSV: per device, count rows with compute_util ≥ 0.99,
-# skipping rows that are torn (≠ 6 fields) or implausible (util ∉ [0,1], VRAM > 1 TB); the
+# skipping rows that are torn (< 6 fields; GPM-era traces append counter columns after the base
+# six) or implausible (util ∉ [0,1], VRAM > 1 TB); the
 # busiest device sets the cell's kernel time (sharded devices finish within seconds of each
 # other, so max ≈ every device's).
 function kernel_active(dir, id)
@@ -97,7 +98,7 @@ function kernel_active(dir, id)
     per = Dict{String, Int}()
     for ln in eachline(joinpath(dir, fs[1]))
         startswith(ln, '#') && continue
-        f = split(ln, '\t'); length(f) == 6 || continue
+        f = split(ln, '\t'); length(f) >= 6 || continue
         u = tryparse(Float64, f[4]); v = tryparse(Float64, f[6])
         (u === nothing || v === nothing || !(0 <= u <= 1) || v > 1.0e12) && continue
         u >= 0.99 && (per[f[2]] = get(per, f[2], 0) + 1)

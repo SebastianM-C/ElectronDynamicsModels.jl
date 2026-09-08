@@ -1,7 +1,8 @@
 # GPU telemetry for the solver manifests' [gpu] section — shared by thomson_scattering.jl,
 # lpwa.jl, inverse_thomson_scattering.jl and occupancy_bench.jl. The instruments live in
-# lib/GPUDiagnostics (device snapshot, out-of-process sampler `with_gpu_sampler`, device-event
-# `LaunchTimer`, measured FP64 peak); this file reduces them into manifest sections. Everything
+# lib/GPUDiagnostics (device snapshot, out-of-process sampler `with_gpu_sampler` incl. GPM
+# counters, device-event `LaunchTimer`, measured FP64 peak); this file reduces them into manifest
+# sections. Everything
 # is wrapped so a telemetry hiccup NEVER breaks a run — it just omits the section.
 
 using GPUDiagnostics
@@ -9,9 +10,18 @@ using GPUDiagnostics
 # Static device snapshot + reduced sampler stats → the manifest's [gpu] table (a plain Dict
 # that RunManifests writes verbatim as a top-level section). `n_threads` = the pixel-parallel
 # launch size (Nx·Ny) for thread-fill occupancy. Stats reduce over ALL devices' rows
-# (device_count records the fan-out; the per-device time series lives in the gputrace TSV);
-# NaN entries (counters a device doesn't expose) are skipped per column. Returns `nothing` if
-# telemetry is unavailable (e.g. no vendor extension) so the caller just omits [gpu].
+# (device_count records the fan-out; the per-device time series lives in the gputrace TSV) via
+# `gpu_telemetry_stats`; NaN entries (counters a device doesn't expose) are skipped per column.
+# The base columns keep their historical keys (`power_mean/_peak`, `compute_util_mean/_peak`,
+# `memory_util_mean/_peak`, `vram_used_peak`, `samples`, `sample_dt`, `sampler_starved` — the
+# dashboard, scaling_report.jl and compare_hmaps.jl read them); hardware-counter columns (NVIDIA
+# GPM: achieved `sm_occupancy` to hold against the compile-time `kernel_occupancy`, `fp64_util`,
+# `dram_bw_util`, …) land as `gpm_<column>_mean/_peak/_busy_mean`, where `_busy_mean` averages
+# the rows with compute_util ≥ 0.5 — the kernel-active part of the field window, without the
+# JIT / upload / drain idle diluting it. Returns `nothing` if telemetry is unavailable (e.g. no
+# vendor extension) so the caller just omits [gpu].
+const GPU_BASE_COLUMNS = ("power_W" => "power", "compute_util" => "compute_util", "mem_util" => "memory_util",
+    "vram_used_B" => "vram_used")
 function gpu_manifest_section(backend, backend_name::AbstractString, n_threads::Integer,
         device_count::Integer, telem)
     try
@@ -28,52 +38,30 @@ function gpu_manifest_section(backend, backend_name::AbstractString, n_threads::
             gpu["samples"] = telem.ticks
             gpu["sample_dt"] = telem.dt
             gpu["sampler_starved"] = telem.starved
-            col(i) = Float64[s[i] for s in telem.samples if !isnan(s[i])]
-            for (key, i) in (("power", 3), ("compute_util", 4), ("memory_util", 5))
-                v = col(i)
-                isempty(v) && continue
-                gpu[key * "_mean"] = sum(v) / length(v)
-                gpu[key * "_peak"] = maximum(v)
+            gpu["sampler_first_sample_s"] = telem.first_sample_s
+            st = gpu_telemetry_stats(telem)
+            gpu["sampler_busy_samples"] = st["busy_samples"]
+            for (col, key) in GPU_BASE_COLUMNS
+                if col == "vram_used_B"   # historically the peak only
+                    haskey(st, col * "_peak") && (gpu["vram_used_peak"] = st[col * "_peak"])
+                    continue
+                end
+                haskey(st, col * "_mean") || continue
+                gpu[key * "_mean"] = st[col * "_mean"]
+                gpu[key * "_peak"] = st[col * "_peak"]
             end
-            vr = col(6)
-            isempty(vr) || (gpu["vram_used_peak"] = maximum(vr))
+            for (k, v) in st
+                k in ("samples", "busy_samples") && continue
+                any(startswith(k, col * "_") for (col, _) in GPU_BASE_COLUMNS) && continue
+                gpu["gpm_" * k] = v
+            end
+            if haskey(st, "sm_occupancy_busy_mean")
+                @info "GPM counters (field window, compute-busy rows)" busy_samples = st["busy_samples"] sm_occupancy = round(st["sm_occupancy_busy_mean"]; digits = 3) fp64_util = round(get(st, "fp64_util_busy_mean", NaN); digits = 3) dram_bw_util = round(get(st, "dram_bw_util_busy_mean", NaN); digits = 3) sm_util = round(get(st, "sm_util_busy_mean", NaN); digits = 3)
+            end
         end
         return gpu
     catch err
         @warn "GPU telemetry unavailable — omitting [gpu] from the manifest" exception = err
-        return nothing
-    end
-end
-
-# ── GPM counters → [gpu].gpm_* ────────────────────────────────────────────────────────────────
-#
-# `with_gpm_sampler` (lib/GPUDiagnostics) runs a second child beside the telemetry sampler on GPUs
-# with GPU Performance Monitoring counters (NVIDIA Hopper and newer; elsewhere it is a no-op and
-# this adds nothing). Its rows carry what the busy percentage cannot: ACHIEVED SM
-# occupancy (to hold against the compile-time `kernel_occupancy`), FP64 / FP32 / tensor pipe
-# utilization and DRAM-bandwidth utilization. `gpm_stats` reduces them over all devices' rows;
-# every `<metric>_mean` / `_peak` lands as `gpm_<metric>_mean` / `_peak`, and the `_busy_mean`
-# variants (rows with sm_util ≥ 0.5 — the kernel-active part of the field window, without the
-# JIT / upload / drain idle diluting them) as `gpm_<metric>_busy_mean`, plus `gpm_samples`,
-# `gpm_busy_samples`, `gpm_sample_dt` and `gpm_first_sample_s` (the child's startup lag). The
-# per-tick series is the `gpmtrace_<tag>.tsv` beside the gputrace. Same contract as the other
-# helpers: a failure logs and leaves the manifest without the fields.
-function gpm_manifest_section!(gpu, telem)
-    gpu === nothing && return nothing
-    try
-        telem.ticks > 0 || return nothing
-        gpu["gpm_samples"] = telem.ticks
-        gpu["gpm_sample_dt"] = telem.dt
-        gpu["gpm_first_sample_s"] = telem.first_sample_s
-        gpu["gpm_sampler_starved"] = telem.starved
-        st = gpm_stats(telem)
-        for (k, v) in st
-            gpu["gpm_" * k] = k == "busy_samples" ? Int(v) : v
-        end
-        @info "GPM counters (field window)" samples = telem.ticks busy_samples = get(st, "busy_samples", 0) sm_occupancy_busy_mean = get(st, "sm_occupancy_busy_mean", NaN) fp64_util_busy_mean = get(st, "fp64_util_busy_mean", NaN) dram_bw_util_busy_mean = get(st, "dram_bw_util_busy_mean", NaN) sm_util_mean = get(st, "sm_util_mean", NaN)
-        return st
-    catch err
-        @warn "GPM reduction failed — omitting [gpu].gpm_* from the manifest" exception = err
         return nothing
     end
 end
