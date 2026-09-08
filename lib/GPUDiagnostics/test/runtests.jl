@@ -1,7 +1,7 @@
 using GPUDiagnostics
 using GPUDiagnostics: _fma_chain_reference, _fma_chain_kernel!, _PEAK_CHAINS
 using GPUDiagnostics: _static_workgroup_size, _parse_amdgpu_kernel_info, _compiled_kernel, _parse_ptxas_verbose
-using GPUDiagnostics: _classify_amd, _classify_sass, _parse_machine_code, _natural_loops, FP64_CLASSES
+using GPUDiagnostics: _classify, _parse_machine_code, _natural_loops, FP64_CLASSES, _ir_counts, IR_FP64_CLASSES
 import KernelAbstractions as KA
 using KernelAbstractions: CPU, Backend
 using Test
@@ -9,6 +9,39 @@ using Aqua
 
 # A KA backend with no vendor extension — exercises the "load CUDA.jl or AMDGPU.jl" fallbacks.
 struct NoVendorBackend <: Backend end
+
+# Stand-in for the LLVM.jl surface `GPUDiagnostics._ir_counts` uses (see the IR walker testset).
+module FakeLLVM
+    module API
+        @enum Opcode LLVMFAdd LLVMFSub LLVMFMul LLVMFDiv LLVMFRem LLVMFNeg LLVMFCmp LLVMSIToFP LLVMUIToFP LLVMFPToSI LLVMFPToUI LLVMFPExt LLVMFPTrunc LLVMCall LLVMAdd LLVMSub LLVMMul LLVMUDiv LLVMSDiv LLVMURem LLVMSRem LLVMShl LLVMLShr LLVMAShr LLVMAnd LLVMOr LLVMXor LLVMICmp LLVMTrunc LLVMZExt LLVMSExt LLVMSelect LLVMLoad LLVMStore LLVMAtomicRMW LLVMAtomicCmpXchg LLVMBr LLVMSwitch LLVMRet LLVMUnreachable LLVMIndirectBr LLVMInvoke LLVMPHI LLVMGetElementPtr
+    end
+    abstract type LLVMType end
+    struct LLVMDouble <: LLVMType end
+    struct LLVMFloat <: LLVMType end
+    struct LLVMHalf <: LLVMType end
+    struct LLVMBFloat <: LLVMType end
+    struct IntType <: LLVMType end
+    struct VectorType <: LLVMType; el::LLVMType; end
+    Base.eltype(t::VectorType) = t.el
+    struct Val; type::LLVMType; end
+    struct Function; name::String; decl::Bool; blocks::Vector; end
+    Function(name, decl) = Function(name, decl, [])
+    struct Inst; op::API.Opcode; type::LLVMType; ops::Vector; callee::Union{Function, Nothing}; end
+    Inst(op, type, ops) = Inst(op, type, ops, nothing)
+    struct Block; insts::Vector{Inst}; end
+    struct Module; fns::Vector{Function}; end
+    functions(m::Module) = m.fns
+    isdeclaration(f::Function) = f.decl
+    name(f::Function) = f.name
+    blocks(f::Function) = f.blocks
+    instructions(b::Block) = b.insts
+    opcode(i::Inst) = i.op
+    value_type(i::Inst) = i.type
+    value_type(v::Val) = v.type
+    operands(i::Inst) = i.ops
+    arguments(i::Inst) = i.ops
+    called_operand(i::Inst) = i.callee
+end
 
 @testset "GPUDiagnostics" begin
     @testset "Aqua" begin
@@ -336,7 +369,7 @@ struct NoVendorBackend <: Backend end
             "buffer_gl0_inv" => :other, "buffer_wbl2" => :other, "ds_load_b64" => :lds, "ds_store_b64" => :lds,
             "nonsense" => :other)
         for (op, cls) in amd_expect
-            @test _classify_amd(op) === cls
+            @test _classify(op, :amd) === (cls === :other && op == "nonsense" ? :unclassified : cls)
         end
         # SASS opcodes (base + modifiers; FP64 conversions/compares/MUFU seeds by their modifiers)
         sass_expect = ("DFMA" => :fp64_fma, "DADD" => :fp64_add, "DMUL" => :fp64_mul,
@@ -355,9 +388,21 @@ struct NoVendorBackend <: Backend end
             "DEPBAR.LE" => :wait, "NOP" => :nop, "S2R" => :other, "CS2R" => :other, "MEMBAR.SC.GPU" => :other,
             "ERRBAR" => :other, "CCTL.IVALL" => :other, "LEPC" => :other, "SHFL.IDX" => :other, "XYZZY" => :other)
         for (op, cls) in sass_expect
-            @test _classify_sass(op) === cls
+            @test _classify(op, :nvidia) === (cls === :other && op == "XYZZY" ? :unclassified : cls)
         end
         @test length(MIX_CLASSES) == 18 && all(c in MIX_CLASSES for c in FP64_CLASSES)
+        # the tables are ordered data: last rule is the catch-all, a pushfirst! override wins
+        @test last(SASS_RULES)[2] === :unclassified && last(AMD_RULES)[2] === :unclassified
+        @test all(r -> r isa Pair{Regex, Symbol}, SASS_RULES) && all(r -> r isa Pair{Regex, Symbol}, AMD_RULES)
+        pushfirst!(SASS_RULES, r"^XYZZY$" => :int)
+        pushfirst!(AMD_RULES, r"^v_mul_f64$" => :fp64_packed)
+        try
+            @test _classify("XYZZY", :nvidia) === :int
+            @test _classify("v_mul_f64_e32", :amd) === :fp64_packed
+        finally
+            popfirst!(SASS_RULES); popfirst!(AMD_RULES)
+        end
+        @test _classify("XYZZY", :nvidia) === :unclassified && _classify("v_mul_f64_e32", :amd) === :fp64_mul
 
         # AMD ISA listing: two-level loop nest with the LLVM asm-printer annotations, a cold
         # exception tail, debug labels and the metadata YAML (whose "key:" lines are not labels)
@@ -429,6 +474,7 @@ struct NoVendorBackend <: Backend end
         @test m.counts.smem == 1 && m.counts.wait == 3 && m.counts.int == 2 && m.counts.control == 5 && m.counts.salu == 3
         @test m.counts.other == 0 && m.counts.nop == 0 && m.counts.mem_load == 1 && m.counts.mem_store == 1 && m.counts.lds == 1 && m.counts.mem_atomic == 1
         @test sum(m.counts) == m.total && m.opcodes["s_endpgm"] == 2 && m.opcodes["v_fma_f64"] == 1
+        @test m.unclassified == 0 && isempty(m.unclassified_opcodes) && m.coverage == 1.0
         @test length(m.loops) == 2 && m.loops[1].header == ".LBB0_1" && m.loops[1].depth == 1 && m.loops[1].blocks == 3
         @test m.loops[1].total == 13 && m.loops[1].exclusive_total == 8 && m.loops[1].counts.fp64_fma == 1 && m.loops[1].exclusive_counts.fp64_fma == 0
         @test m.loops[2].header == ".LBB0_2" && m.loops[2].depth == 2 && m.loops[2].total == 5 && m.loops[2].exclusive_total == 5
@@ -497,6 +543,14 @@ struct NoVendorBackend <: Backend end
         @test ms.counts.fp64_mul == 1 && ms.counts.fp64_add == 1 && ms.counts.fp64_fma == 1 && ms.counts.fp64_trans == 1
         @test ms.counts.fp64_other == 2 && ms.counts.fp32 == 1 && ms.counts.mem_load == 1 && ms.counts.mem_store == 1
         @test ms.fp64 == 6 && sum(ms.counts) == ms.total
+        @test ms.unclassified == 0 && isempty(ms.unclassified_opcodes) && ms.coverage == 1.0
+        # an unknown mnemonic is counted as `other` AND reported as unclassified; a deliberate
+        # `other` (MEMBAR) is not
+        mu = instruction_mix(replace(sass, "/*0160*/                   NOP;" => "/*0160*/                   XYZZY.FOO R1, R2;\n        /*0168*/                   MEMBAR.SC.GPU;"), :nvidia)
+        @test mu.total == 25 && mu.counts.other == 3 && mu.counts.nop == 1
+        @test mu.unclassified == 1 && mu.unclassified_opcodes == Dict("XYZZY.FOO" => 1) && mu.coverage ≈ 24 / 25
+        mua = instruction_mix(replace(amd, "\ts_mov_b32 s0, 0" => "\tzzz_unknown_op v0\n\tbuffer_gl0_inv"), :amd)
+        @test mua.unclassified == 1 && mua.unclassified_opcodes == Dict("zzz_unknown_op" => 1) && mua.counts.other == 2 && mua.coverage ≈ 22 / 23
         @test length(ms.loops) == 2                                        # the .L_x_3 trap spin is dropped
         @test ms.loops[1].header == ".L_x_0" && ms.loops[1].depth == 1 && ms.loops[1].blocks == 3 && ms.loops[1].total == 16 && ms.loops[1].exclusive_total == 10
         @test ms.loops[2].header == ".L_x_1" && ms.loops[2].depth == 2 && ms.loops[2].total == 6
@@ -521,8 +575,17 @@ struct NoVendorBackend <: Backend end
         GPUDiagnostics._kernel_machine_code(::FakeMixGPU, c::CompiledKernel, target) = target === nothing ?
             (; text = amd, vendor = :amd, isa = "gfx1100", native = true, registers = 10) :
             (; text = sass, vendor = :nvidia, isa = String(target), native = false, registers = 124)
+        GPUDiagnostics._kernel_ir_counts(::FakeMixGPU, c::CompiledKernel, target) =
+            (; functions = Dict("k" => GPUDiagnostics.IRCounts(ntuple(i -> i, length(IR_CLASSES)))), isa = something(target, "gfx1100"))
         km = kernel_instruction_mix(FakeMixGPU(), ck)
         @test km.name == ck.name && km.signature == ck.signature && km.target == "gfx1100" && km.native && km.registers == 10
+        @test km.coverage == 1.0 && km.ir.target == "gfx1100" && km.ir.counts.fp64_fma == 1 && km.ir.counts.fp64_add == 2
+        @test km.ir.total == sum(1:length(IR_CLASSES)) && km.ir.fp64 == sum(1:length(IR_FP64_CLASSES)) && haskey(km.ir.functions, "k")
+        @test kernel_instruction_mix(FakeMixGPU(), ck; ir = false).ir === nothing
+        irm = kernel_ir_mix(FakeMixGPU(), ck; target = "gfx942")
+        @test irm.target == "gfx942" && irm.counts == km.ir.counts
+        @test_throws ErrorException kernel_ir_mix(CPU(), ck)
+        @test_throws ErrorException kernel_ir_mix(NoVendorBackend(), ck)
         @test km.total == 22 && km.counts == m.counts && km.hot_loop.header == ".LBB0_1"
         buf = IOBuffer()
         km2 = kernel_instruction_mix(FakeMixGPU(), ck; target = "sm_90", dump = buf)
@@ -533,5 +596,41 @@ struct NoVendorBackend <: Backend end
         rm(path)
         @test_throws ErrorException kernel_instruction_mix(CPU(), ck)
         @test_throws ErrorException kernel_instruction_mix(NoVendorBackend(), ck)
+    end
+
+    @testset "typed IR walker on a stand-in LLVM.jl module" begin
+        # _ir_counts takes the LLVM.jl module binding as an argument (AMDGPU.LLVM / CUDACore.LLVM in
+        # the extensions); the same duck-typed surface is provided here by a tiny stand-in so the
+        # walker's typing logic (double vs float by operand type, intrinsics by name) is CPU-tested.
+        Fake = FakeLLVM
+        dbl, flt, i64 = Fake.LLVMDouble(), Fake.LLVMFloat(), Fake.IntType()
+        v2d = Fake.VectorType(dbl)
+        fma64 = Fake.Function("llvm.fma.f64", true); sqrt64 = Fake.Function("llvm.sqrt.f64", true)
+        fabs64 = Fake.Function("llvm.fabs.f64", true); fma32 = Fake.Function("llvm.fma.f32", true)
+        lifetime = Fake.Function("llvm.lifetime.start.p0", true); helper = Fake.Function("julia_helper", true)
+        A = Fake.API
+        insts = [
+            Fake.Inst(A.LLVMFMul, dbl, [Fake.Val(dbl)]), Fake.Inst(A.LLVMFAdd, dbl, [Fake.Val(dbl)]),
+            Fake.Inst(A.LLVMFSub, dbl, [Fake.Val(dbl)]), Fake.Inst(A.LLVMFDiv, dbl, [Fake.Val(dbl)]),
+            Fake.Inst(A.LLVMFNeg, dbl, [Fake.Val(dbl)]), Fake.Inst(A.LLVMFMul, flt, [Fake.Val(flt)]),
+            Fake.Inst(A.LLVMFCmp, i64, [Fake.Val(dbl), Fake.Val(dbl)]), Fake.Inst(A.LLVMFCmp, i64, [Fake.Val(flt)]),
+            Fake.Inst(A.LLVMSIToFP, dbl, [Fake.Val(i64)]), Fake.Inst(A.LLVMFPToSI, i64, [Fake.Val(dbl)]),
+            Fake.Inst(A.LLVMFPTrunc, flt, [Fake.Val(dbl)]), Fake.Inst(A.LLVMSIToFP, flt, [Fake.Val(i64)]),
+            Fake.Inst(A.LLVMCall, dbl, [], fma64), Fake.Inst(A.LLVMCall, dbl, [], sqrt64),
+            Fake.Inst(A.LLVMCall, dbl, [], fabs64), Fake.Inst(A.LLVMCall, flt, [], fma32),
+            Fake.Inst(A.LLVMCall, i64, [], lifetime), Fake.Inst(A.LLVMCall, i64, [], helper),
+            Fake.Inst(A.LLVMAdd, i64, []), Fake.Inst(A.LLVMICmp, i64, []), Fake.Inst(A.LLVMSelect, dbl, []),
+            Fake.Inst(A.LLVMLoad, dbl, []), Fake.Inst(A.LLVMStore, i64, []), Fake.Inst(A.LLVMAtomicRMW, i64, []),
+            Fake.Inst(A.LLVMBr, i64, []), Fake.Inst(A.LLVMRet, i64, []), Fake.Inst(A.LLVMPHI, dbl, []),
+            Fake.Inst(A.LLVMGetElementPtr, i64, []), Fake.Inst(A.LLVMFMul, v2d, [Fake.Val(v2d)]),
+        ]
+        mod = Fake.Module([Fake.Function("kernel", false, [Fake.Block(insts)]), Fake.Function("decl_only", true, [])])
+        per = _ir_counts(Fake, mod)
+        @test collect(keys(per)) == ["kernel"]
+        c = per["kernel"]
+        @test c.fp64_mul == 2 && c.fp64_add == 2 && c.fp64_div == 1 && c.fp64_neg == 1 && c.fp64_cmp == 1
+        @test c.fp64_cvt == 3 && c.fp64_fma == 1 && c.fp64_sqrt == 1 && c.fp64_intrinsic == 1
+        @test c.fp32 == 4 && c.int == 3 && c.call == 1 && c.mem_load == 1 && c.mem_store == 1 && c.mem_atomic == 1
+        @test c.control == 2 && c.other == 3 && sum(c) == length(insts)
     end
 end

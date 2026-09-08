@@ -74,6 +74,8 @@ println("target   ", mix.target, mix.native ? "  [native: this is the code that 
     "   registers ", something(mix.registers, "n/a (see kernel_resources)"), "   ", round(t; digits = 1), " s")
 println("blocks   ", mix.blocks, "   loops ", length(mix.loops), "   hot loop ", mix.hot_loop === nothing ? "none" : mix.hot_loop.header,
     " (confidence ", mix.hot_loop_confidence, mix.llvm_loops_agree === nothing ? "" : ", LLVM loop annotations " * (mix.llvm_loops_agree ? "agree" : "DISAGREE"), ")")
+println("coverage ", round(100 * mix.coverage; digits = 2), " % of instructions matched a rule",
+    mix.unclassified == 0 ? "" : "; unclassified: " * join(["$k×$v" for (k, v) in sort!(collect(mix.unclassified_opcodes); by = x -> -x[2])], ", "))
 println()
 cols = [("total (static)", mix.counts)]
 mix.hot_loop === nothing || push!(cols, ("hot loop", mix.hot_loop.counts), ("hot loop excl.", mix.hot_loop.exclusive_counts))
@@ -93,8 +95,18 @@ for l in mix.loops
     println("  ", rpad(l.header, 12), " depth ", l.depth, "  blocks ", lpad(l.blocks, 4), "  total ", lpad(l.total, 6), "  excl ", lpad(l.exclusive_total, 6),
         "  fp64 ", lpad(sum(l.counts[k] for k in GPUDiagnostics.FP64_CLASSES), 5), "  waits ", lpad(l.counts.wait, 4), "  loads ", lpad(l.counts.mem_load, 4))
 end
-other = sort!([(k, v) for (k, v) in mix.opcodes if (mix.vendor === :amd ? GPUDiagnostics._classify_amd(k) : GPUDiagnostics._classify_sass(k)) === :other]; by = x -> -x[2])
+other = sort!([(k, v) for (k, v) in mix.opcodes if GPUDiagnostics._classify(k, mix.vendor) in (:other, :unclassified)]; by = x -> -x[2])
 isempty(other) || println("\n'other' = ", join(["$k×$v" for (k, v) in other[1:min(end, 10)]], ", "))
+
+if mix.ir !== nothing
+    println("\ntyped LLVM IR of the same job (optimized, before the backend; whole module, ", length(mix.ir.functions), " function(s)):")
+    println("  ", join(["$k=$(mix.ir.counts[k])" for k in IR_CLASSES], "  "))
+    hl = mix.hot_loop
+    println("  IR fp64: fma ", mix.ir.counts.fp64_fma, "  add ", mix.ir.counts.fp64_add, "  mul ", mix.ir.counts.fp64_mul, "  div ", mix.ir.counts.fp64_div,
+        "  sqrt ", mix.ir.counts.fp64_sqrt, "   vs machine code (whole binary): fma ", mix.counts.fp64_fma, "  add ", mix.counts.fp64_add, "  mul ", mix.counts.fp64_mul,
+        "  trans ", mix.counts.fp64_trans, "  other ", mix.counts.fp64_other,
+        hl === nothing ? "" : "   (hot loop: fma $(hl.counts.fp64_fma) add $(hl.counts.fp64_add) mul $(hl.counts.fp64_mul))")
+end
 
 if opts["slots"] !== nothing && mix.hot_loop !== nothing
     peak = opts["peak"]

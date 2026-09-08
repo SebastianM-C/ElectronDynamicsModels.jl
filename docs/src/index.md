@@ -31,7 +31,8 @@ fma/add/mul/transcendental/other/packed, FP32, integer, scalar, memory, LDS, con
 for the whole kernel and for the hot loop of its control-flow graph, natively or cross-compiled
 for a target that is not present such as `gfx942` or `sm_90`; `fp64_issue_floor` turns the
 per-slot FP64 count and the measured FP64 rate into the FP64-pipe time floor per launch;
-`scripts/instruction_mix.jl` prints the table). The CUDA.jl / AMDGPU.jl extensions supply the
+`kernel_ir_mix` counts the same job's optimized LLVM IR by typed opcode as the pre-backend
+reference; `scripts/instruction_mix.jl` prints the table). The CUDA.jl / AMDGPU.jl extensions supply the
 vendor methods; the `CPU` backend has host fallbacks.
 
 ```@autodocs

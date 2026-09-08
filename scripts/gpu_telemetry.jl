@@ -127,8 +127,10 @@ end
 # class) follows as `kernel_mix_<class>` — whole-binary totals, every path counted once, cold
 # exception code included — plus `kernel_mix_total`, `kernel_mix_fp64` (the six FP64 classes) and,
 # when the control-flow graph yields a hot loop, `kernel_mix_hot_loop_total` / `_fp64` (one pass
-# through the per-slot loop, nested loops counted once) with `kernel_mix_hot_loop_confidence`.
-# Cross-compiled targets (`target = "gfx942"`) are an offline tool (scripts/instruction_mix.jl),
+# through the per-slot loop, nested loops counted once) with `kernel_mix_hot_loop_confidence`,
+# `kernel_mix_coverage` (share of instructions a classification rule matched) and the typed
+# LLVM-IR counts of the same job, `kernel_ir_fp64_fma/_add/_mul/_div/_sqrt` (the arithmetic
+# before the backend fused and expanded it). Cross-compiled targets (`target = "gfx942"`) are an offline tool (scripts/instruction_mix.jl),
 # never written to manifests.
 const FIELD_KERNEL_PATTERN = r"_gpu_\w*field_one_electron!"
 function record_kernel_resources!(gpu, backend; pattern = FIELD_KERNEL_PATTERN, block_size = nothing)
@@ -174,13 +176,19 @@ function record_kernel_mix!(gpu, backend, ck)
         for c in MIX_CLASSES
             gpu["kernel_mix_" * String(c)] = mix.counts[c]
         end
+        gpu["kernel_mix_coverage"] = Float64(mix.coverage)
         hot = mix.hot_loop
         if hot !== nothing
             gpu["kernel_mix_hot_loop_total"] = hot.total
             gpu["kernel_mix_hot_loop_fp64"] = sum(hot.counts[c] for c in GPUDiagnostics.FP64_CLASSES)
             gpu["kernel_mix_hot_loop_confidence"] = String(mix.hot_loop_confidence)
         end
-        @info "kernel instruction mix (static)" target = mix.target total = mix.total fp64 = mix.fp64 fp64_fma = mix.counts.fp64_fma fp64_add = mix.counts.fp64_add fp64_mul = mix.counts.fp64_mul fp64_packed = mix.counts.fp64_packed waits = mix.counts.wait hot_loop_total = hot === nothing ? missing : hot.total hot_loop_fp64 = hot === nothing ? missing : gpu["kernel_mix_hot_loop_fp64"] confidence = mix.hot_loop_confidence
+        if mix.ir !== nothing   # typed LLVM-IR counts of the same job (before backend contraction)
+            for c in (:fp64_fma, :fp64_add, :fp64_mul, :fp64_div, :fp64_sqrt)
+                gpu["kernel_ir_" * String(c)] = mix.ir.counts[c]
+            end
+        end
+        @info "kernel instruction mix (static)" target = mix.target total = mix.total coverage = round(mix.coverage; digits = 4) fp64 = mix.fp64 fp64_fma = mix.counts.fp64_fma fp64_add = mix.counts.fp64_add fp64_mul = mix.counts.fp64_mul fp64_packed = mix.counts.fp64_packed waits = mix.counts.wait hot_loop_total = hot === nothing ? missing : hot.total hot_loop_fp64 = hot === nothing ? missing : gpu["kernel_mix_hot_loop_fp64"] confidence = mix.hot_loop_confidence
         return mix
     catch err
         @warn "kernel instruction mix unavailable — omitting [gpu].kernel_mix_*" exception = (err, catch_backtrace())

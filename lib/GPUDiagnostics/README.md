@@ -131,6 +131,19 @@ counts of the Newton field kernel reproduce the measured per-slot warp-instructi
 measured FP64 lane-instruction rate (`measure_peak_fp64_flops` / 2 — an FMA is 2 FLOP): the time the
 FP64 pipe alone needs per launch, assuming every FP64 instruction issues at the FMA rate.
 
+The classifiers are ordered rule tables, `SASS_RULES` / `AMD_RULES :: Vector{Pair{Regex, Symbol}}`,
+built on the mnemonic grammars (SASS: the leading operand-type letter `D`/`F`/`H`/`I`/`U`, the
+`LD`/`ST`/`ATOM`/`RED` + `G`/`L`/`S`/`C` memory suffixes; AMD: the `v_`/`s_`/`ds_`/`global_` prefixes and
+`_f64`/`_f32` suffixes) with a short exception list ahead of each generic rule; the last rule is a
+catch-all whose hits are `other` but reported as `unclassified` / `unclassified_opcodes` / `coverage`
+(1.0 on all four validated targets). The vectors are mutable — `pushfirst!(SASS_RULES, r"^MYOP" =>
+:int)` overrides for the session. `kernel_ir_mix` (also the `ir` field of `kernel_instruction_mix`)
+walks the OPTIMIZED LLVM IR of the same job with LLVM.jl, typed by opcode and operand type
+(`IR_CLASSES`: fp64 fma / add / mul / div / neg / sqrt / cmp / cvt / intrinsic, fp32, int, memory,
+call, control, other) — the arithmetic before the backend: IR `fma` 0 against 132 `v_fma_f64` /
+301 DFMA is the backend's FMA contraction, IR `div` 14 / `sqrt` 3 against the machine's
+reciprocal seeds + FMA sequences its expansion. Whole-module totals (no IR loop attribution).
+
 Gotchas: CUDA.jl's `code_sass` loads the module on the current device (via CUPTI), which an
 `sm_90` cubin cannot do on an `sm_120` GPU — the extension compiles with `CUDACore.compile` and runs
 `nvdisasm` on the image directly, so no CUPTI and no device of the target architecture are needed.

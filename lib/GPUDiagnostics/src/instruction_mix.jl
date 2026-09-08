@@ -71,10 +71,16 @@ const FP64_CLASSES = (:fp64_fma, :fp64_add, :fp64_mul, :fp64_trans, :fp64_other,
 const MixCounts = NamedTuple{MIX_CLASSES, NTuple{length(MIX_CLASSES), Int}}
 
 _zero_counts() = MixCounts(ntuple(_ -> 0, length(MIX_CLASSES)))
-function _count_classes(opcodes, classify)
+# Counts per class; `:unclassified` (the catch-all rule) lands in `other` and, when a
+# histogram Dict is passed, is also recorded there by mnemonic.
+function _count_classes(opcodes, vendor::Symbol, unclassified = nothing)
     acc = Dict{Symbol, Int}()
     for op in opcodes
-        c = classify(op)
+        c = _classify(op, vendor)
+        if c === :unclassified
+            c = :other
+            unclassified === nothing || (unclassified[op] = get(unclassified, op, 0) + 1)
+        end
         acc[c] = get(acc, c, 0) + 1
     end
     return MixCounts(ntuple(i -> get(acc, MIX_CLASSES[i], 0), length(MIX_CLASSES)))
@@ -82,97 +88,92 @@ end
 _add_counts(a::MixCounts, b::MixCounts) = MixCounts(ntuple(i -> a[i] + b[i], length(MIX_CLASSES)))
 _fp64_total(c::MixCounts) = sum(c[k] for k in FP64_CLASSES)
 
-# ── Classifiers ─────────────────────────────────────────────────────────────────────────────
+# ── Classifiers: ordered rule tables ────────────────────────────────────────────────────────
+#
+# One generic matcher, two vendor tables, first matching rule wins. The rules follow the
+# mnemonic grammars — SASS: a leading operand-type letter (`D` fp64, `F`/`H` fp32/half, `I`
+# integer, `U` uniform datapath), `LD`/`ST`/`ATOM`/`RED` + a space suffix (`G` global, `L`
+# local, `S` shared, `C` constant) for memory; AMD: `v_`/`s_`/`ds_`/`global_`… prefixes and the
+# `_f64`/`_f32` type suffixes — with a SHORT exception list ahead of each generic rule where
+# the grammar lies (FLO is integer, FENCE is a fence, MUFU.RCP64H is FP64, F2I.….F64 converts
+# FP64, ULDC is a constant load, UTMA* are TMA ops). The last rule is the catch-all
+# `:unclassified`, counted as `other` and reported in `unclassified_opcodes` / `coverage`.
+# Deliberate `:other` rules (cache maintenance, fences, special registers, hints) are NOT
+# unclassified. Users may `pushfirst!(SASS_RULES, r"^FOO" => :int)` to override.
 
-# AMD GCN/RDNA/CDNA mnemonics. Encoding suffixes (_e32/_e64/_dpp/_sdwa) are dropped first; the
-# RDNA3 dual-issue `v_dual_a :: v_dual_b` line is classified by its first op.
-function _classify_amd(op::AbstractString)
-    b = replace(String(op), r"_(e32|e64|dpp|dpp8|sdwa)$" => "")
-    if startswith(b, "v_")
-        b == "v_nop" && return :nop
-        occursin(r"^v_pk_\w*_f64$", b) && return :fp64_packed
-        if occursin("f64", b)
-            occursin(r"^v_(fma|fmac|mad|div_fmas)_f64$", b) && return :fp64_fma
-            occursin(r"^v_(add|sub)_f64$", b) && return :fp64_add
-            b == "v_mul_f64" && return :fp64_mul
-            occursin(r"^v_(rcp|rsq|sqrt)_f64$", b) && return :fp64_trans
-            return :fp64_other
-        end
-        occursin(r"_(f32|f16|bf16)(_|$)", b) && return :fp32
-        return :int
+"""
+    SASS_RULES, AMD_RULES :: Vector{Pair{Regex, Symbol}}
+
+Ordered classification rules of [`instruction_mix`](@ref) for NVIDIA SASS mnemonics (matched
+against the full `OPC.MOD…` opcode) and AMD ISA mnemonics (matched after the `_e32`/`_e64`/
+`_dpp`/`_sdwa` encoding suffix is dropped). The first matching rule wins; the final `r""` rule
+is the catch-all `:unclassified` (counted as `other`, listed in `unclassified_opcodes`). The
+vectors are mutable: `pushfirst!(SASS_RULES, r"^MYOP" => :int)` overrides for a session.
+"""
+const SASS_RULES = Pair{Regex, Symbol}[
+    # grammar exceptions first
+    r"^NOP$" => :nop,
+    r"^DEPBAR" => :wait,
+    r"^MUFU\.\w*64" => :fp64_trans,                       # MUFU.RCP64H / RSQ64H
+    r"^MUFU" => :fp32,
+    r"^U?(F2F|F2I|I2F|FRND|I2FP|F2IP)\..*F64" => :fp64_other,   # conversions naming F64 in a modifier
+    r"^U?(F2F|F2I|I2F|FRND|I2FP|F2IP|F2FP)(\.|$)" => :fp32,
+    r"^FLO(\.|$)" => :int,                                # find leading one
+    r"^(MEMBAR|ERRBAR|CGAERRBAR|CCTL|CCTLL|CCTLT|FENCE|S2R|CS2R|LEPC|SHFL|VOTE|VOTEU|MATCH|SETCTAID|LDGDEPBAR|ARRIVES|UTMALDG|UTMASTG|UBLKCP|UTMACMDFLUSH|B2R|R2B|PIXLD|VILD|SETMAXREG|USETMAXREG|LEAM|HMMA|IMMA|BMMA|DMMA)(\.|$)" => :other,
+    r"^(BRA|BRX|JMP|JMX|BRXU|JMXU|CALL|RET|EXIT|BSSY|BSYNC|WARPSYNC|BREAK|BPT|BMOV|YIELD|NANOSLEEP|KILL|RTT|PBK|PCNT|PRET|BRK|CONT|SSY|SYNC|BAR|ACQBULK|ENDCOLLECTIVE|PEXIT|JCAL|CAL|PLONGJMP|LONGJMP|SYNCS|ELECT|PMTRIG)(\.|$)" => :control,
+    # memory: LD/ST/ATOM/RED + space suffix
+    r"^(LDS|STS|LDSM|STSM|ATOMS|LDSLK|STSCUL|LDSCUL)(\.|$)" => :lds,
+    r"^U?LDCU?(\.|$)" => :smem,
+    r"^(LD|LDG|LDL|LDU|LDGSTS|SULD|TEX|TLD|TLD4|TXD|TMML)(\.|$)" => :mem_load,
+    r"^(ST|STG|STL|SUST)(\.|$)" => :mem_store,
+    r"^(ATOM|ATOMG|RED|REDG|CAS|SUATOM|SURED)(\.|$)" => :mem_atomic,
+    # datapaths by leading operand-type letter
+    r"^D" => :fp64_other,                                 # DSETP, DMNMX, DSET, … (DFMA/DADD/DMUL below)
+    r"^(R2UR|S2UR|UR2UP|UP2UR)(\.|$)" => :salu,
+    r"^U[A-Z]" => :salu,                                  # uniform datapath: UMOV, UIADD3, ULOP3, USHF, USEL, UISETP, …
+    r"^[FH]" => :fp32,                                    # FFMA, FADD, FMUL, FMNMX, FSETP, FSEL, HFMA2, HADD2, …
+    r"^(I|LOP|SH[FLR]|LEA|PRMT|SEL|MOV|P|BREV|POPC|BMSK|SGXT|VI|VABSDIFF|XMAD|BF[EI]|QSPC|REDUX|GETLMEMBASE|SETLMEMBASE|RPCMOV|R2P)" => :int,
+    r"" => :unclassified,
+]
+# DFMA/DADD/DMUL ahead of the generic `D` rule
+pushfirst!(SASS_RULES, r"^DFMA(\.|$)" => :fp64_fma, r"^DADD(\.|$)" => :fp64_add, r"^DMUL(\.|$)" => :fp64_mul)
+
+const AMD_RULES = Pair{Regex, Symbol}[
+    r"^[vs]_nop$" => :nop,
+    r"^v_pk_\w*_f64$" => :fp64_packed,
+    r"^v_(fma|fmac|mad|div_fmas)_f64$" => :fp64_fma,
+    r"^v_(add|sub)_f64$" => :fp64_add,
+    r"^v_mul_f64$" => :fp64_mul,
+    r"^v_(rcp|rsq|sqrt)_f64$" => :fp64_trans,
+    r"^v_\w*f64" => :fp64_other,                          # v_cmp_*_f64, v_cvt_*, v_div_scale/fixup, v_ldexp, v_max, …
+    r"^v_\w*_(f32|f16|bf16)(_|$)" => :fp32,
+    r"^v_" => :int,                                       # VALU integer / logic / move / select / lane ops
+    r"^s_(buffer_|scratch_)?load" => :smem,
+    r"^s_(waitcnt|wait_|delay_alu)" => :wait,
+    r"^s_(cbranch|branch|setpc|swappc|call|endpgm|trap|barrier|getpc|rfe)" => :control,
+    r"^s_(clause|sleep|sethalt|sendmsg|setprio|inst_prefetch|set_inst_prefetch|code_end|icache|dcache|wakeup|setreg|getreg|ttracedata|setkill|singleuse|wait_idle|denorm_mode|round_mode)" => :other,
+    r"^s_" => :salu,
+    r"^ds_" => :lds,
+    r"^(global|flat|buffer|scratch|tbuffer|image)_\w*atomic" => :mem_atomic,
+    r"^(global|flat|buffer|scratch|tbuffer|image)_\w*(load|sample|gather)" => :mem_load,
+    r"^(global|flat|buffer|scratch|tbuffer|image)_\w*store" => :mem_store,
+    r"^(buffer_gl[01]_inv|buffer_inv|buffer_wb\w*|global_(wb|inv))$" => :other,   # cache maintenance
+    r"" => :unclassified,
+]
+
+# Vendor normalisation before matching: AMD encoding suffixes carry no class information.
+_normalize_opcode(op::AbstractString, ::Val{:amd}) = replace(String(op), r"_(e32|e64|dpp|dpp8|sdwa)$" => "")
+_normalize_opcode(op::AbstractString, ::Val{:nvidia}) = String(op)
+_rules(::Val{:amd}) = AMD_RULES
+_rules(::Val{:nvidia}) = SASS_RULES
+
+function _classify(op::AbstractString, rules::Vector{Pair{Regex, Symbol}})
+    for (re, cls) in rules
+        occursin(re, op) && return cls
     end
-    if startswith(b, "s_")
-        occursin(r"^s_(buffer_|scratch_)?load", b) && return :smem
-        occursin(r"^s_(waitcnt|wait_|delay_alu)", b) && return :wait
-        b == "s_nop" && return :nop
-        occursin(r"^s_(cbranch|branch|setpc|swappc|call|endpgm|trap|barrier|getpc|rfe)", b) && return :control
-        occursin(r"^s_(clause|sleep|sethalt|sendmsg|setprio|inst_prefetch|set_inst_prefetch|code_end|icache|dcache|wakeup|setreg|getreg|ttracedata|endpgm_saved|setkill|singleuse|wait_idle|denorm_mode|round_mode)", b) && return :other
-        return :salu
-    end
-    startswith(b, "ds_") && return :lds
-    if occursin(r"^(global|flat|buffer|scratch|tbuffer|image)_", b)
-        occursin("atomic", b) && return :mem_atomic
-        occursin(r"_(load|sample|gather)", b) && return :mem_load
-        occursin("_store", b) && return :mem_store
-        return :other      # buffer_gl0_inv, buffer_wbl2, global_wb, …: cache maintenance
-    end
-    return :other
+    return :unclassified
 end
-
-# NVIDIA SASS opcodes (`OPC.MOD1.MOD2` → base + modifiers).
-const _SASS_INT = Set(["IMAD", "IADD", "IADD3", "LOP", "LOP3", "SHF", "SHL", "SHR", "SEL", "ISETP",
-    "IMNMX", "IABS", "INEG", "LEA", "FLO", "POPC", "BREV", "PRMT", "MOV", "MOV32I", "I2I", "I2IP",
-    "VIADD", "VIADDMNMX", "VIMNMX", "VABSDIFF", "VABSDIFF4", "IDP", "IDP4A", "BMSK", "PLOP3", "P2R",
-    "R2P", "PSETP", "ISET", "SGXT", "IMUL", "IMUL32I", "XMAD", "ICMP", "BFE", "BFI", "QSPC", "REDUX", "GETLMEMBASE", "SETLMEMBASE", "RPCMOV", "IMADSP", "ISCADD", "ISCADD32I"])
-const _SASS_FP32 = Set(["FFMA", "FADD", "FMUL", "FMNMX", "FSETP", "FSEL", "FCHK", "FSWZADD", "FFMA32I",
-    "FADD32I", "FMUL32I", "FSET", "FCMP", "HFMA2", "HADD2", "HMUL2", "HSETP2", "HSET2", "HMNMX2", "F2FP",
-    "FFMA2", "FADD2", "FMUL2", "HFMA2_32I", "UFSETP", "UFMNMX", "FRND", "F2F", "I2F", "F2I", "I2FP",
-    "F2IP", "UI2F", "UF2I", "MUFU"])
-const _SASS_SALU = Set(["UMOV", "UIADD3", "ULOP3", "ULOP", "USHF", "USHL", "USHR", "USEL", "UISETP",
-    "UIMAD", "ULEA", "UPRMT", "UFLO", "UPOPC", "UPLOP3", "UP2UR", "UR2UP", "R2UR", "S2UR", "UIMNMX",
-    "UIADD", "UPSETP", "UBREV", "UBMSK", "USGXT", "VOTEU", "UCGABAR_ARV", "UCGABAR_WAIT", "UISET",
-    "UI2I", "UF2FP", "USETMAXREG"])
-const _SASS_CONTROL = Set(["BRA", "BRX", "JMP", "JMX", "BRXU", "JMXU", "CALL", "RET", "EXIT", "BSSY",
-    "BSYNC", "WARPSYNC", "BREAK", "BPT", "BMOV", "YIELD", "NANOSLEEP", "KILL", "RTT", "PBK", "PCNT",
-    "PRET", "BRK", "CONT", "SSY", "SYNC", "BAR", "ACQBULK", "ENDCOLLECTIVE", "PEXIT", "JCAL", "CAL",
-    "PLONGJMP", "LONGJMP", "SYNCS", "ELECT", "PMTRIG", "BRXU"])
-
-function _classify_sass(op::AbstractString)
-    parts = split(String(op), '.')
-    base = parts[1]
-    mods = length(parts) > 1 ? join(parts[2:end], ".") : ""
-    base == "DFMA" && return :fp64_fma
-    base == "DADD" && return :fp64_add
-    base == "DMUL" && return :fp64_mul
-    if base == "MUFU"
-        return occursin("64", mods) ? :fp64_trans : :fp32
-    end
-    (base == "DSETP" || base == "DMNMX" || base == "DSET") && return :fp64_other
-    if base in ("F2F", "I2F", "F2I", "FRND", "I2FP", "F2IP", "UI2F", "UF2I")
-        return occursin("F64", mods) ? :fp64_other : :fp32
-    end
-    base == "DMMA" && return :fp64_other
-    base in _SASS_FP32 && return :fp32
-    base in _SASS_INT && return :int
-    base in _SASS_SALU && return :salu
-    base in _SASS_CONTROL && return :control
-    if base in ("LDG", "LD", "LDL", "LDGSTS", "LDU", "SULD", "TEX", "TLD", "TLD4", "TXD", "TMML")
-        return :mem_load
-    end
-    base in ("STG", "ST", "STL", "SUST") && return :mem_store
-    base in ("ATOM", "ATOMG", "RED", "REDG", "SUATOM", "SURED", "CAS") && return :mem_atomic
-    base in ("LDC", "LDCU", "ULDC") && return :smem
-    base in ("LDS", "STS", "ATOMS", "LDSM", "STSM", "LDSLK", "STSCUL", "LDSCUL") && return :lds
-    base == "DEPBAR" && return :wait
-    base == "NOP" && return :nop
-    base in ("MEMBAR", "ERRBAR", "CGAERRBAR", "CCTL", "CCTLL", "CCTLT", "FENCE", "S2R", "CS2R",
-        "LEPC", "SHFL", "VOTE", "MATCH", "SETCTAID", "LDGDEPBAR", "ARRIVES", "UTMALDG", "UTMASTG",
-        "UBLKCP", "UTMACMDFLUSH", "B2R", "R2B", "PIXLD", "VILD", "SETMAXREG", "LEAM") && return :other
-    startswith(base, "HMMA") && return :other
-    startswith(base, "IMMA") && return :other
-    startswith(base, "U") && length(base) > 1 && isuppercase(base[2]) && return :salu   # unknown uniform op
-    return :other
-end
+_classify(op::AbstractString, vendor::Symbol) = _classify(_normalize_opcode(op, Val(vendor)), _rules(Val(vendor)))
 
 # ── Disassembly → basic blocks ──────────────────────────────────────────────────────────────
 
@@ -455,6 +456,10 @@ prints it) or `:nvidia` (SASS as `nvdisasm --print-code` prints it). Fields:
 - `counts` — a NamedTuple over [`MIX_CLASSES`](@ref); `fp64` its FP64 sum (all six FP64
   classes, packed included);
 - `opcodes` — the raw mnemonic histogram (`Dict{String, Int}`), for drilling into `other`;
+- `unclassified`, `unclassified_opcodes`, `coverage` — instructions no rule of
+  [`SASS_RULES`](@ref) / [`AMD_RULES`](@ref) but the catch-all matched (they count as `other`),
+  their histogram, and `1 − unclassified / total`. Deliberate `other` rules (fences, cache
+  maintenance, special registers, hints) are classified, not unclassified;
 - `blocks` — basic blocks parsed;
 - `loops` — the natural loops of the control-flow graph, largest first, each with `header`
   (label), `depth` (1 = outermost), `blocks`, `total` and `counts` (everything inside the
@@ -471,14 +476,15 @@ prints it) or `:nvidia` (SASS as `nvdisasm --print-code` prints it). Fields:
 """
 function instruction_mix(text::AbstractString, vendor::Symbol)
     blocks = _parse_machine_code(text, vendor)
-    classify = vendor === :amd ? _classify_amd : _classify_sass
     opcodes = Dict{String, Int}()
     for b in blocks, op in b.opcodes
         opcodes[op] = get(opcodes, op, 0) + 1
     end
-    block_counts = [_count_classes(b.opcodes, classify) for b in blocks]
+    unclassified_opcodes = Dict{String, Int}()
+    block_counts = [_count_classes(b.opcodes, vendor, unclassified_opcodes) for b in blocks]
     total_counts = reduce(_add_counts, block_counts; init = _zero_counts())
     total = sum(total_counts)
+    unclassified = sum(values(unclassified_opcodes); init = 0)
 
     raw_loops = _natural_loops(blocks)
     bodies = Dict(l.header => Set(l.body) for l in raw_loops)
@@ -505,6 +511,7 @@ function instruction_mix(text::AbstractString, vendor::Symbol)
     strip_(l) = (; header = l.header, depth = l.depth, blocks = l.blocks, total = l.total, counts = l.counts,
         exclusive_total = l.exclusive_total, exclusive_counts = l.exclusive_counts)
     return (; vendor, total, fp64 = _fp64_total(total_counts), counts = total_counts, opcodes,
+        unclassified, unclassified_opcodes, coverage = total == 0 ? 1.0 : 1 - unclassified / total,
         blocks = length(blocks), loops = map(strip_, loops),
         hot_loop = hot === nothing ? nothing : strip_(hot), hot_loop_confidence = confidence,
         llvm_loops_agree = agree)
@@ -548,21 +555,28 @@ take the `gfx` name optionally with HIP feature suffixes (`"gfx942:sramecc+:xnac
 (`sm_90`, `sm_100`, `sm_120a`, …) as ptxas names them; a CUDA context must exist, not a
 device of that architecture. `dump` (an `IO` or a path) receives the disassembly.
 
+`ir = true` (default) adds the `ir` field: [`kernel_ir_mix`](@ref) of the same job — the
+typed LLVM-IR operation counts BEFORE the backend, next to the machine-code counts (an IR
+`fp64_fma` of 0 against 219 DFMA per slot is the backend's FMA contraction).
+
 Nothing is launched; the compile costs a few seconds. Static counts count code, not
 execution: read `hot_loop` for the per-iteration floor of the kernel's main loop and `total`
 for the whole binary including its cold exception paths; see [`fp64_issue_floor`](@ref) for
 turning the former into time.
 """
-function kernel_instruction_mix(backend::KA.Backend, ck::CompiledKernel; target = nothing, dump = nothing)
-    code = _kernel_machine_code(backend, ck, target === nothing ? nothing : String(target))
+function kernel_instruction_mix(backend::KA.Backend, ck::CompiledKernel; target = nothing, dump = nothing,
+        ir::Bool = true)
+    tgt = target === nothing ? nothing : String(target)
+    code = _kernel_machine_code(backend, ck, tgt)
     if dump isa IO
         write(dump, code.text)
     elseif dump !== nothing
         write(String(dump), code.text)
     end
     mix = instruction_mix(code.text, code.vendor)
+    irc = ir ? kernel_ir_mix(backend, ck; target = tgt) : nothing
     return merge((; name = ck.name, signature = ck.signature, target = code.isa, native = code.native,
-        registers = code.registers), mix)
+        registers = code.registers), mix, (; ir = irc))
 end
 kernel_instruction_mix(::KA.CPU, ck::CompiledKernel; kwargs...) = error(
     "kernel_instruction_mix: the CPU backend compiles no GPU kernels"
@@ -614,3 +628,118 @@ function fp64_issue_floor(mix; n_slots::Real, peak_fp64_flops::Real, kernel_time
         confidence = scope === :hot_loop ? mix.hot_loop_confidence : :static_total,
         assumptions = "every FP64 instruction issues at the FMA rate; static count = one pass through the loop, nested loops counted once; per-thread setup outside the loop not counted")
 end
+
+# ── Typed LLVM-IR operation count (vendor-neutral cross-check) ──────────────────────────────
+#
+# The optimized LLVM module of the same CompilerJob, walked with LLVM.jl and counted by opcode
+# and operand TYPE — no text matching. This is the arithmetic as the front end and the
+# middle end left it: `fmul`/`fadd` pairs still separate (Julia emits no `fma` for `a*b+c`),
+# `fdiv` and `llvm.sqrt.f64` still single operations. The machine code differs from it by
+# exactly the backend's work: FMA contraction (IR fma 0 → DFMA / `v_fma_f64`), division and
+# square-root expansion into seeds + FMA sequences, CSE and rematerialisation. The walker takes
+# the LLVM.jl module binding as an argument (`AMDGPU.LLVM` / `CUDACore.LLVM`) so one
+# implementation serves both vendor extensions without a dependency of this package on LLVM.jl.
+
+"""
+    IR_CLASSES
+
+Operation classes of [`kernel_ir_mix`](@ref): `fp64_fma` (`llvm.fma.f64`, `llvm.fmuladd.f64`),
+`fp64_add` (`fadd`/`fsub double`), `fp64_mul`, `fp64_div`, `fp64_neg`, `fp64_sqrt`
+(`llvm.sqrt.f64`), `fp64_cmp` (`fcmp` on doubles), `fp64_cvt` (conversions to/from double),
+`fp64_intrinsic` (other `llvm.*` intrinsics returning or taking double: fabs, floor, minnum,
+…), `fp32` (the same on float/half), `int` (integer arithmetic, logic, shifts, compares,
+integer casts, selects), `mem_load`, `mem_store`, `mem_atomic`, `call` (non-intrinsic calls),
+`control` (br, switch, ret, unreachable), `other` (phi, getelementptr, allocas, pointer casts,
+extract/insertvalue, …).
+"""
+const IR_CLASSES = (:fp64_fma, :fp64_add, :fp64_mul, :fp64_div, :fp64_neg, :fp64_sqrt, :fp64_cmp, :fp64_cvt,
+    :fp64_intrinsic, :fp32, :int, :mem_load, :mem_store, :mem_atomic, :call, :control, :other)
+const IR_FP64_CLASSES = (:fp64_fma, :fp64_add, :fp64_mul, :fp64_div, :fp64_neg, :fp64_sqrt, :fp64_cmp, :fp64_cvt, :fp64_intrinsic)
+const IRCounts = NamedTuple{IR_CLASSES, NTuple{length(IR_CLASSES), Int}}
+
+# Walk an LLVM module (`L` = the LLVM.jl module binding) → per-function IRCounts.
+function _ir_counts(L::Module, mod)
+    API = L.API
+    # LLVM.jl names the type structs LLVMDouble/LLVMFloat/LLVMHalf/LLVMBFloat (DoubleType() etc. are constructors)
+    isdouble(t) = t isa L.LLVMDouble || (t isa L.VectorType && eltype(t) isa L.LLVMDouble)
+    isfp(t) = t isa L.LLVMFloat || t isa L.LLVMHalf || t isa L.LLVMBFloat || t isa L.LLVMDouble ||
+        (t isa L.VectorType && isfp(eltype(t)))
+    first_operand_type(inst) = L.value_type(first(L.operands(inst)))
+    fp_arith = Dict(API.LLVMFAdd => :add, API.LLVMFSub => :add, API.LLVMFMul => :mul, API.LLVMFDiv => :div,
+        API.LLVMFRem => :intrinsic, API.LLVMFNeg => :neg)
+    int_ops = (API.LLVMAdd, API.LLVMSub, API.LLVMMul, API.LLVMUDiv, API.LLVMSDiv, API.LLVMURem, API.LLVMSRem,
+        API.LLVMShl, API.LLVMLShr, API.LLVMAShr, API.LLVMAnd, API.LLVMOr, API.LLVMXor, API.LLVMICmp,
+        API.LLVMTrunc, API.LLVMZExt, API.LLVMSExt, API.LLVMSelect)
+    cvt_ops = (API.LLVMSIToFP, API.LLVMUIToFP, API.LLVMFPToSI, API.LLVMFPToUI, API.LLVMFPExt, API.LLVMFPTrunc)
+    ctl_ops = (API.LLVMBr, API.LLVMSwitch, API.LLVMRet, API.LLVMUnreachable, API.LLVMIndirectBr, API.LLVMInvoke)
+    fp64_or_32(kind, dbl) = dbl ? Symbol(:fp64_, kind) : :fp32
+    per_function = Dict{String, IRCounts}()
+    for f in L.functions(mod)
+        L.isdeclaration(f) && continue
+        acc = Dict{Symbol, Int}()
+        for bb in L.blocks(f), inst in L.instructions(bb)
+            op = L.opcode(inst)
+            t = L.value_type(inst)
+            cls = if haskey(fp_arith, op)
+                fp64_or_32(fp_arith[op], isdouble(t))
+            elseif op == API.LLVMFCmp
+                fp64_or_32(:cmp, isdouble(first_operand_type(inst)))
+            elseif op in cvt_ops
+                fp64_or_32(:cvt, isdouble(t) || isdouble(first_operand_type(inst)))
+            elseif op == API.LLVMCall
+                callee = L.called_operand(inst)
+                name = callee isa L.Function ? L.name(callee) : ""
+                if name == "llvm.fma.f64" || name == "llvm.fmuladd.f64"
+                    :fp64_fma
+                elseif name == "llvm.sqrt.f64"
+                    :fp64_sqrt
+                elseif startswith(name, "llvm.")
+                    dbl = isdouble(t) || any(a -> isdouble(L.value_type(a)), L.arguments(inst))
+                    dbl ? :fp64_intrinsic : (isfp(t) ? :fp32 : :other)
+                else
+                    :call
+                end
+            elseif op in int_ops
+                :int
+            elseif op == API.LLVMLoad
+                :mem_load
+            elseif op == API.LLVMStore
+                :mem_store
+            elseif op == API.LLVMAtomicRMW || op == API.LLVMAtomicCmpXchg
+                :mem_atomic
+            elseif op in ctl_ops
+                :control
+            else
+                :other
+            end
+            acc[cls] = get(acc, cls, 0) + 1
+        end
+        per_function[L.name(f)] = IRCounts(ntuple(i -> get(acc, IR_CLASSES[i], 0), length(IR_CLASSES)))
+    end
+    return per_function
+end
+
+_add_ir(a::IRCounts, b::IRCounts) = IRCounts(ntuple(i -> a[i] + b[i], length(IR_CLASSES)))
+_zero_ir() = IRCounts(ntuple(_ -> 0, length(IR_CLASSES)))
+
+"""
+    kernel_ir_mix(backend, ck::CompiledKernel; target = nothing) -> NamedTuple
+
+Typed operation count of the OPTIMIZED LLVM IR of a compiled kernel's job (the same job
+[`kernel_instruction_mix`](@ref) disassembles; `target` as there), walked with LLVM.jl by
+opcode and operand type — the arithmetic before the backend's FMA contraction and div/sqrt
+expansion. Returns `counts` (a NamedTuple over [`IR_CLASSES`](@ref), all functions of the
+module), `fp64` (its FP64 sum), `total`, `functions` (`Dict` name → counts, for a module that
+still has out-of-line callees) and `target`. Whole-module totals: IR loops are not attributed
+(the machine-code hot loop is the per-slot figure; the IR is for the fusion/expansion ratio).
+"""
+function kernel_ir_mix(backend::KA.Backend, ck::CompiledKernel; target = nothing)
+    r = _kernel_ir_counts(backend, ck, target === nothing ? nothing : String(target))
+    counts = reduce(_add_ir, values(r.functions); init = _zero_ir())
+    return (; target = r.isa, total = sum(counts), fp64 = sum(counts[c] for c in IR_FP64_CLASSES), counts,
+        functions = r.functions)
+end
+kernel_ir_mix(::KA.CPU, ck::CompiledKernel; kwargs...) = error("kernel_ir_mix: the CPU backend compiles no GPU kernels")
+_kernel_ir_counts(b::KA.Backend, ck::CompiledKernel, target) = error(
+    "kernel_ir_mix: no GPU vendor extension loaded for ", typeof(b), " — load CUDA.jl or AMDGPU.jl"
+)

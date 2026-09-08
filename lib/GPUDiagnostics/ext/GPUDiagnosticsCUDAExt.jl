@@ -259,13 +259,18 @@ end
 # register count to check against the runtime attribute.
 const _GPUC = _CC.GPUCompiler
 
-function GD._kernel_machine_code(backend::CUDABackend, ck::GD.CompiledKernel{<:CUDA.HostKernel}, target)
+# The CompilerJob of `ck` (the kernel's own options; `arch` overridden for a target) and its ISA name.
+function _mix_job(backend::CUDABackend, ck::GD.CompiledKernel{<:CUDA.HostKernel}, target)
     k = ck.kernel
     TT = typeof(k).parameters[2]
     kw = ck.workgroup_size === nothing ? (;) : (; maxthreads = Int(ck.workgroup_size))
     arch_kw = target === nothing ? (;) : (; arch = String(target))
     config = _CC.compiler_config(CUDA.device(); kernel = true, always_inline = backend.always_inline, kw..., arch_kw...)
-    job = _GPUC.CompilerJob(_GPUC.methodinstance(typeof(k.f), TT), config)
+    return _GPUC.CompilerJob(_GPUC.methodinstance(typeof(k.f), TT), config), _CC.cpu_name(config.params.sm)
+end
+
+function GD._kernel_machine_code(backend::CUDABackend, ck::GD.CompiledKernel{<:CUDA.HostKernel}, target)
+    job, isa = _mix_job(backend, ck, target)
     compiled = _CC.compile(job)
     cubin = tempname(; cleanup = false) * ".cubin"
     write(cubin, compiled.image)
@@ -274,10 +279,18 @@ function GD._kernel_machine_code(backend::CUDABackend, ck::GD.CompiledKernel{<:C
     finally
         rm(cubin; force = true)
     end
-    isa = _CC.cpu_name(config.params.sm)
-    m = match(r"SHI_REGISTERS=(\d+)", text)
-    return (; text, vendor = :nvidia, isa, native = target === nothing,
-        registers = m === nothing ? nothing : parse(Int, m[1]))
+    # nvdisasm prints no register count; kernel_resources carries ptxas's
+    return (; text, vendor = :nvidia, isa, native = target === nothing, registers = nothing)
+end
+
+# Typed IR count: the optimized module of the same job, walked with CUDACore's LLVM.jl.
+function GD._kernel_ir_counts(backend::CUDABackend, ck::GD.CompiledKernel{<:CUDA.HostKernel}, target)
+    job, isa = _mix_job(backend, ck, target)
+    functions = _GPUC.JuliaContext() do ctx
+        ir, _ = _GPUC.compile(:llvm, job)
+        GD._ir_counts(_CC.LLVM, ir)
+    end
+    return (; functions, isa)
 end
 
 end
