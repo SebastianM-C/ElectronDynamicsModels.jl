@@ -2,7 +2,7 @@
 
 julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "674ead6f4d67b3f6be7c6aefa7ecda5a6a73e0e4"
+project_hash = "2fdc636ceccb1c65f1c1213d7d0779ee57190fce"
 
 [[deps.ADTypes]]
 deps = ["PrecompileTools"]
@@ -826,21 +826,17 @@ uuid = "5ae413db-bbd1-5e63-b57d-d24a61df00f5"
 version = "2.2.4+0"
 
 [[deps.ElectronDynamicsModels]]
-deps = ["AcceleratedKernels", "Adapt", "CountedFloats", "DataInterpolations", "FFTW", "HypergeometricFunctions", "KernelAbstractions", "LinearAlgebra", "ModelingToolkit", "ModelingToolkitBase", "NonlinearSolveBase", "NonlinearSolveFirstOrder", "PhysicalConstants", "SciMLBase", "Serialization", "StaticArrays", "SymbolicIndexingInterface", "Symbolics", "Unitful", "UnitfulAtomic"]
+deps = ["AcceleratedKernels", "Adapt", "CountedFloats", "DataInterpolations", "FFTW", "GPUDiagnostics", "HypergeometricFunctions", "KernelAbstractions", "LinearAlgebra", "ModelingToolkit", "ModelingToolkitBase", "NonlinearSolveBase", "NonlinearSolveFirstOrder", "PhysicalConstants", "SciMLBase", "Serialization", "StaticArrays", "SymbolicIndexingInterface", "Symbolics", "Unitful", "UnitfulAtomic"]
 path = ".."
 uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
 version = "0.1.0"
 
     [deps.ElectronDynamicsModels.extensions]
-    EDMAMDGPUExt = "AMDGPU"
-    EDMCUDAExt = "CUDA"
     EDMIsoMeshExt = ["MarchingCubes", "GeometryBasics"]
     EDMMakieExt = "Makie"
     EDMRPRMakieExt = "RPRMakie"
 
     [deps.ElectronDynamicsModels.weakdeps]
-    AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
-    CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
     GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
     Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
     MarchingCubes = "299715c1-40a9-479a-aaf9-4a633d36f717"
@@ -1144,6 +1140,17 @@ version = "2.5.1"
     Highlights = "eafb193a-b7ab-5a9e-9068-77385905fa72"
     LLVMDowngrader_jll = "f52de702-fb25-5922-94ba-81dd59b07444"
     NVPTX_LLVM_Backend_jll = "ef6e0fe3-e6ef-59c0-bde6-4989574699e0"
+
+[[deps.GPUDiagnostics]]
+deps = ["Adapt", "KernelAbstractions", "LinearAlgebra"]
+path = "../lib/GPUDiagnostics"
+uuid = "5ccc9b3c-1187-41e2-9266-b19f02873332"
+version = "0.1.0"
+weakdeps = ["AMDGPU", "CUDA"]
+
+    [deps.GPUDiagnostics.extensions]
+    GPUDiagnosticsAMDGPUExt = "AMDGPU"
+    GPUDiagnosticsCUDAExt = "CUDA"
 
 [[deps.GPUToolbox]]
 deps = ["LLVM"]

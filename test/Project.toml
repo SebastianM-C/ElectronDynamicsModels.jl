@@ -1,5 +1,6 @@
 [deps]
 CountedFloats = "35af598a-2c3c-4187-aa56-4608726a46bb"
+GPUDiagnostics = "5ccc9b3c-1187-41e2-9266-b19f02873332"
 AMD = "14f7f29c-3bd6-536c-9a0b-7339e30b5a3e"
 Aqua = "4c88cf16-eb10-579e-8560-4a9242c79595"
 CSV = "336ed68f-0bac-5ca0-87d4-7b16caf5d00b"
@@ -26,6 +27,7 @@ Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
 CountedFloats = {path = "../lib/CountedFloats"}
+GPUDiagnostics = {path = "../lib/GPUDiagnostics"}
 ElectronDynamicsModels = {path = ".."}
 
 [compat]

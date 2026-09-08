@@ -1,5 +1,5 @@
-# Attainable vector FP64 peak of a backend, MEASURED — the denominator of the manifest's
-# `[flops].peak_fraction_field`. No per-architecture table: every thread runs several
+# Attainable vector FP64 peak of a backend, MEASURED — the denominator of any percent-of-peak
+# figure for scalar FP64 kernels. No per-architecture table: every thread runs several
 # independent chains of dependent FMAs (the instruction the production kernels are made of), the
 # launch is sized to fill the device, and the best of a few trials is the ceiling scalar FP64
 # code can attain on that device at the clocks it actually holds. A matrix-multiply probe would
@@ -61,7 +61,7 @@ Attainable vector FP64 peak of `backend` in FLOP/s, measured with a dependent-FM
 calibrated so one launch lasts about `target_seconds`, then the best of `trials` launches is
 returned (best-of, like `LinearAlgebra.peakflops`, discards clock-ramp and scheduling noise).
 FLOP = threads × chains × iterations × 2 (one FMA = 2 FLOP). Never routed to matrix/tensor
-units: this is the ceiling for scalar FP64 code such as the field kernels. Costs about
+units: this is the ceiling for scalar FP64 code. Costs about
 `(trials + 2) × target_seconds` of device time.
 """
 function measure_peak_fp64_flops(backend::Backend; n_threads::Integer = 2^20, workgroup::Integer = 256,

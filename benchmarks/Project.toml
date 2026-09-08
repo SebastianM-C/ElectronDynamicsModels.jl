@@ -1,5 +1,6 @@
 [deps]
 CountedFloats = "35af598a-2c3c-4187-aa56-4608726a46bb"
+GPUDiagnostics = "5ccc9b3c-1187-41e2-9266-b19f02873332"
 AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
 AcceleratedKernels = "6a4ca0a5-0e36-4168-a932-d9be78d558f1"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
@@ -18,4 +19,5 @@ SymbolicIndexingInterface = "2efcf032-c050-4f8e-a9bb-153293bab1f5"
 
 [sources]
 CountedFloats = {path = "../lib/CountedFloats"}
+GPUDiagnostics = {path = "../lib/GPUDiagnostics"}
 ElectronDynamicsModels = {path = ".."}

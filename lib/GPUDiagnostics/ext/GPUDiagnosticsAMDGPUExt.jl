@@ -1,34 +1,34 @@
-module EDMAMDGPUExt
+module GPUDiagnosticsAMDGPUExt
 
-# AMDGPU.jl implementations of the vendor-GPU API declared in src/gpu_api.jl. Loaded
-# automatically when both ElectronDynamicsModels and AMDGPU are in the session. Device props
+# AMDGPU.jl implementations of the vendor-GPU API declared in src/device_api.jl. Loaded
+# automatically when both GPUDiagnostics and AMDGPU are in the session. Device props
 # come from HIP; free/total VRAM from hipMemGetInfo. AMDGPU.jl (2.5) ships no SMI module, so
 # power/utilization are read from the amdgpu driver's sysfs (the same source nvtop uses) —
 # no rocm-smi/amd-smi needed.
 
-using ElectronDynamicsModels
+using GPUDiagnostics
 using AMDGPU
 
-const EDM = ElectronDynamicsModels
+const GD = GPUDiagnostics
 
 # AMDGPU device ids are already 1-based (HIPDevice(id=1, …)), matching the common API — no offset.
-EDM.gpu_device_count(::ROCBackend) = length(AMDGPU.devices())
-EDM.gpu_device(::ROCBackend) = AMDGPU.device_id(AMDGPU.device())
-function EDM.gpu_device!(::ROCBackend, i::Integer)
+GD.gpu_device_count(::ROCBackend) = length(AMDGPU.devices())
+GD.gpu_device(::ROCBackend) = AMDGPU.device_id(AMDGPU.device())
+function GD.gpu_device!(::ROCBackend, i::Integer)
     prev = AMDGPU.device_id(AMDGPU.device())
     AMDGPU.device!(AMDGPU.devices()[i])
     return prev
 end
-EDM.gpu_name(::ROCBackend) = AMDGPU.HIP.name(AMDGPU.device())
-EDM.gpu_sm_count(::ROCBackend) =
+GD.gpu_name(::ROCBackend) = AMDGPU.HIP.name(AMDGPU.device())
+GD.gpu_sm_count(::ROCBackend) =
     Int(AMDGPU.HIP.properties(AMDGPU.device()).multiProcessorCount)
-EDM.gpu_max_threads_per_sm(::ROCBackend) =
+GD.gpu_max_threads_per_sm(::ROCBackend) =
     Int(AMDGPU.HIP.properties(AMDGPU.device()).maxThreadsPerMultiProcessor)
 
 # Device-event timing on the task-local stream (the one KernelAbstractions launches on).
 # HIPEvent disables timing by default (hipEventDisableTiming) — `timing = true` is required.
-EDM.gpu_event(::ROCBackend) = AMDGPU.HIP.HIPEvent(AMDGPU.stream(); do_record = true, timing = true)
-function EDM.gpu_elapsed(start::AMDGPU.HIP.HIPEvent, stop::AMDGPU.HIP.HIPEvent)
+GD.gpu_event(::ROCBackend) = AMDGPU.HIP.HIPEvent(AMDGPU.stream(); do_record = true, timing = true)
+function GD.gpu_elapsed(start::AMDGPU.HIP.HIPEvent, stop::AMDGPU.HIP.HIPEvent)
     AMDGPU.HIP.synchronize(stop)
     return Float64(AMDGPU.HIP.elapsed(start, stop))   # seconds
 end
@@ -36,9 +36,9 @@ end
 # `gcn_arch` may carry feature suffixes ("gfx942:sramecc+:xnack-"); report the bare name.
 _gfx_name(dev = AMDGPU.device()) = String(first(split(AMDGPU.HIP.gcn_arch(dev), ':')))
 
-EDM.gpu_arch(::ROCBackend) = _gfx_name()
+GD.gpu_arch(::ROCBackend) = _gfx_name()
 
-function EDM.gpu_memory_info(::ROCBackend)
+function GD.gpu_memory_info(::ROCBackend)
     free = Ref{Csize_t}(0)
     total = Ref{Csize_t}(0)
     AMDGPU.HIP.hipMemGetInfo(free, total)
@@ -71,22 +71,22 @@ function _amd_power_file(card::AbstractString)
     return joinpath(hw, f)
 end
 
-EDM.gpu_power(::ROCBackend) =
+GD.gpu_power(::ROCBackend) =
     parse(Int, strip(read(_amd_power_file(_amd_device_sysfs()), String))) / 1.0e6   # µW → W
 
-function EDM.gpu_utilization(::ROCBackend)
+function GD.gpu_utilization(::ROCBackend)
     dev = _amd_device_sysfs()
     rd(f) = isfile(joinpath(dev, f)) ? parse(Int, strip(read(joinpath(dev, f), String))) / 100 : NaN
     return (compute = rd("gpu_busy_percent"), memory = rd("mem_busy_percent"))
 end
 
 # Telemetry child: HIP is touched only HERE to resolve each device's sysfs paths once; the
-# spawned scripts/gputrace.sh then reads the amdgpu driver's counters (VRAM included, via
-# `mem_info_vram_used` — no hipMemGetInfo) from its own process, immune to the solver's HIP
+# spawned bin/gputrace.sh then reads the amdgpu driver's counters (VRAM included, via
+# `mem_info_vram_used` — no hipMemGetInfo) from its own process, immune to this process's HIP
 # locks and Julia's GC/timer coupling. Sysfs paths contain no ':' so the devspec join is safe.
-function EDM.gpu_telemetry_child_cmd(::ROCBackend, device_ids::AbstractVector{<:Integer},
+function GD.gpu_telemetry_child_cmd(::ROCBackend, device_ids::AbstractVector{<:Integer},
         dt::Real, stopfile::AbstractString)
-    script = joinpath(pkgdir(EDM), "scripts", "gputrace.sh")
+    script = joinpath(pkgdir(GD), "bin", "gputrace.sh")
     specs = map(device_ids) do i
         card = _amd_device_sysfs(AMDGPU.devices()[i])
         mb = joinpath(card, "mem_busy_percent")   # absent on some devices (e.g. iGPUs) → nan

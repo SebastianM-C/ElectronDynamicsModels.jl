@@ -245,19 +245,19 @@ function accumulate_potential(
     # launch and freed immediately after.  This keeps device memory
     # bounded by `A_buf + one trajectory + pixel_iter` regardless of
     # N_macro, so we can scale to thousands of electrons on a 16 GB card.
-    lane = _timer_lane(timer, backend)
+    lane = launch_lane(timer, backend)
     for traj in trajs
         gpu_traj = Adapt.adapt(backend, to_gpu(traj))
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
-        e0 = _tick(timer, backend)
+        e0 = launch_tick(timer, backend)
         _gpu_unified_one_electron!(
             A_buf, gpu_traj,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_substeps,
         )
-        _tock!(timer, lane, backend, e0)
+        launch_tock!(timer, lane, backend, e0)
         # Release the trajectory's device buffers.  With `sync_per_electron`
         # we wait for the kernel first (safe but serializing); otherwise we
         # rely on stream-ordered async free — `finalize` queues `unsafe_free!`
@@ -435,20 +435,20 @@ function accumulate_field(
     δx⁰ = step(screen.x⁰_samples)
 
     pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny))
-    lane = _timer_lane(timer, backend)
+    lane = launch_lane(timer, backend)
 
     for traj in trajs
         gpu_traj = Adapt.adapt(backend, to_gpu(traj; with_acceleration = true))
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
-        e0 = _tick(timer, backend)
+        e0 = launch_tick(timer, backend)
         _gpu_unified_field_one_electron!(
             mode, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_substeps,
         )
-        _tock!(timer, lane, backend, e0)
+        launch_tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)
         # Free both splines' device buffers (state + acceleration).
         finalize(gpu_traj.itp.t)
