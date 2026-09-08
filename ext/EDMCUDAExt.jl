@@ -24,6 +24,14 @@ EDM.gpu_name(::CUDABackend) = CUDA.name(CUDA.device())
 EDM.gpu_power(::CUDABackend) = NVML.power_usage(_nvml())                  # Watts (Float64)
 EDM.gpu_utilization(::CUDABackend) = NVML.utilization_rates(_nvml())     # (compute, memory) ∈ [0,1]
 EDM.gpu_memory_info(::CUDABackend) = NVML.memory_info(_nvml())           # (total, free, used) bytes
+
+# Device-event timing on the task-local stream (the one KernelAbstractions launches on). CuEvent's
+# default flags keep timing enabled; `elapsed` needs the stop event complete → synchronize it.
+EDM.gpu_event(::CUDABackend) = (e = CUDA.CuEvent(); CUDA.record(e, CUDA.stream()); e)
+function EDM.gpu_elapsed(start::CUDA.CuEvent, stop::CUDA.CuEvent)
+    CUDA.synchronize(stop)
+    return Float64(CUDA.elapsed(start, stop))   # seconds
+end
 EDM.gpu_sm_count(::CUDABackend) =
     CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
 EDM.gpu_max_threads_per_sm(::CUDABackend) =

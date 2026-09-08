@@ -121,6 +121,79 @@ gpu_telemetry_child_cmd(b::KA.Backend, ::AbstractVector{<:Integer}, ::Real, ::Ab
     " — load CUDA.jl or AMDGPU.jl"
 )
 
+# ── Device-event kernel timing ──────────────────────────────────────────────────────────────
+#
+# The production drivers run with `sync_per_electron = false`: launches queue up asynchronously and
+# the host loop runs ahead, so a host clock around a launch measures enqueue latency, not the
+# kernel. Device events are the only instrument that sees kernel time in that regime: an event
+# recorded on the launch stream fires when the GPU reaches it in stream order, so a pair around a
+# launch brackets exactly that kernel — the START fires after the electron's upload copy (queued
+# before it on the same stream) has completed, the STOP after the kernel finishes. Two barrier
+# packets per launch (microseconds) against kernels that run for seconds, no host stall, and no
+# change to the kernel body. Both vendors timestamp events on the device (~µs resolution).
+
+"""    gpu_event(backend) -> event
+
+Record a timestamp event on the CURRENT TASK's stream (the one KernelAbstractions launches on)
+and return it. Pair two with [`gpu_elapsed`](@ref). The CPU backend returns `time_ns()` — its
+kernels are synchronous, so the host clock is the kernel clock."""
+function gpu_event end
+
+"""    gpu_elapsed(start, stop) -> Float64
+
+Seconds between two events from [`gpu_event`](@ref). Waits for `stop` to complete first, so
+it is safe to call before the stream is otherwise synchronized."""
+function gpu_elapsed end
+
+gpu_event(::KA.CPU) = time_ns()
+gpu_elapsed(start::UInt64, stop::UInt64) = (stop - start) / 1.0e9
+gpu_event(b::KA.Backend) = error(
+    "gpu_event: no GPU vendor extension loaded for ", typeof(b), " — load CUDA.jl or AMDGPU.jl"
+)
+
+"""
+    LaunchTimer()
+
+Collects a device-event pair per kernel launch (see [`gpu_event`](@ref)), keyed by the 1-based
+device the launch ran on. Pass as `timer = LaunchTimer()` to [`accumulate_field`](@ref) /
+[`accumulate_potential`](@ref) / [`accumulate_field_sharded`](@ref); read back with
+[`launch_times`](@ref) once the drivers have returned. Safe to share across the per-device
+tasks of the sharded driver (pushes are locked; events are per-stream). The default `nothing`
+records nothing and costs nothing.
+"""
+struct LaunchTimer
+    lanes::Dict{Int, Vector{Tuple{Any, Any}}}   # device id ⇒ [(start, stop), …] in launch order
+    lock::ReentrantLock
+end
+LaunchTimer() = LaunchTimer(Dict{Int, Vector{Tuple{Any, Any}}}(), ReentrantLock())
+
+# Driver-loop hooks: `_tick` before the launch, `_tock!` right after it (both on the launching
+# task, so the events land on the launch stream). `nothing` ⇒ no-ops.
+_tick(::Nothing, backend) = nothing
+_tick(::LaunchTimer, backend) = gpu_event(backend)
+_tock!(::Nothing, dev, backend, e0) = nothing
+function _tock!(t::LaunchTimer, dev::Integer, backend, e0)
+    e1 = gpu_event(backend)
+    lock(t.lock) do
+        push!(get!(() -> Tuple{Any, Any}[], t.lanes, Int(dev)), (e0, e1))
+    end
+    return nothing
+end
+# Device id the loop's lane is keyed by; resolved once per driver call, not per launch.
+_timer_lane(::Nothing, backend) = 0
+_timer_lane(::LaunchTimer, backend) = Int(gpu_device(backend))
+
+"""    launch_times(timer::LaunchTimer) -> Dict{Int, Vector{Float64}}
+
+Per-device kernel seconds, one entry per launch in launch order. Waits on each launch's stop
+event, so call it after the drivers have returned (they have — the field download is
+stream-ordered behind the last kernel)."""
+function launch_times(t::LaunchTimer)
+    return Dict{Int, Vector{Float64}}(
+        d => Float64[gpu_elapsed(a, b) for (a, b) in pairs] for (d, pairs) in t.lanes
+    )
+end
+
 """
     thread_fill_occupancy(backend, n_threads) -> Float64
 

@@ -25,6 +25,14 @@ EDM.gpu_sm_count(::ROCBackend) =
 EDM.gpu_max_threads_per_sm(::ROCBackend) =
     Int(AMDGPU.HIP.properties(AMDGPU.device()).maxThreadsPerMultiProcessor)
 
+# Device-event timing on the task-local stream (the one KernelAbstractions launches on).
+# HIPEvent disables timing by default (hipEventDisableTiming) — `timing = true` is required.
+EDM.gpu_event(::ROCBackend) = AMDGPU.HIP.HIPEvent(AMDGPU.stream(); do_record = true, timing = true)
+function EDM.gpu_elapsed(start::AMDGPU.HIP.HIPEvent, stop::AMDGPU.HIP.HIPEvent)
+    AMDGPU.HIP.synchronize(stop)
+    return Float64(AMDGPU.HIP.elapsed(start, stop))   # seconds
+end
+
 # `gcn_arch` may carry feature suffixes ("gfx942:sramecc+:xnack-"); report the bare name.
 _gfx_name(dev = AMDGPU.device()) = String(first(split(AMDGPU.HIP.gcn_arch(dev), ':')))
 

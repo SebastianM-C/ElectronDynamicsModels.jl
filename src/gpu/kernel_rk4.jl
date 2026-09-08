@@ -213,6 +213,8 @@ electron loop.  Setting it `false` drops the per-electron sync and relies on
 stream-ordered async free (the kernel that still reads the buffers is queued
 ahead of the free on the same stream), letting electron N+1's upload overlap
 kernel N.  Verified correct on CUDA and ROCm backends.
+
+`timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)).
 """
 function accumulate_potential(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -221,6 +223,7 @@ function accumulate_potential(
         backend::Backend;
         n_substeps::Int = 1,
         sync_per_electron::Bool = true,
+        timer = nothing,
     )
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
@@ -242,16 +245,19 @@ function accumulate_potential(
     # launch and freed immediately after.  This keeps device memory
     # bounded by `A_buf + one trajectory + pixel_iter` regardless of
     # N_macro, so we can scale to thousands of electrons on a 16 GB card.
+    lane = _timer_lane(timer, backend)
     for traj in trajs
         gpu_traj = Adapt.adapt(backend, to_gpu(traj))
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
+        e0 = _tick(timer, backend)
         _gpu_unified_one_electron!(
             A_buf, gpu_traj,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_substeps,
         )
+        _tock!(timer, lane, backend, e0)
         # Release the trajectory's device buffers.  With `sync_per_electron`
         # we wait for the kernel first (safe but serializing); otherwise we
         # rely on stream-ordered async free — `finalize` queues `unsafe_free!`
@@ -394,7 +400,7 @@ alone (see [`lienard_wiechert_F_split`](@ref)). `mode = Val(:total)` returns onl
 `(; E, B)` (a type-stable trim); `Val(:split)` (the default) keeps all four.
 
 `n_substeps` and `sync_per_electron` behave exactly as in the potential kernel;
-see [`accumulate_potential`](@ref) and [`recommended_n_substeps`](@ref).
+see [`accumulate_potential`](@ref) and [`recommended_n_substeps`](@ref). `timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)).
 """
 function accumulate_field(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -405,6 +411,7 @@ function accumulate_field(
         mode::Val = Val(:split),
         sync_per_electron::Bool = true,
         sink = nothing,
+        timer = nothing,
     )
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
@@ -428,17 +435,20 @@ function accumulate_field(
     δx⁰ = step(screen.x⁰_samples)
 
     pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny))
+    lane = _timer_lane(timer, backend)
 
     for traj in trajs
         gpu_traj = Adapt.adapt(backend, to_gpu(traj; with_acceleration = true))
         τi = first(traj.itp.t)
         τf = last(traj.itp.t)
+        e0 = _tick(timer, backend)
         _gpu_unified_field_one_electron!(
             mode, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny,
             τi, τf, pixel_iter, backend, n_substeps,
         )
+        _tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)
         # Free both splines' device buffers (state + acceleration).
         finalize(gpu_traj.itp.t)

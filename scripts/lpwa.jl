@@ -218,6 +218,10 @@ ndev = gpu_device_count(gpu_backend)
 # Sample GPU power/util/VRAM across the accumulate_field window on all sharded devices
 # (→ manifest [gpu] stats + the gputrace TSV time series; see gpu_telemetry.jl).
 gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
+# Device-event kernel clock: a per-launch event pair on each device's stream — the only kernel
+# timer that works with the async electron loop (→ [timing].kernel, [gpu].kernel_*, kerneltimes TSV).
+launch_timer = LaunchTimer()
+kerneltimesfile = joinpath(OUTDIR, "kerneltimes_$(RUN_TAG).tsv")
 # Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
 # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
 window_cov = check_window_coverage(trajs, screen)
@@ -228,17 +232,18 @@ t_field = @elapsed begin
             @info "sharding electrons across $ndev devices"
             accumulate_field_sharded(
                 trajs, screen, GPUKernelRK4(), gpu_backend;
-                mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC
+                mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC, timer = launch_timer
             )
         else
             accumulate_field(
                 trajs, screen, GPUKernelRK4(), gpu_backend;
-                mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC
+                mode = Val(FIELD_MODE), n_substeps = NSUBSTEPS, sync_per_electron = SYNC, timer = launch_timer
             )
         end
     end
 end
-@info "field accumulated" t_field ndev
+t_kernel = try maximum(sum, values(launch_times(launch_timer))) catch; NaN end
+@info "field accumulated" t_field t_kernel ndev
 
 datafile = joinpath(OUTDIR, "field_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(RUN_TAG).jls")
 serialize(datafile, fld)
@@ -349,6 +354,7 @@ sharding = Dict{String, Any}("electrons" => ndev)
 # GPU telemetry → [gpu] (static device snapshot + power/util/VRAM stats over the field window).
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
 gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
+record_kernel_timing!(timing, gpu, launch_timer; tracefile = kerneltimesfile)
 # Window coverage → [window]; algorithmic FLOP accounting → [flops] (both host-side; omitted on error).
 window_sec = window_manifest_section(window_cov)
 flops_sec = flops_manifest_section(gpu_backend, GPUKernelRK4(), FIELD_MODE, (; n_substeps = NSUBSTEPS),
