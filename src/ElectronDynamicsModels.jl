@@ -9,6 +9,12 @@ using LinearAlgebra
 using Symbolics
 using HypergeometricFunctions: HypergeometricFunctions, _₁F₁, pochhammer
 using StaticArrays
+# `@muladd` (SciML's MuladdMacro) rewrites a*b ± c into `muladd` on the hot arithmetic below and in the
+# GPU kernels' helpers. Both GPU backends lower `muladd` on Float64 to an FMA unconditionally, so the
+# fusion is decided in the source rather than by the vendor compiler (ptxas fused 219 pairs per slot
+# on its own, LLVM's AMDGPU backend 93 — instruction-mix report, 2026-09-08); the CPU reference fuses
+# on FMA hardware. Results move at the last bit only (one rounding fewer per fused pair).
+using MuladdMacro: @muladd
 using SciMLBase
 using DataInterpolations
 using FFTW: rfft, rfftfreq, plan_rfft
@@ -21,7 +27,7 @@ using KernelAbstractions: Backend, @kernel, @index, @Const
 using CountedFloats: CountedFloats, Counted, Counts, @count
 using GPUDiagnostics   # vendor GPU API, device-event LaunchTimer, sampler, FP64 peak (lib/GPUDiagnostics)
 
-m_dot(x, y) = x[1] * y[1] - x[2] * y[2] - x[3] * y[3] - x[4] * y[4]
+@muladd m_dot(x, y) = x[1] * y[1] - x[2] * y[2] - x[3] * y[3] - x[4] * y[4]
 
 # Single Minkowski metric g_{μν} = g^{μν} = diag(1,−1,−1,−1) for the whole package:
 # the default value of the symbolic `gμν` parameter (see `ReferenceFrame`) and the

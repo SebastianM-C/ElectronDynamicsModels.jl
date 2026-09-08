@@ -18,27 +18,29 @@ r_obs = SVector{3}(CF64(1.0), CF64(-2.0), CF64(50.0))
 @testset "helper counts reproduce the hand-derived numbers" begin
     x = SVector{4}(CF64.((1.0, 2.0, 3.0, 4.0)))
     y = SVector{4}(CF64.((0.5, 0.25, 2.0, 1.0)))
+    # `@muladd` on m_dot: 1 mul + 3 fma (each fma counts 2 FLOP) — same 7 FLOP as 4 mul + 3 add
     c = @count m_dot(x, y)
-    @test c[:mul] == 4 && c[:add] == 3 && flops(c) == 7
+    @test c[:mul] == 1 && c[:fma] == 3 && c[:add] == 0 && flops(c) == 7
     v = SVector{3}(CF64.((1.0, 2.0, 3.0)))
     c = @count norm(v)
     @test c[:mul] == 3 && c[:add] == 2 && c[:sqrt] == 1 && flops(c) == 6
-    # cubic spline, D = 8, as written: per component 10 mul + 3 add (dt³ recomputed), plus dt1,
-    # dt2 (2 sub) and inv(6h) (1 mul, 1 div)
+    # cubic spline, D = 8, under `@muladd`: per component 7 mul + 3 fma (dt³ recomputed; the three
+    # sums of products fuse), plus dt1, dt2 (2 sub) and inv(6h) (1 mul, 1 div) — 108 FLOP as before
     cs = @count gt.itp(τ)
-    @test cs[:mul] == 81 && cs[:add] == 26 && cs[:div] == 1 && cs[:sqrt] == 0
+    @test cs[:mul] == 57 && cs[:fma] == 24 && cs[:add] == 2 && cs[:div] == 1 && cs[:sqrt] == 0 && flops(cs) == 108
     ca = @count gt.a_itp(τ)
-    @test ca[:mul] == 41 && ca[:add] == 14 && ca[:div] == 1
-    # light-cone residual eval = spline + 7 mul / 12 add / 2 div / 1 sqrt
+    @test ca[:mul] == 29 && ca[:fma] == 12 && ca[:add] == 2 && ca[:div] == 1
+    # light-cone residual eval = spline + 2 mul / 5 fma / 7 add / 2 div / 1 sqrt (the ρ², R and X·u
+    # sums of products fuse under `@muladd`)
     cl = @count _lightcone_eval(τ, gt, r_obs, CF64(1.0))
-    @test cl[:mul] == cs[:mul] + 7 && cl[:add] == cs[:add] + 12 && cl[:div] == cs[:div] + 2 && cl[:sqrt] == 1
-    # retarded-time RHS = spline + 7 mul / 8 add / 2 div / 1 sqrt
+    @test cl[:mul] == cs[:mul] + 2 && cl[:fma] == cs[:fma] + 5 && cl[:add] == cs[:add] + 7 && cl[:div] == cs[:div] + 2 && cl[:sqrt] == 1
+    # retarded-time RHS = spline + 2 mul / 5 fma / 3 add / 2 div / 1 sqrt
     cr = @count _rt_rhs_kernel(τ, gt, r_obs)
-    @test cr[:mul] == cs[:mul] + 7 && cr[:add] == cs[:add] + 8 && cr[:div] == cs[:div] + 2 && cr[:sqrt] == 1
+    @test cr[:mul] == cs[:mul] + 2 && cr[:fma] == cs[:fma] + 5 && cr[:add] == cs[:add] + 3 && cr[:div] == cs[:div] + 2 && cr[:sqrt] == 1
     # RK4 step = 4 RHS evals + 8 mul + 7 add
     ck = @count _rk4_step(τ, CF64(0.1), gt, r_obs)
     @test flops(ck) == 4 * flops(cr) + 15
-    @test cl[:fma] == 0 && cr[:fma] == 0 && cl[:trans] == 0 && cl[:pow] == 0
+    @test cl[:trans] == 0 && cl[:pow] == 0
 end
 
 @testset "flop_profile: deterministic, linear in the accuracy knob, mode-independent" begin
@@ -51,7 +53,7 @@ end
     cl = flops(@count _lightcone_eval(τ, gt, r_obs, CF64(1.0)))
     @test pN2.flop_per_slot - pN1.flop_per_slot == cl + 4
     @test pN3.flop_per_slot - pN2.flop_per_slot == cl + 4
-    @test pN2.per_slot.fma == 0 && pN2.per_slot.pow == 0 && pN2.per_slot.trans == 0
+    @test pN2.per_slot.fma > 0 && pN2.per_slot.pow == 0 && pN2.per_slot.trans == 0   # fused under `@muladd`
     @test pN2.per_slot.sqrt == 3 + 0   # one per light-cone eval (predictor + 2 corrections)
     @test pN2.flop_per_slot > 500 && pN2.flop_per_pixel_launch > 0
     @test pN2.per_pixel_launch.sqrt == 2   # the two window edges

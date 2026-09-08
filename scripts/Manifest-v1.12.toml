@@ -826,7 +826,7 @@ uuid = "5ae413db-bbd1-5e63-b57d-d24a61df00f5"
 version = "2.2.4+0"
 
 [[deps.ElectronDynamicsModels]]
-deps = ["AcceleratedKernels", "Adapt", "CountedFloats", "DataInterpolations", "FFTW", "GPUDiagnostics", "HypergeometricFunctions", "KernelAbstractions", "LinearAlgebra", "ModelingToolkit", "ModelingToolkitBase", "NonlinearSolveBase", "NonlinearSolveFirstOrder", "PhysicalConstants", "SciMLBase", "Serialization", "StaticArrays", "SymbolicIndexingInterface", "Symbolics", "Unitful", "UnitfulAtomic"]
+deps = ["AcceleratedKernels", "Adapt", "CountedFloats", "DataInterpolations", "FFTW", "GPUDiagnostics", "HypergeometricFunctions", "KernelAbstractions", "LinearAlgebra", "ModelingToolkit", "ModelingToolkitBase", "MuladdMacro", "NonlinearSolveBase", "NonlinearSolveFirstOrder", "PhysicalConstants", "SciMLBase", "Serialization", "StaticArrays", "SymbolicIndexingInterface", "Symbolics", "Unitful", "UnitfulAtomic"]
 path = ".."
 uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
 version = "0.1.0"

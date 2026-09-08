@@ -100,7 +100,7 @@ end
 
 Evaluate the spline at time `τ`, returning an `SVector` of interpolated values.
 """
-function (spline::GPUCubicSpline{D})(τ) where {D}
+@muladd function (spline::GPUCubicSpline{D})(τ) where {D}
     idx = _searchsorted_left(spline.t, τ)
     h_idx = spline.h[idx + 1]
     dt1 = τ - spline.t[idx]

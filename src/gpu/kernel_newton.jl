@@ -63,7 +63,7 @@ struct GPUKernelNewton end
 # `to_gpu` guarantees the canonical order. Indexing through the runtime `x_idxs`/`u_idxs`
 # vectors forced the SVector{8} into a private array (scratch, and on AMD a 64 KB LDS
 # reservation via promote-alloca that capped residency at one workgroup per WGP).
-@inline function _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
+@muladd @inline function _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
     v = gpu_traj.itp(τ)
     x⁰ = v[1] # x⁰(τ)
     x³ = v[4] # x³(τ)
@@ -98,7 +98,7 @@ end
 # spelling of x⁰(τ) + R − z_screen — plus the Doppler factor 1/(u⁰ − n̂·u⃗)
 # there (used for the warm-start predictor stride).  Shared by the potential
 # and field kernels.
-@inline function _window_edge(gpu_traj, r_obs, τ)
+@muladd @inline function _window_edge(gpu_traj, r_obs, τ)
     v = gpu_traj.itp(τ)
     x⁰ = v[1]
     x³ = v[4]
@@ -127,7 +127,7 @@ end
 # (guaranteed progress: the enclosure halves).  Fixed trip count + branchless
 # select keep warp lockstep.  Returns the converged eval so the caller's
 # payload (potential or field write) reuses it with zero extra spline evals.
-@inline function _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters)
+@muladd @inline function _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters)
     hi = τf   # the upper bound does not survive the target moving up: rebuilt per slot
     τ = clamp(τ + Δ * rhs, τi, τf)
     v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, tₖ)

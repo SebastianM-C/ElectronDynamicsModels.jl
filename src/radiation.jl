@@ -362,7 +362,7 @@ loses ≈`log₁₀(c²/X𝔞)` significant digits when `X𝔞 ≪ c²` (small a
 `F_far` directly never forms that difference.  `F_near + F_far` is identically
 `lienard_wiechert_F` in exact arithmetic.
 """
-function lienard_wiechert_F_split(X, u, 𝔞, K, c)
+@muladd function lienard_wiechert_F_split(X, u, 𝔞, K, c)
     Xu = m_dot(X, u)
     X𝔞 = m_dot(X, 𝔞)
     inv_Xu2 = inv(Xu^2)
