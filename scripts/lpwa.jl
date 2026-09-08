@@ -219,8 +219,9 @@ screen = ObserverScreen(
 # Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
 # them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
 ndev = gpu_device_count(gpu_backend)
-# Sample GPU power/util/VRAM across the accumulate_field window on all sharded devices
-# (→ manifest [gpu] stats + the gputrace TSV time series; see gpu_telemetry.jl).
+# Sample GPU power/util/VRAM — and, on GPUs that have them, GPM hardware counters (achieved
+# occupancy, FP64/DRAM-bandwidth utilization) — across the accumulate_field window on all sharded
+# devices (→ manifest [gpu] stats incl. gpm_*, + the gputrace TSV time series; see gpu_telemetry.jl).
 gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
 # Device-event kernel clock: a per-launch event pair on each device's stream — the only kernel
 # timer that works with the async electron loop (→ [timing].kernel, [gpu].kernel_*, kerneltimes TSV).

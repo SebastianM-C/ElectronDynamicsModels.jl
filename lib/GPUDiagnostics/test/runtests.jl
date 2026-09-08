@@ -26,7 +26,6 @@ struct NoVendorBackend <: Backend end
         end
         @test_throws ErrorException gpu_device!(NoVendorBackend(), 1)
         @test_throws ErrorException gpu_event(NoVendorBackend())
-        @test_throws ErrorException gpu_telemetry_child_cmd(NoVendorBackend(), [1], 1.0, "stop")
         @test_throws ErrorException thread_fill_occupancy(CPU(), 1024)   # no SM count on the host
     end
 
@@ -55,28 +54,137 @@ struct NoVendorBackend <: Backend end
         @test length(lt[1]) == 6 && all(>=(0.001), lt[1])
     end
 
-    @testset "with_gpu_sampler: no child on the CPU backend, synthetic child parsed" begin
-        r, telem = with_gpu_sampler(() -> 42, CPU(), 0.1)
-        @test r == 42 && telem.ticks == 0 && isempty(telem.samples) && !telem.starved
-        # A fake sampler child for the CPU backend: two devices, one row each per tick, plus a
-        # torn row and an implausible row that the plausibility gate must drop.
-        GPUDiagnostics.gpu_telemetry_child_cmd(::CPU, ids::AbstractVector{<:Integer}, dt::Real, stop::AbstractString) =
-            `sh -c $("i=0; while [ ! -e '$stop' ] && [ \$i -lt 50 ]; do now=\$(date +%s.%N); " *
-                     "printf '%s\\t1\\t100.0\\t0.99\\t0.50\\t1000\\n' \$now; " *
-                     "printf '%s\\t2\\t150.0\\t1.00\\tnan\\t2000\\n' \$now; " *
-                     "printf 'torn\\trow\\n'; printf '%s\\t1\\t100.0\\t7.0\\t0.5\\t1000\\n' \$now; " *
-                     "i=\$((i+1)); sleep $dt; done")`
+    @testset "telemetry: sources, gpu_sample, child protocol, with_gpu_sampler, stats" begin
+        # vendor-less / CPU: capability errors are clear, with_gpu_sampler degrades to unsampled
+        @test_throws ErrorException gpu_sampler_sources(NoVendorBackend(), [1], :auto)
+        @test_throws ErrorException gpu_sample(NoVendorBackend(), 1)
+        @test_throws ErrorException gpu_sampler_sources(CPU(), [1], :auto)
+        @test_throws ArgumentError with_gpu_sampler(() -> 1, CPU(), 0.1; counters = :bogus)
+        @test_throws ArgumentError with_gpu_sampler(() -> 1, CPU(), 0.0)
+        @test_throws ArgumentError gpu_sample(CPU(), 1; counters = :sometimes)
+        r, telem = @test_logs (:warn, r"GPU telemetry unavailable") with_gpu_sampler(() -> 42, CPU(), 0.1)
+        @test r == 42 && telem isa GPUTelemetry && telem.ticks == 0 && length(telem) == 0
+        @test telem.columns == [:t_rel_s, :device] && telem.trace === nothing && !telem.starved && isnan(telem.first_sample_s)
+        @test isempty(gpu_telemetry_stats(telem))
+        @test_throws ArgumentError with_gpu_sampler(() -> throw(ArgumentError("boom")), NoVendorBackend(), 0.1)
+
+        # sources: spec parsing, the built-in kinds, nan for what a device does not expose
+        @test_throws ErrorException sampler_source("nosuch:1", :auto)
+        @test_throws ArgumentError sampler_source("sysfs:1:only", :auto)
+        s1 = sampler_source("synthetic:1", :auto)
+        @test s1 isa SamplerSource && GPUDiagnostics.device_id(s1) == 1 && GPUDiagnostics.close!(s1) === nothing
+        nt = GPUDiagnostics.sample!(s1)
+        @test nt.power_W == 100 && nt.compute_util == 0.9 && nt.sm_occupancy == 0.3 && nt.fp64_util == 0.8
+        @test !haskey(GPUDiagnostics.sample!(sampler_source("synthetic:2", :none)), :sm_util)
+        @test isnan(GPUDiagnostics.sample!(sampler_source("synthetic:2", :auto)).mem_util)
+        d = mktempdir()
+        write(joinpath(d, "p"), "150000000\n"); write(joinpath(d, "b"), "75\n"); write(joinpath(d, "v"), "2048\n")
+        sy = sampler_source("sysfs:3:$d/p:$d/b:-:$d/v", :auto)
+        @test sy isa GPUDiagnostics.SysfsSource && GPUDiagnostics.device_id(sy) == 3
+        nt = GPUDiagnostics.sample!(sy)
+        @test nt.power_W == 150 && nt.compute_util == 0.75 && isnan(nt.mem_util) && nt.vram_used_B == 2048
+        rm(joinpath(d, "b"))
+        @test isnan(GPUDiagnostics.sample!(sy).compute_util) && GPUDiagnostics.sample!(sy).power_W == 150   # transient read failure → nan, row survives
+
+        # gpu_sample in-process through the source cache: give the CPU backend synthetic devices
+        GPUDiagnostics.gpu_sampler_sources(::CPU, ids::AbstractVector{<:Integer}, counters::Symbol) =
+            (specs = ["synthetic:$i" for i in ids], packages = Base.PkgId[])
+        @test gpu_sample(CPU(), 1).sm_util == 0.9 && gpu_sample(CPU()).power_W == 100
+        @test !haskey(gpu_sample(CPU(), 2; counters = :none), :sm_util) && gpu_sample(CPU(), 2).power_W == 150
+
+        # the child's argument protocol, command line and formatting
+        o = GPUDiagnostics._parse_child_args(["--dt=0.25", "--ppid=12", "--stop=/tmp/x", "--counters=none", "synthetic:1", "synthetic:2"])
+        @test o.dt == 0.25 && o.ppid == 12 && o.stopfile == "/tmp/x" && o.counters == :none && o.specs == ["synthetic:1", "synthetic:2"]
+        @test GPUDiagnostics._parse_child_args(["--stop=/x"]).counters == :auto
+        @test_throws ArgumentError GPUDiagnostics._parse_child_args(["--dt=1"])
+        @test_throws ArgumentError GPUDiagnostics._parse_child_args(["--stop=/x", "--dt=0"])
+        @test_throws ArgumentError GPUDiagnostics._parse_child_args(["--stop=/x", "--counters=foo"])
+        cmd = GPUDiagnostics.telemetry_child_cmd(Base.PkgId[], 0.5, "/tmp/s", :auto, ["synthetic:1"])
+        cs = string(cmd)
+        @test occursin("--threads=1", cs) && occursin("telemetry_child_main", cs) && occursin("--counters=auto", cs) && occursin("--stop=/tmp/s", cs)
+        @test occursin(string(Base.PkgId(GPUDiagnostics).uuid), cs)
+        @test any(e -> startswith(e, "JULIA_LOAD_PATH="), cmd.env)
+        @test GPUDiagnostics._fmt_value(NaN) == "nan" && GPUDiagnostics._fmt_value(2048.0) == "2048"
+        @test GPUDiagnostics._fmt_value(0.93088) == "0.93088" && GPUDiagnostics._fmt_value(1.5e15) == "1.5e15"
+        @test GPUDiagnostics._fmt_value(0.123456789) == "0.123457" && GPUDiagnostics._fmt_value(-0.5) == "-0.5"
+        @test GPUDiagnostics._fixed(1788879414.9264, 3) == "1788879414.926" && GPUDiagnostics._fixed(2.9996, 3) == "3.000" && GPUDiagnostics._fixed(0.0, 2) == "0.00"
+        @test GPUDiagnostics._parent_alive(getpid()) && GPUDiagnostics._parent_alive(0)
+        Sys.islinux() && @test !GPUDiagnostics._parent_alive(2^22 - 1)
+        @test !GPUDiagnostics._starved(6.4, 4.3, 5, 0.5)     # 4.3 s startup + full-rate ticks over a 6.4 s window
+        @test GPUDiagnostics._starved(20.0, 4.0, 3, 0.5)     # ticks missing over the sampled part
+        @test !GPUDiagnostics._starved(3.0, 0.5, 1, 0.5)     # too short a window to judge
+
+        # THE REAL CHILD: a separate julia process sampling two synthetic devices
         trace = tempname() * ".tsv"
-        r, telem = with_gpu_sampler(CPU(), 0.05; devices = 1:2, tracefile = trace) do
-            sleep(0.5); :done
+        t = @elapsed r, telem = with_gpu_sampler(CPU(), 0.1; devices = 1:2, tracefile = trace) do
+            sleep(4); :done
         end
-        @test r == :done
-        @test telem.ticks >= 3 && telem.trace == trace && isfile(trace)
-        @test all(s -> s[2] in (1.0, 2.0) && 0 <= s[4] <= 1 && s[3] > 0, telem.samples)
-        @test count(s -> s[2] == 2.0 && isnan(s[5]), telem.samples) == telem.ticks   # nan column kept
-        @test !telem.starved
+        @test r == :done && telem.trace == trace && isfile(trace) && telem.counters == :auto
+        @test telem.columns == [:t_rel_s, :device, :power_W, :compute_util, :mem_util, :vram_used_B, :sm_util, :sm_occupancy, :fp64_util]
+        @test telem.ticks >= 5 && length(telem) == 2 * telem.ticks && size(telem.samples) == (2 * telem.ticks, 9)
+        @test 0 < telem.first_sample_s < 4 && !telem.starved && telem.window >= 4 && t < 12
+        @test all(∈((1.0, 2.0)), telem[:device]) && all(∈((100.0, 150.0)), telem[:power_W])
+        @test count(isnan, telem[:mem_util]) == telem.ticks && count(isnan, telem[:fp64_util]) == telem.ticks
+        @test_throws KeyError telem[:nope]
+        @test haskey(telem, :sm_util) && !haskey(telem, :nope) && keys(telem) == telem.columns
+        @test occursin("rows", sprint(show, telem))
+        @test startswith(readline(trace), "# epoch_s\tdevice\tpower_W\tcompute_util\tmem_util\tvram_used_B\tsm_util")
+        @test length(split(readlines(trace)[2], '\t')) == 9
+        st = gpu_telemetry_stats(telem)
+        @test st["samples"] == telem.ticks && st["busy_samples"] == telem.ticks
+        @test st["power_W_mean"] ≈ 125 && st["power_W_peak"] == 150 && st["power_W_busy_mean"] == 100
+        @test st["compute_util_mean"] ≈ 0.5 && st["compute_util_peak"] == 0.9
+        @test st["sm_occupancy_busy_mean"] ≈ 0.3 && st["sm_occupancy_mean"] ≈ 0.2 && st["sm_occupancy_peak"] == 0.3
+        @test st["fp64_util_mean"] ≈ 0.8 && st["fp64_util_busy_mean"] ≈ 0.8 && st["mem_util_mean"] ≈ 0.5
+        @test st["vram_used_B_peak"] == 2000 && st["vram_used_B_mean"] == 1500
+        @test !haskey(st, "t_rel_s_mean") && !haskey(st, "device_mean")
+        st2 = gpu_telemetry_stats(telem; busy_column = :sm_occupancy, busy_threshold = 0.05)
+        @test st2["busy_samples"] == length(telem) && st2["power_W_busy_mean"] ≈ 125
+        @test gpu_telemetry_stats(telem; busy_column = :absent)["busy_samples"] == 0
         rm(trace; force = true)
-        Base.delete_method(only(methods(GPUDiagnostics.gpu_telemetry_child_cmd, (CPU, AbstractVector{<:Integer}, Real, AbstractString))))
+        # counters = :none ⇒ base columns only; no tracefile ⇒ temp trace removed
+        r, telem = with_gpu_sampler(CPU(), 0.1; counters = :none) do
+            sleep(3); 1
+        end
+        @test r == 1 && telem.columns == [:t_rel_s, :device, :power_W, :compute_util, :mem_util, :vram_used_B]
+        @test telem.ticks >= 3 && telem.counters == :none && telem.trace === nothing
+
+        # trace parser + plausibility gate on a handcrafted file
+        f = tempname(); t0 = time() - 10
+        open(f, "w") do io
+            println(io, "$(t0 + 0.5)\t1\t1\t1\t1\t1")                        # before the header → ignored
+            println(io, "# epoch_s\tdevice\tpower_W\tcompute_util\tmem_util\tvram_used_B\tsm_occupancy")
+            println(io, "# a comment the child left")
+            println(io, "$(t0 + 1)\t1\t100\t0.9\tnan\t1000\t0.3")             # good, nan kept
+            println(io, "$(t0 + 1)\t2\t150\t0.1\t0.5\t2000\t0.1")             # good
+            println(io, "torn\trow")                                           # torn
+            println(io, "$(t0 + 2)\t1\t100\t7.0\t0.5\t1000\t0.3")             # util out of range
+            println(io, "$(t0 + 2)\t1\t100\t0.9\t0.5\t3.0e20\t0.3")           # glued VRAM+epoch
+            println(io, "$(t0 + 2)\t1\t9000\t0.9\t0.5\t1000\t0.3")            # 9 kW
+            println(io, "$(t0 + 2)\t0\t100\t0.9\t0.5\t1000\t0.3")             # device 0
+            println(io, "$(t0 - 100)\t1\t100\t0.9\t0.5\t1000\t0.3")           # outside the window
+            println(io, "$(t0 + 3)\t1\t100\t0.9\t0.5\t1000\t1.5")             # occupancy > 1
+            println(io, "$(t0 + 3)\t1\t100\t0.9\t0.5\t1000")                  # short row
+            println(io, "$(t0 + 3)\t1\t100\t0.9\t0.5\t1000\t0.25")            # good
+        end
+        cols, rows = GPUDiagnostics._parse_trace(f, t0)
+        @test cols == [:t_rel_s, :device, :power_W, :compute_util, :mem_util, :vram_used_B, :sm_occupancy]
+        @test length(rows) == 3 && rows[1][1] ≈ 1 && rows[3][1] ≈ 3 && isnan(rows[1][5]) && rows[2][2] == 2
+        @test GPUDiagnostics._parse_trace(tempname(), t0) == ([:t_rel_s, :device], Vector{Float64}[])
+        rm(f)
+
+        # a child whose sources cannot be opened exits without rows ⇒ warning, empty telemetry, no trace left
+        Base.delete_method(only(methods(GPUDiagnostics.gpu_sampler_sources, (CPU, AbstractVector{<:Integer}, Symbol))))
+        GPUDiagnostics.gpu_sampler_sources(::CPU, ids::AbstractVector{<:Integer}, counters::Symbol) =
+            (specs = ["bogus:$i" for i in ids], packages = Base.PkgId[])
+        trace2 = tempname() * ".tsv"
+        r, telem = @test_logs (:warn, r"produced no samples") match_mode = :any with_gpu_sampler(CPU(), 0.1; tracefile = trace2) do
+            sleep(2.5); 7
+        end
+        @test r == 7 && telem.ticks == 0 && !isfile(trace2) && !isfile(trace2 * ".stderr") && telem.window >= 2.5
+        Base.delete_method(only(methods(GPUDiagnostics.gpu_sampler_sources, (CPU, AbstractVector{<:Integer}, Symbol))))
+        @test_throws ErrorException gpu_sampler_sources(CPU(), [1], :auto)
+        empty!(GPUDiagnostics._SOURCE_CACHE)
     end
 
     @testset "measured FP64 peak: FMA-chain probe (CPU backend) + host peakflops" begin

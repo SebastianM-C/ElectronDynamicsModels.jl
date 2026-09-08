@@ -257,8 +257,9 @@ ndev = gpu_device_count(gpu_backend)
 # n_substeps; newton root-solves each slot with n_iters warm-started corrections).
 solver_alg = GPU_SOLVER == "newton" ? GPUKernelNewton() : GPUKernelRK4()
 solver_kw = GPU_SOLVER == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = NSUBSTEPS)
-# Sample GPU power/util/VRAM across the accumulate_field window on all sharded devices
-# (→ manifest [gpu] stats + the gputrace TSV time series; see gpu_telemetry.jl).
+# Sample GPU power/util/VRAM — and, on GPUs that have them, GPM hardware counters (achieved
+# occupancy, FP64/DRAM-bandwidth utilization) — across the accumulate_field window on all sharded
+# devices (→ manifest [gpu] stats incl. gpm_*, + the gputrace TSV time series; see gpu_telemetry.jl).
 gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
 # Device-event kernel clock: a per-launch event pair on each device's stream — the only kernel
 # timer that works with the async electron loop (→ [timing].kernel, [gpu].kernel_*, kerneltimes TSV).

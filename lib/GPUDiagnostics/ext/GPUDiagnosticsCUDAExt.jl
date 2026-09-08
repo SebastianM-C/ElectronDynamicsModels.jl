@@ -2,7 +2,7 @@ module GPUDiagnosticsCUDAExt
 
 # CUDA.jl implementations of the vendor-GPU API declared in src/device_api.jl. Loaded
 # automatically when both GPUDiagnostics and CUDA are in the session. Telemetry
-# (power/utilization/memory) goes through NVML; device props through CUDA attributes.
+# (power/utilization/memory, GPM counters) goes through NVML; device props through CUDA attributes.
 
 using GPUDiagnostics
 using CUDA
@@ -39,16 +39,125 @@ GD.gpu_max_threads_per_sm(::CUDABackend) =
 
 GD.gpu_arch(::CUDABackend) = (cc = CUDA.capability(CUDA.device()); "$(cc.major).$(cc.minor)")
 
-# Telemetry child: the CUDA runtime is touched only HERE to map our ordinals to NVML uuids
-# (stable under CUDA_VISIBLE_DEVICES); the spawned bin/gputrace_cuda.sh then runs one
-# `nvidia-smi -lms` daemon per device from its own process, immune to this process's CUDA
-# locks and Julia's GC/timer coupling.
-function GD.gpu_telemetry_child_cmd(::CUDABackend, device_ids::AbstractVector{<:Integer},
-        dt::Real, stopfile::AbstractString)
-    script = joinpath(pkgdir(GD), "bin", "gputrace_cuda.sh")
+# ── Telemetry sources (src/sampler.jl hooks) ─────────────────────────────────────────────────
+# The CUDA runtime is touched only HERE, in the parent, to map our ordinals to NVML uuids (stable
+# under CUDA_VISIBLE_DEVICES). The sampler child loads CUDA.jl for its NVML bindings only (this
+# extension then provides the `nvml` source kind there too), never creates a CUDA context, and is
+# immune to this process's CUDA locks and Julia's GC/timer coupling.
+function GD.gpu_sampler_sources(::CUDABackend, device_ids::AbstractVector{<:Integer}, counters::Symbol)
     cudevs = collect(CUDA.devices())
-    specs = ["GPU-$(CUDA.uuid(cudevs[i]))=$i" for i in device_ids]
-    return `sh $script $(round(Int, 1000 * dt)) $(getpid()) $stopfile $specs`
+    specs = ["nvml:GPU-$(CUDA.uuid(cudevs[i]))=$i" for i in device_ids]
+    return (specs = specs, packages = [Base.PkgId(CUDA)])
+end
+
+# NVML per-device source: power / utilization / memory via the plain NVML queries, plus — when
+# the device supports GPU Performance Monitoring (Hopper and newer, incl. consumer Blackwell on
+# recent drivers; no admin privileges) and counters are wanted — the GPM metrics. GPM is
+# interval-based: a metric is the difference of two samples, so the source keeps two sample
+# buffers and evaluates each tick against the previous tick's sample (rows cover exactly the
+# preceding `dt`; the priming call takes a 100 ms interval).
+const _GPM_METRICS = (   # column => (nvmlGpmMetricId_t, unit scale: percent → fraction; MiB/s as is)
+    (:sm_util, 2, 0.01), (:sm_occupancy, 3, 0.01), (:fp64_util, 11, 0.01), (:dram_bw_util, 10, 0.01),
+    (:fp32_util, 12, 0.01), (:fp16_util, 13, 0.01), (:tensor_util, 5, 0.01), (:int_util, 4, 0.01),
+    (:pcie_tx_MiBps, 20, 1.0), (:pcie_rx_MiBps, 21, 1.0), (:nvlink_rx_MiBps, 60, 1.0), (:nvlink_tx_MiBps, 61, 1.0),
+)
+const _GPM_NAMES = Tuple(m[1] for m in _GPM_METRICS)
+
+mutable struct NVMLSource <: GD.SamplerSource
+    device::Int
+    dev::NVML.Device
+    gpm::Bool
+    samples::Vector{NVML.nvmlGpmSample_t}   # two buffers, swapped every tick
+    older::Int
+    primed::Bool
+    buf::Vector{UInt8}                      # nvmlGpmMetricsGet_t scratch (~19 kB, 477-entry metric array)
+end
+
+function _gpm_supported(dev::NVML.Device)
+    try
+        sup = Ref(NVML.nvmlGpmSupport_t(NVML.NVML_GPM_SUPPORT_VERSION, 0))
+        NVML.nvmlGpmQueryDeviceSupport(dev, sup)
+        return sup[].isSupportedDevice != 0
+    catch err   # NVML_ERROR_NOT_SUPPORTED / FUNCTION_NOT_FOUND on old drivers ⇒ simply no GPM
+        @debug "GPM support query failed" exception = err
+        return false
+    end
+end
+
+function GD._sampler_source(::Val{:nvml}, rest::AbstractString, counters::Symbol)
+    m = match(r"^GPU-([0-9a-fA-F-]+)=(\d+)$", rest)
+    m === nothing && throw(ArgumentError("nvml source spec must be GPU-<uuid>=<device>, got $rest"))
+    dev = NVML.Device(Base.UUID(m.captures[1]))
+    gpm = counters != :none && _gpm_supported(dev)
+    samples = NVML.nvmlGpmSample_t[]
+    if gpm
+        for _ in 1:2
+            s = Ref{NVML.nvmlGpmSample_t}()
+            NVML.nvmlGpmSampleAlloc(s)
+            push!(samples, s[])
+        end
+    end
+    return NVMLSource(parse(Int, m.captures[2]), dev, gpm, samples, 1, false,
+        gpm ? zeros(UInt8, sizeof(NVML.nvmlGpmMetricsGet_t)) : UInt8[])
+end
+
+function GD.sample!(s::NVMLSource)
+    ur = NVML.utilization_rates(s.dev)
+    base = (power_W = Float64(NVML.power_usage(s.dev)), compute_util = Float64(ur.compute),
+        mem_util = Float64(ur.memory), vram_used_B = Float64(NVML.memory_info(s.dev).used))
+    s.gpm || return base
+    if !s.primed
+        NVML.nvmlGpmSampleGet(s.dev, s.samples[s.older])
+        s.primed = true
+        sleep(0.1)
+    end
+    newer = 3 - s.older
+    NVML.nvmlGpmSampleGet(s.dev, s.samples[newer])
+    vals = _gpm_metrics!(s.buf, s.samples[s.older], s.samples[newer])
+    s.older = newer
+    return merge(base, NamedTuple{_GPM_NAMES}(Tuple(vals)))
+end
+
+function GD.close!(s::NVMLSource)
+    for smp in s.samples
+        try
+            NVML.nvmlGpmSampleFree(smp)
+        catch
+        end
+    end
+    empty!(s.samples)
+end
+
+# nvmlGpmMetricsGet_t is a ~19 kB struct whose metric array the bindings expose as an opaque
+# NTuple; drive it through a byte buffer and field offsets. Per-metric status lands in each
+# entry's nvmlReturn (unsupported ⇒ nan); NVML_GPM_METRICS_GET_VERSION is literally 1.
+const _GetT = NVML.nvmlGpmMetricsGet_t
+const _MetricT = NVML.nvmlGpmMetric_t
+function _gpm_metrics!(buf::Vector{UInt8}, older::NVML.nvmlGpmSample_t, newer::NVML.nvmlGpmSample_t)
+    fill!(buf, 0)
+    vals = fill(NaN, length(_GPM_METRICS))
+    GC.@preserve buf begin
+        p = pointer(buf)
+        unsafe_store!(Ptr{Cuint}(p + fieldoffset(_GetT, 1)), Cuint(NVML.NVML_GPM_METRICS_GET_VERSION))
+        unsafe_store!(Ptr{Cuint}(p + fieldoffset(_GetT, 2)), Cuint(length(_GPM_METRICS)))
+        unsafe_store!(Ptr{NVML.nvmlGpmSample_t}(p + fieldoffset(_GetT, 3)), older)
+        unsafe_store!(Ptr{NVML.nvmlGpmSample_t}(p + fieldoffset(_GetT, 4)), newer)
+        mp(i) = Ptr{_MetricT}(p + fieldoffset(_GetT, 5) + (i - 1) * sizeof(_MetricT))
+        for (i, m) in enumerate(_GPM_METRICS)
+            unsafe_store!(mp(i).metricId, Cuint(m[2]))
+        end
+        try
+            NVML.nvmlGpmMetricsGet(Ptr{_GetT}(p))
+            for (i, m) in enumerate(_GPM_METRICS)
+                unsafe_load(mp(i).nvmlReturn) == NVML.NVML_SUCCESS || continue
+                v = unsafe_load(mp(i).value)
+                isfinite(v) && (vals[i] = v * m[3])
+            end
+        catch err
+            @debug "nvmlGpmMetricsGet failed" exception = err
+        end
+    end
+    return vals
 end
 
 # ── Compile-time resource report (src/resources.jl hooks) ───────────────────────────────────
