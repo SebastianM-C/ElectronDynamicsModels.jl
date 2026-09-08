@@ -38,6 +38,14 @@ let
     tr_sv = EDM.TrajectoryInterpolant(sol_sv, sys.x, sys.u)
     uidx = SVector{4, Int}(variable_index.((sol_dense,), collect(sys.u)))
 
+    # The `sol` constructor stores the state in canonical [xμ; uμ] order (the GPU kernels read
+    # the components with literal indices), whatever order the compiled system uses.
+    @test canonical_state_order(tr_sv)
+    xidx = SVector{4, Int}(variable_index.((sol_dense,), collect(sys.x)))
+    kmid = length(sol_sv.t) ÷ 2
+    @test tr_sv.itp(sol_sv.t[kmid]) ≈ sol_sv.u[kmid][vcat(xidx, uidx)]
+    @test tr_sv(sol_sv.t[kmid])[1] ≈ sol_sv.u[kmid][xidx]
+
     # Probe between knots across the pulse core. The pre-fix half-knot delay shifts the
     # ω-oscillating acceleration by π/16 ⇒ ~20% pointwise error; the spline derivative is
     # accurate to ≪1% at 16 knots/period.

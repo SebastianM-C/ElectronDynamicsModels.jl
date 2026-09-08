@@ -114,8 +114,6 @@ function _gpu_accumulate_kernel!(gpu_traj, screen, τ_all_cpu, τ_buf, A_buf, ba
 
     # Capture trajectory components
     spline = gpu_traj.itp
-    x_idxs = gpu_traj.x_idxs
-    u_idxs = gpu_traj.u_idxs
     K = gpu_traj.K
 
     # Pre-compute CartesianIndices outside closure
@@ -129,8 +127,8 @@ function _gpu_accumulate_kernel!(gpu_traj, screen, τ_all_cpu, τ_buf, A_buf, ba
         isnan(τ) && return
 
         v = spline(τ)
-        xμ = v[x_idxs]
-        uμ = v[u_idxs]
+        xμ = SVector{4}(v[1], v[2], v[3], v[4])   # canonical state order (see to_gpu)
+        uμ = SVector{4}(v[5], v[6], v[7], v[8])
 
         r_obs = SVector{3}(x_grid[ix], y_grid[iy], z_screen)
         disp = r_obs - xμ[SA[2, 3, 4]]

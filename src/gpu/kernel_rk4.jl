@@ -61,16 +61,17 @@ function recommended_n_substeps(
     return max(1, ceil(Int, δt * (ω_max / θ_max)))
 end
 
-# RHS of dτ_r/dt = 1 / (u⁰ - u⃗·n̂); allocation-free, kernel-callable.
+# RHS of dτ_r/dt = 1 / (u⁰ - u⃗·n̂); allocation-free, kernel-callable. State components
+# are read with literal indices — canonical order guaranteed by `to_gpu` (see kernel_newton.jl).
 @inline function _rt_rhs_kernel(τ, gpu_traj, r_obs)
     v = gpu_traj.itp(τ)
-    x¹ = v[gpu_traj.x_idxs[2]]
-    x² = v[gpu_traj.x_idxs[3]]
-    x³ = v[gpu_traj.x_idxs[4]]
-    u⁰ = v[gpu_traj.u_idxs[1]]
-    u¹ = v[gpu_traj.u_idxs[2]]
-    u² = v[gpu_traj.u_idxs[3]]
-    u³ = v[gpu_traj.u_idxs[4]]
+    x¹ = v[2]
+    x² = v[3]
+    x³ = v[4]
+    u⁰ = v[5]
+    u¹ = v[6]
+    u² = v[7]
+    u³ = v[8]
     d¹ = r_obs[1] - x¹
     d² = r_obs[2] - x²
     d³ = r_obs[3] - x³
@@ -111,16 +112,16 @@ function _gpu_unified_one_electron!(
         # residual) — the two kernels' window blocks are intentionally no longer
         # line-identical.
         v_i = gpu_traj.itp(τi)
-        d_i¹ = r_obs[1] - v_i[gpu_traj.x_idxs[2]]
-        d_i² = r_obs[2] - v_i[gpu_traj.x_idxs[3]]
-        d_i³ = r_obs[3] - v_i[gpu_traj.x_idxs[4]]
-        x⁰_i_px = v_i[gpu_traj.x_idxs[1]] + sqrt(d_i¹^2 + d_i²^2 + d_i³^2)
+        d_i¹ = r_obs[1] - v_i[2]
+        d_i² = r_obs[2] - v_i[3]
+        d_i³ = r_obs[3] - v_i[4]
+        x⁰_i_px = v_i[1] + sqrt(d_i¹^2 + d_i²^2 + d_i³^2)
 
         v_f = gpu_traj.itp(τf)
-        d_f¹ = r_obs[1] - v_f[gpu_traj.x_idxs[2]]
-        d_f² = r_obs[2] - v_f[gpu_traj.x_idxs[3]]
-        d_f³ = r_obs[3] - v_f[gpu_traj.x_idxs[4]]
-        x⁰_f_px = v_f[gpu_traj.x_idxs[1]] + sqrt(d_f¹^2 + d_f²^2 + d_f³^2)
+        d_f¹ = r_obs[1] - v_f[2]
+        d_f² = r_obs[2] - v_f[3]
+        d_f³ = r_obs[3] - v_f[4]
+        x⁰_f_px = v_f[1] + sqrt(d_f¹^2 + d_f²^2 + d_f³^2)
 
         inv_δ = inv(δx⁰)
         # Strict-interior slot range matching Tsit5 with save_start/save_end=false.
@@ -151,13 +152,13 @@ function _gpu_unified_one_electron!(
             τ_safe = clamp(τ, τi, τf)
             v = gpu_traj.itp(τ_safe)
 
-            x¹ = v[gpu_traj.x_idxs[2]]
-            x² = v[gpu_traj.x_idxs[3]]
-            x³ = v[gpu_traj.x_idxs[4]]
-            u⁰ = v[gpu_traj.u_idxs[1]]
-            u¹ = v[gpu_traj.u_idxs[2]]
-            u² = v[gpu_traj.u_idxs[3]]
-            u³ = v[gpu_traj.u_idxs[4]]
+            x¹ = v[2]
+            x² = v[3]
+            x³ = v[4]
+            u⁰ = v[5]
+            u¹ = v[6]
+            u² = v[7]
+            u³ = v[8]
 
             d¹ = r_obs[1] - x¹
             d² = r_obs[2] - x²
@@ -307,16 +308,16 @@ function _gpu_unified_field_one_electron!(
         # residual) — the two kernels' window blocks are intentionally no longer
         # line-identical.
         v_i = gpu_traj.itp(τi)
-        d_i¹ = r_obs[1] - v_i[gpu_traj.x_idxs[2]]
-        d_i² = r_obs[2] - v_i[gpu_traj.x_idxs[3]]
-        d_i³ = r_obs[3] - v_i[gpu_traj.x_idxs[4]]
-        x⁰_i_px = v_i[gpu_traj.x_idxs[1]] + sqrt(d_i¹^2 + d_i²^2 + d_i³^2)
+        d_i¹ = r_obs[1] - v_i[2]
+        d_i² = r_obs[2] - v_i[3]
+        d_i³ = r_obs[3] - v_i[4]
+        x⁰_i_px = v_i[1] + sqrt(d_i¹^2 + d_i²^2 + d_i³^2)
 
         v_f = gpu_traj.itp(τf)
-        d_f¹ = r_obs[1] - v_f[gpu_traj.x_idxs[2]]
-        d_f² = r_obs[2] - v_f[gpu_traj.x_idxs[3]]
-        d_f³ = r_obs[3] - v_f[gpu_traj.x_idxs[4]]
-        x⁰_f_px = v_f[gpu_traj.x_idxs[1]] + sqrt(d_f¹^2 + d_f²^2 + d_f³^2)
+        d_f¹ = r_obs[1] - v_f[2]
+        d_f² = r_obs[2] - v_f[3]
+        d_f³ = r_obs[3] - v_f[4]
+        x⁰_f_px = v_f[1] + sqrt(d_f¹^2 + d_f²^2 + d_f³^2)
 
         inv_δ = inv(δx⁰)
         # Strict-interior slot range matching Tsit5 with save_start/save_end=false.
@@ -344,8 +345,8 @@ function _gpu_unified_field_one_electron!(
             τ_safe = clamp(τ, τi, τf)
 
             v = gpu_traj.itp(τ_safe)
-            xμ = v[gpu_traj.x_idxs]
-            uμ = v[gpu_traj.u_idxs]
+            xμ = SVector{4}(v[1], v[2], v[3], v[4])
+            uμ = SVector{4}(v[5], v[6], v[7], v[8])
             𝔞μ = gpu_traj.a_itp(τ_safe)
 
             disp = r_obs - xμ[SA[2, 3, 4]]

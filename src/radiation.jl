@@ -1,6 +1,15 @@
-# Trajectory access (thread-safe interpolation wrapper)
+# Trajectory access (thread-safe interpolation wrapper).
+#
+# CANONICAL STATE ORDER: the state spline's components are x⁰,x¹,x²,x³,u⁰,u¹,u²,u³ = 1:8.
+# The `sol` constructor permutes the solver states into this order (dropping any extra
+# states), so `x_idxs`/`u_idxs` are the constants 1:4 / 5:8 and the GPU kernels read the
+# components with literal indices. Indexing through runtime index vectors made LLVM keep
+# the SVector{8} in a private array — scratch spills on both vendors and, on AMD, a 64 KB
+# LDS reservation (promote-alloca sized for 1024 threads) that capped residency at one
+# workgroup per WGP (12.5 % theoretical occupancy; resource report 2026-09-08). Host code
+# keeps using the index fields; `to_gpu` rejects non-canonical trajectories.
 struct TrajectoryInterpolant{I, A, R, U, T}
-    itp::I          # DataInterpolations interpolant → SVector{8} = [xμ; uμ]
+    itp::I          # DataInterpolations interpolant → [xμ; uμ] (8 components, canonical order)
     a_itp::A        # interpolant of the 4-acceleration 𝔞μ = duμ/dτ → SVector{4}
     x_idxs::R       # SVector{4, Int} indices for xμ = (x⁰, x¹, x², x³)
     u_idxs::U       # SVector{4, Int} indices for uμ = (u⁰, u¹, u², u³)
@@ -14,10 +23,30 @@ end
 TrajectoryInterpolant(itp, x_idxs, u_idxs, K) =
     TrajectoryInterpolant(itp, nothing, x_idxs, u_idxs, K)
 
+const CANONICAL_X_IDXS = SVector{4, Int}(1, 2, 3, 4)
+const CANONICAL_U_IDXS = SVector{4, Int}(5, 6, 7, 8)
+
+"""    canonical_state_order(traj::TrajectoryInterpolant) -> Bool
+
+Whether the state spline stores x⁰…x³ at components 1:4 and u⁰…u³ at 5:8 — the layout the GPU
+kernels assume (they index the state with literal constants). The `sol` constructor always
+produces it; a hand-built spline must be arranged that way before `to_gpu`."""
+canonical_state_order(t::TrajectoryInterpolant) =
+    t.x_idxs == CANONICAL_X_IDXS && t.u_idxs == CANONICAL_U_IDXS
+
+# Reorder one saved state into the canonical [xμ; uμ] layout, keeping its container type so
+# the CubicSpline runs the same code path (and yields bit-identical coefficients) as before.
+_canonical_state(u::StaticArrays.StaticArray, perm) = u[SVector{8, Int}(perm)]
+_canonical_state(u, perm) = u[perm]
+
 function TrajectoryInterpolant(sol::SciMLBase.AbstractODESolution, x_syms, u_syms)
     x_idxs = SVector{4, Int}(variable_index.((sol,), collect(x_syms)))
     u_idxs = SVector{4, Int}(variable_index.((sol,), collect(u_syms)))
-    itp = CubicSpline(sol.u, sol.t; extrapolation = ExtrapolationType.Extension)
+    # Spline the states in canonical [xμ; uμ] order (see the struct comment): the solver's
+    # own ordering never reaches the kernels, which read v[1:4] / v[5:8] with literal indices.
+    perm = collect(vcat(x_idxs, u_idxs))
+    us = [_canonical_state(u, perm) for u in sol.u]
+    itp = CubicSpline(us, sol.t; extrapolation = ExtrapolationType.Extension)
     # 4-acceleration 𝔞μ = duμ/dτ: evaluate the model's OWN RHS at the saved states, so
     # every knot is exact to the solver's state accuracy — for dense AND saveat solutions
     # alike. Sampling AT the knot is phase-bias-free by construction (unlike the linear-
@@ -38,7 +67,7 @@ function TrajectoryInterpolant(sol::SciMLBase.AbstractODESolution, x_syms, u_sym
     sys = sol.prob.f.sys
     _world = _find_world(sys)
     K = sol.ps[_world.q_e / (4π * _world.ε₀ * _world.c)]
-    return TrajectoryInterpolant(itp, a_itp, x_idxs, u_idxs, K)
+    return TrajectoryInterpolant(itp, a_itp, CANONICAL_X_IDXS, CANONICAL_U_IDXS, K)
 end
 
 function (t::TrajectoryInterpolant)(τ)

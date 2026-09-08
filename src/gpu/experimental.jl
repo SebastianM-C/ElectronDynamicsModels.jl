@@ -134,6 +134,8 @@ function to_batched_cpu(trajs_chunk::AbstractVector{<:TrajectoryInterpolant})
         τfs[e] = itp.t[N]
     end
 
+    all(canonical_state_order, trajs_chunk) || throw(ArgumentError(
+        "to_batched_cpu: the batched kernel requires the canonical state order x_idxs = 1:4, u_idxs = 5:8"))
     x_idxs = first(trajs_chunk).x_idxs
     u_idxs = first(trajs_chunk).u_idxs
     return BatchedGPUSplines{D, typeof(t_flat), typeof(z_flat), typeof(offsets), typeof(Ks)}(
@@ -179,13 +181,13 @@ end
 # RHS of dτ_r/dt = 1 / (u⁰ - u⃗·n̂), batched form.
 @inline function _rt_rhs_batched(τ, splines, e, r_obs)
     v = _eval_batched_spline(splines, e, τ)
-    @inbounds x¹ = v[splines.x_idxs[2]]
-    @inbounds x² = v[splines.x_idxs[3]]
-    @inbounds x³ = v[splines.x_idxs[4]]
-    @inbounds u⁰ = v[splines.u_idxs[1]]
-    @inbounds u¹ = v[splines.u_idxs[2]]
-    @inbounds u² = v[splines.u_idxs[3]]
-    @inbounds u³ = v[splines.u_idxs[4]]
+    @inbounds x¹ = v[2]
+    @inbounds x² = v[3]
+    @inbounds x³ = v[4]
+    @inbounds u⁰ = v[5]
+    @inbounds u¹ = v[6]
+    @inbounds u² = v[7]
+    @inbounds u³ = v[8]
     d¹ = r_obs[1] - x¹
     d² = r_obs[2] - x²
     d³ = r_obs[3] - x³
@@ -250,17 +252,17 @@ function _gpu_batched_tsit5_one_batch!(
             @inbounds τf_e = splines.τfs[e]
 
             v_i = _eval_batched_spline(splines, e, τi_e)
-            @inbounds d_i¹ = r_obs[1] - v_i[splines.x_idxs[2]]
-            @inbounds d_i² = r_obs[2] - v_i[splines.x_idxs[3]]
-            @inbounds d_i³ = r_obs[3] - v_i[splines.x_idxs[4]]
-            @inbounds x⁰_i_px = v_i[splines.x_idxs[1]] +
+            @inbounds d_i¹ = r_obs[1] - v_i[2]
+            @inbounds d_i² = r_obs[2] - v_i[3]
+            @inbounds d_i³ = r_obs[3] - v_i[4]
+            @inbounds x⁰_i_px = v_i[1] +
                 sqrt(d_i¹ * d_i¹ + d_i² * d_i² + d_i³ * d_i³)
 
             v_f = _eval_batched_spline(splines, e, τf_e)
-            @inbounds d_f¹ = r_obs[1] - v_f[splines.x_idxs[2]]
-            @inbounds d_f² = r_obs[2] - v_f[splines.x_idxs[3]]
-            @inbounds d_f³ = r_obs[3] - v_f[splines.x_idxs[4]]
-            @inbounds x⁰_f_px = v_f[splines.x_idxs[1]] +
+            @inbounds d_f¹ = r_obs[1] - v_f[2]
+            @inbounds d_f² = r_obs[2] - v_f[3]
+            @inbounds d_f³ = r_obs[3] - v_f[4]
+            @inbounds x⁰_f_px = v_f[1] +
                 sqrt(d_f¹ * d_f¹ + d_f² * d_f² + d_f³ * d_f³)
 
             # Strict-interior slot range (matches Tsit5 + save_start/save_end=false).
@@ -293,13 +295,13 @@ function _gpu_batched_tsit5_one_batch!(
             for k in k_start:k_end
                 τ_safe = clamp(τ, τi_e, τf_e)
                 v = _eval_batched_spline(splines, e, τ_safe)
-                @inbounds x¹ = v[splines.x_idxs[2]]
-                @inbounds x² = v[splines.x_idxs[3]]
-                @inbounds x³ = v[splines.x_idxs[4]]
-                @inbounds u⁰ = v[splines.u_idxs[1]]
-                @inbounds u¹ = v[splines.u_idxs[2]]
-                @inbounds u² = v[splines.u_idxs[3]]
-                @inbounds u³ = v[splines.u_idxs[4]]
+                @inbounds x¹ = v[2]
+                @inbounds x² = v[3]
+                @inbounds x³ = v[4]
+                @inbounds u⁰ = v[5]
+                @inbounds u¹ = v[6]
+                @inbounds u² = v[7]
+                @inbounds u³ = v[8]
 
                 d¹ = r_obs[1] - x¹
                 d² = r_obs[2] - x²

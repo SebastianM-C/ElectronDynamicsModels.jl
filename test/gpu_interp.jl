@@ -99,6 +99,9 @@ using OrdinaryDiffEqTsit5
 
         traj_cpu = TrajectoryInterpolant(itp, x_idxs, u_idxs, K)
         traj_gpu = TrajectoryInterpolant(gpu_spline, x_idxs, u_idxs, K)
+        @test canonical_state_order(traj_cpu)
+        # the GPU kernels index the state with literals: a non-canonical layout is rejected up front
+        @test_throws ArgumentError ElectronDynamicsModels.to_gpu(TrajectoryInterpolant(itp, u_idxs, x_idxs, K))
 
         r_obs = SVector{3}(0.0, 5.0, 10.0)
         τ_test = 3.0
