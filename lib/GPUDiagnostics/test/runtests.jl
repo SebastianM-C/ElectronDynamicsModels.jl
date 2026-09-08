@@ -105,7 +105,9 @@ struct NoVendorBackend <: Backend end
         @test occursin(string(Base.PkgId(GPUDiagnostics).uuid), cs)
         @test any(e -> startswith(e, "JULIA_LOAD_PATH="), cmd.env)
         @test GPUDiagnostics._fmt_value(NaN) == "nan" && GPUDiagnostics._fmt_value(2048.0) == "2048"
-        @test GPUDiagnostics._fmt_value(0.93088) == "0.93088" && GPUDiagnostics._fmt_value(1.5e15) == "1.5e+15"
+        @test GPUDiagnostics._fmt_value(0.93088) == "0.93088" && GPUDiagnostics._fmt_value(1.5e15) == "1.5e15"
+        @test GPUDiagnostics._fmt_value(0.123456789) == "0.123457" && GPUDiagnostics._fmt_value(-0.5) == "-0.5"
+        @test GPUDiagnostics._fixed(1788879414.9264, 3) == "1788879414.926" && GPUDiagnostics._fixed(2.9996, 3) == "3.000" && GPUDiagnostics._fixed(0.0, 2) == "0.00"
         @test GPUDiagnostics._parent_alive(getpid()) && GPUDiagnostics._parent_alive(0)
         Sys.islinux() && @test !GPUDiagnostics._parent_alive(2^22 - 1)
         @test !GPUDiagnostics._starved(6.4, 4.3, 5, 0.5)     # 4.3 s startup + full-rate ticks over a 6.4 s window

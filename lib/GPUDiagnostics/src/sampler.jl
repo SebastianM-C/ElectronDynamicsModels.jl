@@ -25,8 +25,6 @@
 # (the parent parses whatever columns the child emits), and stops cooperatively when a stopfile
 # appears — or on its own if this process dies, so it cannot be orphaned.
 
-using Printf: @sprintf
-
 # ── Sources ──────────────────────────────────────────────────────────────────────────────────
 
 """    SamplerSource
@@ -180,7 +178,7 @@ function telemetry_child_main(args::AbstractVector{<:AbstractString})
                 println(stderr, "telemetry child: sample of device $(device_id(s)) failed: ", sprint(showerror, err))
                 continue
             end
-            print(io, @sprintf("%.3f", now), '\t', device_id(s))
+            print(io, _fixed(now, 3), '\t', device_id(s))
             for c in columns
                 v = Float64(get(nt, c, NaN))
                 print(io, '\t', _fmt_value(v))
@@ -222,8 +220,16 @@ function _parent_alive(ppid::Integer)
     return ccall(:kill, Cint, (Cint, Cint), ppid, 0) == 0 || Libc.errno() == Libc.EPERM
 end
 
+# Row formatting without Printf (the lib must stay loadable from the tracked manifests): fixed
+# decimals for the epoch, plain integers where the value is one (VRAM bytes), 6 significant
+# digits otherwise.
 _fmt_value(v::Float64) = isnan(v) ? "nan" :
-    (isinteger(v) && abs(v) < 1.0e15) ? string(Int(v)) : @sprintf("%.6g", v)
+    (isinteger(v) && abs(v) < 1.0e15) ? string(Int(v)) : repr(round(v; sigdigits = 6))
+function _fixed(x::Float64, digits::Int)
+    scale = 10^digits
+    n = round(Int, x * scale)
+    return string(n ÷ scale, '.', lpad(n % scale, digits, '0'))
+end
 
 # The child command: this process's julia, `--threads=1`, the same expanded LOAD_PATH (project
 # stack incl. the default environment — so the child resolves GPUDiagnostics and the vendor
