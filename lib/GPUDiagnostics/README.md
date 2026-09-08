@@ -138,7 +138,8 @@ built on the mnemonic grammars (SASS: the leading operand-type letter `D`/`F`/`H
 catch-all whose hits are `other` but reported as `unclassified` / `unclassified_opcodes` / `coverage`
 (1.0 on all four validated targets). The vectors are mutable — `pushfirst!(SASS_RULES, r"^MYOP" =>
 :int)` overrides for the session. `kernel_ir_mix` (also the `ir` field of `kernel_instruction_mix`)
-walks the OPTIMIZED LLVM IR of the same job with LLVM.jl, typed by opcode and operand type
+walks the OPTIMIZED LLVM IR of the same job with LLVM.jl, typed by opcode and operand type (with the `contract` fast-math flag counted as `fp64_contract`: Julia lowers `muladd` to a
+contract-flagged `fmul`/`fadd` pair, which the AMD backend fuses only at instruction selection)
 (`IR_CLASSES`: fp64 fma / add / mul / div / neg / sqrt / cmp / cvt / intrinsic, fp32, int, memory,
 call, control, other) — the arithmetic before the backend: IR `fma` 0 against 132 `v_fma_f64` /
 301 DFMA is the backend's FMA contraction, IR `div` 14 / `sqrt` 3 against the machine's

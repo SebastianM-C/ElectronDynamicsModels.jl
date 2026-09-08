@@ -1146,11 +1146,11 @@ deps = ["Adapt", "KernelAbstractions", "LinearAlgebra"]
 path = "../lib/GPUDiagnostics"
 uuid = "5ccc9b3c-1187-41e2-9266-b19f02873332"
 version = "0.1.0"
-weakdeps = ["AMDGPU", "CUDA"]
+weakdeps = ["AMDGPU", "CUDA", "GPUCompiler", "LLVM"]
 
     [deps.GPUDiagnostics.extensions]
-    GPUDiagnosticsAMDGPUExt = "AMDGPU"
-    GPUDiagnosticsCUDAExt = "CUDA"
+    GPUDiagnosticsAMDGPUExt = ["AMDGPU", "GPUCompiler", "LLVM"]
+    GPUDiagnosticsCUDAExt = ["CUDA", "GPUCompiler", "LLVM"]
 
 [[deps.GPUToolbox]]
 deps = ["LLVM"]

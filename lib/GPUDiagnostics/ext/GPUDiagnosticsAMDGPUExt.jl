@@ -8,6 +8,8 @@ module GPUDiagnosticsAMDGPUExt
 
 using GPUDiagnostics
 using AMDGPU
+import GPUCompiler
+import LLVM
 
 const GD = GPUDiagnostics
 
@@ -163,7 +165,7 @@ end
 # ISA-agnostic key "oclc", which would hand a gfx942 compile the gfx1100 constants after a
 # native compile — the entry is evicted around the cross-compile (under the compiler lock)
 # and restored afterwards.
-const _GPUC = AMDGPU.GPUCompiler
+const _GPUC = GPUCompiler
 
 _wave64_default(dev_isa::AbstractString) = startswith(dev_isa, "gfx9")   # GCN/CDNA are wave64-only; HIP compiles RDNA wave32
 
@@ -221,7 +223,7 @@ function GD._kernel_ir_counts(::ROCBackend, ck::GD.CompiledKernel{<:AMDGPU.Runti
     functions = _with_target_libs(target === nothing) do
         _GPUC.JuliaContext() do ctx
             ir, _ = _GPUC.compile(:llvm, job)
-            GD._ir_counts(AMDGPU.LLVM, ir)
+            GD._ir_counts(LLVM, ir)
         end
     end
     return (; functions, isa)

@@ -11,17 +11,24 @@ LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
 [weakdeps]
 AMDGPU = "21141c5a-9bdb-4563-92ae-f87d6854732e"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+GPUCompiler = "61eb1bfa-7361-4325-ad38-22787b887f55"
+LLVM = "929cbde3-209d-540e-8aea-75f648917ca0"
 
+# GPUCompiler and LLVM are always loaded whenever a vendor package is, so listing them as triggers
+# costs nothing at runtime and lets the extensions `using` them explicitly instead of reaching
+# through `AMDGPU.GPUCompiler` / `CUDACore.LLVM` (private bindings).
 [extensions]
-GPUDiagnosticsAMDGPUExt = "AMDGPU"
-GPUDiagnosticsCUDAExt = "CUDA"
+GPUDiagnosticsAMDGPUExt = ["AMDGPU", "GPUCompiler", "LLVM"]
+GPUDiagnosticsCUDAExt = ["CUDA", "GPUCompiler", "LLVM"]
 
 [compat]
 AMDGPU = "2"
 Adapt = "4"
 Aqua = "0.8"
 CUDA = "6"
+GPUCompiler = "2"
 KernelAbstractions = "0.9.41"
+LLVM = "9"
 LinearAlgebra = "1.10"
 Test = "1"
 julia = "1.10"
