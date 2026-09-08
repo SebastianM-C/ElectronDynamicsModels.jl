@@ -2,7 +2,7 @@
 
 julia_version = "1.12.7"
 manifest_format = "2.0"
-project_hash = "c486052d4c0cb7ecccdfb1018510661813ee4d88"
+project_hash = "674ead6f4d67b3f6be7c6aefa7ecda5a6a73e0e4"
 
 [[deps.ADTypes]]
 deps = ["PrecompileTools"]
@@ -564,6 +564,12 @@ git-tree-sha1 = "a692a4c1dc59a4b8bc0b6403876eb3250fde2bc3"
 uuid = "a38c48d9-6df1-5ac9-9223-b6ada3b5572b"
 version = "0.1.0+0"
 
+[[deps.CountedFloats]]
+deps = ["DiffRules"]
+path = "../lib/CountedFloats"
+uuid = "35af598a-2c3c-4187-aa56-4608726a46bb"
+version = "0.1.0"
+
 [[deps.Crayons]]
 git-tree-sha1 = "54b76cbb40d9a0f5368c880725b2f141da77c94f"
 uuid = "a8cc5b0e-0ffa-5ad4-8c14-923d3ee1735f"
@@ -820,7 +826,7 @@ uuid = "5ae413db-bbd1-5e63-b57d-d24a61df00f5"
 version = "2.2.4+0"
 
 [[deps.ElectronDynamicsModels]]
-deps = ["AcceleratedKernels", "Adapt", "DataInterpolations", "FFTW", "HypergeometricFunctions", "KernelAbstractions", "LinearAlgebra", "ModelingToolkit", "ModelingToolkitBase", "NonlinearSolveBase", "NonlinearSolveFirstOrder", "PhysicalConstants", "SciMLBase", "Serialization", "StaticArrays", "SymbolicIndexingInterface", "Symbolics", "Unitful", "UnitfulAtomic"]
+deps = ["AcceleratedKernels", "Adapt", "CountedFloats", "DataInterpolations", "FFTW", "HypergeometricFunctions", "KernelAbstractions", "LinearAlgebra", "ModelingToolkit", "ModelingToolkitBase", "NonlinearSolveBase", "NonlinearSolveFirstOrder", "PhysicalConstants", "SciMLBase", "Serialization", "StaticArrays", "SymbolicIndexingInterface", "Symbolics", "Unitful", "UnitfulAtomic"]
 path = ".."
 uuid = "acecdaf2-97b2-47e1-90eb-3efa7bb274e5"
 version = "0.1.0"

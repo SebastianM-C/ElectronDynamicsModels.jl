@@ -72,11 +72,27 @@ Max resident threads per SM/CU — with `gpu_sm_count`, the device's total resid
 capacity (the denominator of thread-fill occupancy)."""
 function gpu_max_threads_per_sm end
 
+"""    gpu_arch(backend) -> String
+
+Architecture tag of the current device: the compute capability (`"9.0"`) on NVIDIA, the
+gfx name without feature suffixes (`"gfx942"`) on AMD. Provenance only (`[flops].gpu_arch`)."""
+function gpu_arch end
+
+"""    gpu_peak_fp64_flops(backend) -> Float64
+
+Attainable vector (non-matrix/tensor) FP64 peak of the current device in FLOP/s, MEASURED on
+the device with the dependent-FMA-chain probe of [`measure_peak_fp64_flops`](@ref) (any
+KernelAbstractions backend, no per-architecture table) — or, on the CPU backend, BLAS
+`LinearAlgebra.peakflops`. This is the denominator of the `[flops].peak_fraction_field`
+manifest field; the production kernels are scalar FP64, so the matrix/tensor peak would be the
+wrong yardstick. Costs ~1.5 s of device time per call."""
+gpu_peak_fp64_flops(backend::KA.Backend) = measure_peak_fp64_flops(backend)
+
 # Fallbacks: a KA Backend with no vendor extension loaded → a clear "load the package" error.
 # The extensions add more-specific methods (e.g. ::CUDABackend) that win over these.
 for f in (
         :gpu_device_count, :gpu_device, :gpu_name, :gpu_power, :gpu_utilization,
-        :gpu_memory_info, :gpu_sm_count, :gpu_max_threads_per_sm,
+        :gpu_memory_info, :gpu_sm_count, :gpu_max_threads_per_sm, :gpu_arch,
     )
     @eval function $f(b::KA.Backend)
         error(
@@ -95,6 +111,10 @@ gpu_device_count(::KA.CPU) = 1
 gpu_device(::KA.CPU) = 1
 gpu_device!(::KA.CPU, ::Integer) = 1
 gpu_name(::KA.CPU) = "CPU"
+gpu_arch(::KA.CPU) = "cpu"
+# Host: the SIMD gemm peak over all BLAS threads (best of 3) — what vectorised FP64 code can
+# attain; a per-workitem scalar FMA chain would under-report the host by the SIMD width.
+gpu_peak_fp64_flops(::KA.CPU) = LinearAlgebra.peakflops(2048; ntrials = 3)
 
 gpu_telemetry_child_cmd(b::KA.Backend, ::AbstractVector{<:Integer}, ::Real, ::AbstractString) = error(
     "gpu_telemetry_child_cmd: no GPU vendor extension loaded for ", typeof(b),

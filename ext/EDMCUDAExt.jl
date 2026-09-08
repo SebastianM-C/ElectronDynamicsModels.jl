@@ -29,6 +29,8 @@ EDM.gpu_sm_count(::CUDABackend) =
 EDM.gpu_max_threads_per_sm(::CUDABackend) =
     CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MAX_THREADS_PER_MULTIPROCESSOR)
 
+EDM.gpu_arch(::CUDABackend) = (cc = CUDA.capability(CUDA.device()); "$(cc.major).$(cc.minor)")
+
 # Telemetry child: the CUDA runtime is touched only HERE to map our ordinals to NVML uuids
 # (stable under CUDA_VISIBLE_DEVICES); the spawned scripts/gputrace_cuda.sh then runs one
 # `nvidia-smi -lms` daemon per device from its own process, immune to the solver's CUDA

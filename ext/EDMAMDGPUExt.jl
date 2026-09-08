@@ -25,6 +25,11 @@ EDM.gpu_sm_count(::ROCBackend) =
 EDM.gpu_max_threads_per_sm(::ROCBackend) =
     Int(AMDGPU.HIP.properties(AMDGPU.device()).maxThreadsPerMultiProcessor)
 
+# `gcn_arch` may carry feature suffixes ("gfx942:sramecc+:xnack-"); report the bare name.
+_gfx_name(dev = AMDGPU.device()) = String(first(split(AMDGPU.HIP.gcn_arch(dev), ':')))
+
+EDM.gpu_arch(::ROCBackend) = _gfx_name()
+
 function EDM.gpu_memory_info(::ROCBackend)
     free = Ref{Csize_t}(0)
     total = Ref{Csize_t}(0)

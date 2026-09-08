@@ -504,11 +504,14 @@ ndev = gpu_device_count(gpu_backend)
 # Sample GPU power/util/VRAM across the accumulate_field window on all sharded devices
 # (→ manifest [gpu] stats + the gputrace TSV time series; see gpu_telemetry.jl).
 gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
+accum_alg = ACCUM_ALG == "newton" ? GPUKernelNewton() : GPUKernelRK4()
+accum_kw = ACCUM_ALG == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = NSUBSTEPS)
+# Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
+# part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
+window_cov = check_window_coverage(trajs, screen)
 t_field = @elapsed begin
     fld, gpu_telem = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT;
             devices = 1:ndev, tracefile = gputracefile) do
-        accum_alg = ACCUM_ALG == "newton" ? GPUKernelNewton() : GPUKernelRK4()
-        accum_kw = ACCUM_ALG == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = NSUBSTEPS)
         if ndev > 1
             @info "sharding electrons across $ndev devices"
             accumulate_field_sharded(
@@ -668,6 +671,10 @@ sharding = Dict{String, Any}("electrons" => ndev)
 # GPU telemetry → [gpu] (static device snapshot + power/util/VRAM stats over the field window).
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
 gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
+# Window coverage → [window]; algorithmic FLOP accounting → [flops] (both host-side; omitted on error).
+window_sec = window_manifest_section(window_cov)
+flops_sec = flops_manifest_section(gpu_backend, accum_alg, FIELD_MODE, accum_kw, N, Nx, Ny, N_samples,
+    window_cov === nothing ? missing : window_cov.slots_executed, t_field, ndev)
 extra = Dict{String, Any}(
     "timing" => timing, "sharding" => sharding,
     # [units]: declares the EXACT ω_bs = (1+β)/(1−β)·ω₁ as the preferred frequency scale —
@@ -675,6 +682,8 @@ extra = Dict{String, Any}(
     "units" => units_section(ω, λ, w₀; n0 = N0_EXACT),
 )
 gpu === nothing || (extra["gpu"] = gpu)
+window_sec === nothing || (extra["window"] = window_sec)
+flops_sec === nothing || (extra["flops"] = flops_sec)
 manifestfile = write_solver_manifest(
     OUTDIR; run_id = RUN_TAG, provenance, config, laser = laser_params, setup, outputs, extra,
 )
