@@ -17,6 +17,7 @@ using StaticArrays
 using MuladdMacro: @muladd
 using SciMLBase
 using DataInterpolations
+using FindFirstFunctions: searchsorted_last, BracketGallop   # warm-started knot search (gpu/interp.jl)
 using FFTW: rfft, rfftfreq, plan_rfft
 
 import Adapt

@@ -99,61 +99,17 @@ end
     _searchsorted_left(t, x, guess)
 
 Warm-started variant: returns exactly what `_searchsorted_left(t, x)` returns (the largest
-`i ∈ [1, length(t)-1]` with `t[i] ≤ x`, or 1), but starts from `guess`. If `x` lies in
-`[t[guess], t[guess+1])` the answer is `guess` after two knot reads; otherwise the search
-gallops from `guess` towards `x` (steps 1, 2, 4, …) and finishes with a binary search inside
-the bracket it found — about 2·log₂(distance) reads instead of log₂(N). The per-pixel kernels
-feed the interval of their previous evaluation back in: consecutive slots move the retarded
-time by a fraction of a knot, so the fast path is the common case. The result is identical by
-construction (same predicate, same bracket invariants), so kernel output does not change.
+`i ∈ [1, length(t)-1]` with `t[i] ≤ x`, or 1), but starts from `guess`. It is
+FindFirstFunctions' `BracketGallop` search, the same correlated lookup DataInterpolations uses
+on the CPU: a bracket is expanded from `guess` towards `x` (steps 1, 2, 4, …) and bisected, so a
+query that stays in or next to the previous interval costs two or three knot reads instead of
+log₂(N). The per-pixel kernels feed the interval of their previous evaluation back in;
+consecutive slots move the retarded time by a fraction of a knot, so that is the common case.
+The result is identical by construction (same predicate, `searchsortedlast` semantics clamped
+to the evaluation range), so kernel output does not change.
 """
-function _searchsorted_left(t, x, guess::Integer)
-    hi_max = length(t) - 1
-    g = clamp(Int(guess), 1, hi_max)
-    if t[g] ≤ x
-        # answer ≥ g; fast path when x is below the next knot (or g is the last interval)
-        (g == hi_max || t[g + 1] > x) && return g
-        lo = g + 1      # t[lo] ≤ x
-        hi = hi_max     # hi_max, or an index with t[hi + 1] > x (set below)
-        step = 1
-        while true
-            nxt = lo + step
-            nxt > hi_max && break
-            if t[nxt] ≤ x
-                lo = nxt
-                step <<= 1
-            else
-                hi = nxt - 1
-                break
-            end
-        end
-    else
-        # answer < g (or 1 when x precedes every knot)
-        g == 1 && return 1
-        hi = g - 1      # t[hi + 1] = t[g] > x
-        lo = 1
-        step = 1
-        while true
-            prv = hi - step
-            prv < 1 && break
-            if t[prv] ≤ x
-                lo = prv
-                break
-            else
-                hi = prv - 1
-                step <<= 1
-            end
-        end
-    end
-    while lo < hi
-        mid = (lo + hi + 1) >> 1
-        if t[mid] ≤ x
-            lo = mid
-        else
-            hi = mid - 1
-        end
-    end
-    return lo
+@inline function _searchsorted_left(t, x, guess::Integer)
+    return clamp(searchsorted_last(BracketGallop(), t, x, Int(guess)), 1, length(t) - 1)
 end
 
 """
