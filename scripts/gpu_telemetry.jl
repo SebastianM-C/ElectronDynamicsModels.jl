@@ -122,6 +122,16 @@ end
 # the first is reported, `kernel_compiled_matches` keeps the count. AMD ISA figures (SGPR/VGPR/
 # spill counts, the compiler's own waves-per-SIMD estimate) flatten to `kernel_isa_*`. Same
 # contract as the other helpers: a failure logs and leaves the manifest without the fields.
+#
+# The same kernel's STATIC instruction mix (`kernel_instruction_mix`: the disassembly counted by
+# class) follows as `kernel_mix_<class>` — whole-binary totals, every path counted once, cold
+# exception code included — plus `kernel_mix_total`, `kernel_mix_fp64` (the six FP64 classes) and,
+# when the control-flow graph yields a hot loop, `kernel_mix_hot_loop_total` / `_fp64` (one pass
+# through the per-slot loop, nested loops counted once) with `kernel_mix_hot_loop_confidence`,
+# `kernel_mix_coverage` (share of instructions a classification rule matched) and the typed
+# LLVM-IR counts of the same job, `kernel_ir_fp64_fma/_add/_mul/_div/_sqrt` (the arithmetic
+# before the backend fused and expanded it). Cross-compiled targets (`target = "gfx942"`) are an offline tool (scripts/instruction_mix.jl),
+# never written to manifests.
 const FIELD_KERNEL_PATTERN = r"_gpu_\w*field_one_electron!"
 function record_kernel_resources!(gpu, backend; pattern = FIELD_KERNEL_PATTERN, block_size = nothing)
     gpu === nothing && return nothing
@@ -147,9 +157,41 @@ function record_kernel_resources!(gpu, backend; pattern = FIELD_KERNEL_PATTERN, 
             gpu["kernel_isa_" * k] = v
         end
         @info "kernel resources (compile time)" kernel = gpu["kernel_driver"] registers = r.registers local_mem_bytes = r.local_mem_bytes shared_mem_bytes = r.shared_mem_bytes block_size = r.block_size active_blocks_per_sm = r.active_blocks_per_sm occupancy = round(r.occupancy; digits = 3) isa_info = r.isa
+        record_kernel_mix!(gpu, backend, first(cks))
         return r
     catch err
         @warn "kernel resource report unavailable — omitting [gpu].kernel_registers/…" exception = (err, catch_backtrace())
+        return nothing
+    end
+end
+
+# `[gpu].kernel_mix_*` from the static instruction mix of the reported kernel (see above).
+function record_kernel_mix!(gpu, backend, ck)
+    gpu === nothing && return nothing
+    try
+        mix = kernel_instruction_mix(backend, ck)
+        gpu["kernel_mix_target"] = mix.target
+        gpu["kernel_mix_total"] = mix.total
+        gpu["kernel_mix_fp64"] = mix.fp64
+        for c in MIX_CLASSES
+            gpu["kernel_mix_" * String(c)] = mix.counts[c]
+        end
+        gpu["kernel_mix_coverage"] = Float64(mix.coverage)
+        hot = mix.hot_loop
+        if hot !== nothing
+            gpu["kernel_mix_hot_loop_total"] = hot.total
+            gpu["kernel_mix_hot_loop_fp64"] = sum(hot.counts[c] for c in GPUDiagnostics.FP64_CLASSES)
+            gpu["kernel_mix_hot_loop_confidence"] = String(mix.hot_loop_confidence)
+        end
+        if mix.ir !== nothing   # typed LLVM-IR counts of the same job (before backend contraction)
+            for c in (:fp64_fma, :fp64_add, :fp64_mul, :fp64_div, :fp64_sqrt)
+                gpu["kernel_ir_" * String(c)] = mix.ir.counts[c]
+            end
+        end
+        @info "kernel instruction mix (static)" target = mix.target total = mix.total coverage = round(mix.coverage; digits = 4) fp64 = mix.fp64 fp64_fma = mix.counts.fp64_fma fp64_add = mix.counts.fp64_add fp64_mul = mix.counts.fp64_mul fp64_packed = mix.counts.fp64_packed waits = mix.counts.wait hot_loop_total = hot === nothing ? missing : hot.total hot_loop_fp64 = hot === nothing ? missing : gpu["kernel_mix_hot_loop_fp64"] confidence = mix.hot_loop_confidence
+        return mix
+    catch err
+        @warn "kernel instruction mix unavailable — omitting [gpu].kernel_mix_*" exception = (err, catch_backtrace())
         return nothing
     end
 end

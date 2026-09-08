@@ -151,4 +151,80 @@ function GD._kernel_isa_info(::ROCBackend, ck::GD.CompiledKernel{<:AMDGPU.Runtim
     end
 end
 
+
+# ── Static instruction mix (src/instruction_mix.jl hook) ────────────────────────────────────
+# Native: the ISA text `code_native` prints for the kernel's own compile (AMDGPU.jl compiles
+# every kernel `always_inline`, so one function). Cross-target: the same method instance
+# compiled through GPUCompiler with a `GCNCompilerTarget` for the requested ISA — HIP's own
+# `compiler_config` recipe (features from the `gfx…:feat+` string, wave64 on GCN/CDNA, wave32
+# on RDNA, unsafe FP atomics, always_inline) minus the device. The device libraries are
+# per-ISA bitcode shipped with the ROCm artifact (`oclc_isa_version_<isa>.bc`), so linking
+# needs no hardware; but `link_device_libs!` caches the OCLC ISA-version library under the
+# ISA-agnostic key "oclc", which would hand a gfx942 compile the gfx1100 constants after a
+# native compile — the entry is evicted around the cross-compile (under the compiler lock)
+# and restored afterwards.
+const _GPUC = AMDGPU.GPUCompiler
+
+_wave64_default(dev_isa::AbstractString) = startswith(dev_isa, "gfx9")   # GCN/CDNA are wave64-only; HIP compiles RDNA wave32
+
+# The CompilerJob of `ck` for `target` (nothing = the current device's own config) and its ISA name.
+function _mix_job(ck::GD.CompiledKernel{<:AMDGPU.Runtime.HIPKernel}, target)
+    k = ck.kernel
+    TT = typeof(k).parameters[2]
+    if target === nothing
+        config = AMDGPU.Compiler.compiler_config(AMDGPU.device(); kernel = true)
+        return _GPUC.CompilerJob(_GPUC.methodinstance(typeof(k.f), TT), config), _gfx_name()
+    end
+    dev_isa, features = AMDGPU.Compiler.parse_llvm_features(String(target))
+    wave64 = _wave64_default(dev_isa)
+    features = (isempty(features) ? "" : features * ",") *
+        (wave64 ? "-wavefrontsize32,+wavefrontsize64" : "+wavefrontsize32,-wavefrontsize64")
+    tgt = _GPUC.GCNCompilerTarget(; dev_isa, features)
+    params = AMDGPU.Compiler.HIPCompilerParams(wave64, true)
+    config = _GPUC.CompilerConfig(tgt, params; kernel = true, always_inline = true)
+    return _GPUC.CompilerJob(_GPUC.methodinstance(typeof(k.f), TT), config), dev_isa
+end
+
+# Run `f()` with the OCLC ISA-version cache entry evicted (cross-target compiles only).
+function _with_target_libs(f, native::Bool)
+    native && return f()
+    libs = AMDGPU.Compiler.DEVICE_LIBS
+    Base.@lock AMDGPU.Compiler.hipfunction_lock begin
+        saved = pop!(libs, "oclc", nothing)
+        try
+            return f()
+        finally
+            delete!(libs, "oclc")
+            saved === nothing || (libs["oclc"] = saved)
+        end
+    end
+end
+
+function GD._kernel_machine_code(::ROCBackend, ck::GD.CompiledKernel{<:AMDGPU.Runtime.HIPKernel}, target)
+    job, isa = _mix_job(ck, target)
+    io = IOBuffer()
+    _with_target_libs(target === nothing) do
+        _GPUC.code_native(io, job; raw = true, dump_module = true)
+    end
+    text = String(take!(io))
+    return (; text, vendor = :amd, isa, native = isa == _gfx_name(), registers = _isa_vgprs(text))
+end
+
+function _isa_vgprs(text::AbstractString)
+    info = GD._parse_amdgpu_kernel_info(text)
+    return get(info, "vgpr_count", nothing)
+end
+
+# Typed IR count: the optimized module of the same job, walked with AMDGPU's LLVM.jl.
+function GD._kernel_ir_counts(::ROCBackend, ck::GD.CompiledKernel{<:AMDGPU.Runtime.HIPKernel}, target)
+    job, isa = _mix_job(ck, target)
+    functions = _with_target_libs(target === nothing) do
+        _GPUC.JuliaContext() do ctx
+            ir, _ = _GPUC.compile(:llvm, job)
+            GD._ir_counts(AMDGPU.LLVM, ir)
+        end
+    end
+    return (; functions, isa)
+end
+
 end

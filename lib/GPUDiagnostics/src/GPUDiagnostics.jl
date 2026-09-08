@@ -26,6 +26,14 @@ fallbacks so the plumbing (and its tests) run without a GPU.
   too) and `kernel_resources` reports registers, spill/stack and shared (LDS) memory, and the
   runtime's theoretical occupancy for the block size actually launched — plus the SGPR/VGPR/
   spill counts from the AMD ISA dump.
+- **Static instruction mix** — `kernel_instruction_mix` counts the compiled instruction stream
+  (AMD ISA / NVIDIA SASS) by class — FP64 fma/add/mul/transcendental/other/packed, FP32,
+  integer, scalar, memory, LDS, control, waits — for the whole kernel and for each loop of its
+  control-flow graph (the hot per-slot loop in particular), natively or **cross-compiled** for a
+  target that is not present (`target = "gfx942"`, `"sm_90"`); `kernel_ir_mix` counts the same
+  job's optimized LLVM IR by typed opcode (the arithmetic before backend contraction);
+  `fp64_issue_floor` turns a per-slot FP64 count and the measured FP64 rate into the FP64-pipe
+  time floor per launch.
 """
 module GPUDiagnostics
 
@@ -42,11 +50,14 @@ export gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_arch,
     gpu_sample, gpu_sampler_sources, sampler_source, SamplerSource, telemetry_child_main,
     with_gpu_sampler, GPUTelemetry, gpu_telemetry_stats,
     measure_peak_fp64_flops, gpu_peak_fp64_flops,
-    CompiledKernel, compiled_kernels, kernel_resources
+    CompiledKernel, compiled_kernels, kernel_resources,
+    MIX_CLASSES, SASS_RULES, AMD_RULES, instruction_mix, kernel_instruction_mix, fp64_issue_floor,
+    IR_CLASSES, kernel_ir_mix
 
 include("device_api.jl")   # generics + CPU fallbacks + LaunchTimer; vendor methods in ext/
 include("sampler.jl")      # gpu_sample sources, the telemetry child, with_gpu_sampler, gpu_telemetry_stats
 include("peakflops.jl")    # FMA-chain FP64 peak probe
 include("resources.jl")    # compile-time resource report: registers / spills / LDS / occupancy
+include("instruction_mix.jl")   # static instruction mix of the disassembly + loop nest + FP64-issue floor
 
 end
