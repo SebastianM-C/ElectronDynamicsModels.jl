@@ -1,9 +1,9 @@
 #!/bin/sh
 # GPU telemetry child sampler over amdgpu driver sysfs — spawned by with_gpu_sampler
-# (scripts/gpu_telemetry.jl). Runs OUT OF PROCESS because no in-process Julia sampler
-# survives the solver: GC + libuv-timer coupling suspends sleeping tasks entirely while
+# (src/sampler.jl). Runs OUT OF PROCESS because no in-process Julia sampler
+# survives a busy host: GC + libuv-timer coupling suspends sleeping tasks entirely while
 # the host thread allocates (measured: 0 ticks/15 s on pure CPU churn, 1 tick/98.5 s on a
-# real accumulate_field window).
+# real hour-scale kernel loop).
 #
 # Emits one TSV row per device per tick on STDOUT (the parent redirects into the gputrace
 # TSV next to the run outputs):

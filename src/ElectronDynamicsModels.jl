@@ -16,8 +16,10 @@ using FFTW: rfft, rfftfreq, plan_rfft
 import Adapt
 import AcceleratedKernels as AK
 import KernelAbstractions
+import KernelAbstractions as KA
 using KernelAbstractions: Backend, @kernel, @index, @Const
 using CountedFloats: CountedFloats, Counted, Counts, @count
+using GPUDiagnostics   # vendor GPU API, device-event LaunchTimer, sampler, FP64 peak (lib/GPUDiagnostics)
 
 m_dot(x, y) = x[1] * y[1] - x[2] * y[2] - x[3] * y[3] - x[4] * y[4]
 
@@ -48,6 +50,7 @@ export ReferenceFrame, Worldline,
     lienard_wiechert_F, lienard_wiechert_F_split, extract_EB, faraday, stress_energy,
     GPUCubicSpline, GPUKernelRK4, GPUKernelTsit5, GPUKernelNewton, recommended_n_substeps,
     retarded_time_problem,
+    # re-exported from GPUDiagnostics (lib/GPUDiagnostics) — the vendor GPU API + LaunchTimer
     gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_power, gpu_utilization,
     gpu_memory_info, gpu_telemetry_child_cmd, gpu_sm_count, gpu_max_threads_per_sm,
     gpu_arch, gpu_peak_fp64_flops, measure_peak_fp64_flops, thread_fill_occupancy,
@@ -71,12 +74,10 @@ include("gpu/interp.jl")
 include("gpu/accumulate.jl")
 include("gpu/kernel_rk4.jl")
 include("gpu/kernel_newton.jl")
-include("gpu_api.jl")   # vendor GPU API (device mgmt + telemetry); impls in ext/EDM{CUDA,AMDGPU}Ext.jl
 include("rpr_api.jl")   # RPR rendering plumbing; impls in ext/EDMRPRMakieExt.jl + EDMIsoMeshExt.jl
 include("gpu/multidevice.jl")   # accumulate_field_sharded: electron sharding across GPUs
 include("diagnostics/window_coverage.jl")   # host-side executed-slot / window-coverage check
 include("diagnostics/flops.jl")             # algorithmic FLOP profile of the field kernels (CountedFloats)
-include("diagnostics/peakflops.jl")         # measured vector FP64 peak (FMA-chain probe) — no per-arch table
 
 # Experimental: batched/Tsit5 GPU path — production staging, under active development.
 module Experimental
