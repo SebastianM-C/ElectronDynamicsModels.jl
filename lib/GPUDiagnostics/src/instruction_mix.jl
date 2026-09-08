@@ -102,7 +102,7 @@ _fp64_total(c::MixCounts) = sum(c[k] for k in FP64_CLASSES)
 # unclassified. Users may `pushfirst!(SASS_RULES, r"^FOO" => :int)` to override.
 
 """
-    SASS_RULES, AMD_RULES :: Vector{Pair{Regex, Symbol}}
+    SASS_RULES :: Vector{Pair{Regex, Symbol}}
 
 Ordered classification rules of [`instruction_mix`](@ref) for NVIDIA SASS mnemonics (matched
 against the full `OPC.MOD…` opcode) and AMD ISA mnemonics (matched after the `_e32`/`_e64`/
@@ -138,6 +138,14 @@ const SASS_RULES = Pair{Regex, Symbol}[
 # DFMA/DADD/DMUL ahead of the generic `D` rule
 pushfirst!(SASS_RULES, r"^DFMA(\.|$)" => :fp64_fma, r"^DADD(\.|$)" => :fp64_add, r"^DMUL(\.|$)" => :fp64_mul)
 
+"""
+    AMD_RULES :: Vector{Pair{Regex, Symbol}}
+
+Ordered classification rules of [`instruction_mix`](@ref) for AMD ISA mnemonics (GCN / RDNA /
+CDNA), matched after the `_e32`/`_e64`/`_dpp`/`_sdwa` encoding suffix is dropped. Same contract
+as [`SASS_RULES`](@ref): first match wins, the final rule is the `:unclassified` catch-all, and
+the vector is mutable for session overrides.
+"""
 const AMD_RULES = Pair{Regex, Symbol}[
     r"^[vs]_nop$" => :nop,
     r"^v_pk_\w*_f64$" => :fp64_packed,
@@ -637,8 +645,8 @@ end
 # `fdiv` and `llvm.sqrt.f64` still single operations. The machine code differs from it by
 # exactly the backend's work: FMA contraction (IR fma 0 → DFMA / `v_fma_f64`), division and
 # square-root expansion into seeds + FMA sequences, CSE and rematerialisation. The walker takes
-# the LLVM.jl module binding as an argument (`AMDGPU.LLVM` / `CUDACore.LLVM`) so one
-# implementation serves both vendor extensions without a dependency of this package on LLVM.jl.
+# the LLVM.jl module binding as an argument (the extensions pass their `LLVM`, a weak
+# dependency of this package) so one implementation serves both vendors and the CPU tests.
 
 """
     IR_CLASSES
@@ -647,13 +655,16 @@ Operation classes of [`kernel_ir_mix`](@ref): `fp64_fma` (`llvm.fma.f64`, `llvm.
 `fp64_add` (`fadd`/`fsub double`), `fp64_mul`, `fp64_div`, `fp64_neg`, `fp64_sqrt`
 (`llvm.sqrt.f64`), `fp64_cmp` (`fcmp` on doubles), `fp64_cvt` (conversions to/from double),
 `fp64_intrinsic` (other `llvm.*` intrinsics returning or taking double: fabs, floor, minnum,
-…), `fp32` (the same on float/half), `int` (integer arithmetic, logic, shifts, compares,
+…), `fp64_contract` (the subset of the double `fadd`/`fsub`/`fmul` that carry LLVM's `contract`
+fast-math flag — Julia lowers `muladd` to a contract-flagged pair rather than an `fmuladd`
+intrinsic, and the backend fuses them at instruction selection; informational, not added to
+the `fp64` total), `fp32` (the same on float/half), `int` (integer arithmetic, logic, shifts, compares,
 integer casts, selects), `mem_load`, `mem_store`, `mem_atomic`, `call` (non-intrinsic calls),
 `control` (br, switch, ret, unreachable), `other` (phi, getelementptr, allocas, pointer casts,
 extract/insertvalue, …).
 """
 const IR_CLASSES = (:fp64_fma, :fp64_add, :fp64_mul, :fp64_div, :fp64_neg, :fp64_sqrt, :fp64_cmp, :fp64_cvt,
-    :fp64_intrinsic, :fp32, :int, :mem_load, :mem_store, :mem_atomic, :call, :control, :other)
+    :fp64_intrinsic, :fp64_contract, :fp32, :int, :mem_load, :mem_store, :mem_atomic, :call, :control, :other)
 const IR_FP64_CLASSES = (:fp64_fma, :fp64_add, :fp64_mul, :fp64_div, :fp64_neg, :fp64_sqrt, :fp64_cmp, :fp64_cvt, :fp64_intrinsic)
 const IRCounts = NamedTuple{IR_CLASSES, NTuple{length(IR_CLASSES), Int}}
 
@@ -673,6 +684,10 @@ function _ir_counts(L::Module, mod)
     cvt_ops = (API.LLVMSIToFP, API.LLVMUIToFP, API.LLVMFPToSI, API.LLVMFPToUI, API.LLVMFPExt, API.LLVMFPTrunc)
     ctl_ops = (API.LLVMBr, API.LLVMSwitch, API.LLVMRet, API.LLVMUnreachable, API.LLVMIndirectBr, API.LLVMInvoke)
     fp64_or_32(kind, dbl) = dbl ? Symbol(:fp64_, kind) : :fp32
+    # LLVM's `contract` fast-math flag on a double fadd/fsub/fmul (what `muladd` lowers to)
+    contract_flag(inst) = isdefined(L, :fast_math) && isdefined(API, :LLVMCanValueUseFastMathFlags) &&
+        Bool(API.LLVMCanValueUseFastMathFlags(inst)) && L.fast_math(inst).contract
+    contractible = (API.LLVMFAdd, API.LLVMFSub, API.LLVMFMul)
     per_function = Dict{String, IRCounts}()
     for f in L.functions(mod)
         L.isdeclaration(f) && continue
@@ -713,6 +728,9 @@ function _ir_counts(L::Module, mod)
                 :other
             end
             acc[cls] = get(acc, cls, 0) + 1
+            if op in contractible && isdouble(t) && contract_flag(inst)
+                acc[:fp64_contract] = get(acc, :fp64_contract, 0) + 1
+            end
         end
         per_function[L.name(f)] = IRCounts(ntuple(i -> get(acc, IR_CLASSES[i], 0), length(IR_CLASSES)))
     end

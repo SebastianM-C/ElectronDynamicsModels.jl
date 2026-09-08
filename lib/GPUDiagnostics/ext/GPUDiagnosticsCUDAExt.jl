@@ -7,6 +7,8 @@ module GPUDiagnosticsCUDAExt
 using GPUDiagnostics
 using CUDA
 using CUDA: NVML
+import GPUCompiler
+import LLVM
 
 const GD = GPUDiagnostics
 
@@ -257,7 +259,7 @@ end
 # size, the runtime's default `sm_NNa` for the current device) or, for `target = "sm_90"`,
 # the same with `arch` overridden; ptxas's `.sectioninfo @"SHI_REGISTERS=N"` gives the
 # register count to check against the runtime attribute.
-const _GPUC = _CC.GPUCompiler
+const _GPUC = GPUCompiler
 
 # The CompilerJob of `ck` (the kernel's own options; `arch` overridden for a target) and its ISA name.
 function _mix_job(backend::CUDABackend, ck::GD.CompiledKernel{<:CUDA.HostKernel}, target)
@@ -288,7 +290,7 @@ function GD._kernel_ir_counts(backend::CUDABackend, ck::GD.CompiledKernel{<:CUDA
     job, isa = _mix_job(backend, ck, target)
     functions = _GPUC.JuliaContext() do ctx
         ir, _ = _GPUC.compile(:llvm, job)
-        GD._ir_counts(_CC.LLVM, ir)
+        GD._ir_counts(LLVM, ir)
     end
     return (; functions, isa)
 end

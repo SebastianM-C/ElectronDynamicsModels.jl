@@ -14,6 +14,7 @@ struct NoVendorBackend <: Backend end
 module FakeLLVM
     module API
         @enum Opcode LLVMFAdd LLVMFSub LLVMFMul LLVMFDiv LLVMFRem LLVMFNeg LLVMFCmp LLVMSIToFP LLVMUIToFP LLVMFPToSI LLVMFPToUI LLVMFPExt LLVMFPTrunc LLVMCall LLVMAdd LLVMSub LLVMMul LLVMUDiv LLVMSDiv LLVMURem LLVMSRem LLVMShl LLVMLShr LLVMAShr LLVMAnd LLVMOr LLVMXor LLVMICmp LLVMTrunc LLVMZExt LLVMSExt LLVMSelect LLVMLoad LLVMStore LLVMAtomicRMW LLVMAtomicCmpXchg LLVMBr LLVMSwitch LLVMRet LLVMUnreachable LLVMIndirectBr LLVMInvoke LLVMPHI LLVMGetElementPtr
+        LLVMCanValueUseFastMathFlags(i) = Int(getfield(i, :op) in (LLVMFAdd, LLVMFSub, LLVMFMul, LLVMFDiv))
     end
     abstract type LLVMType end
     struct LLVMDouble <: LLVMType end
@@ -26,8 +27,9 @@ module FakeLLVM
     struct Val; type::LLVMType; end
     struct Function; name::String; decl::Bool; blocks::Vector; end
     Function(name, decl) = Function(name, decl, [])
-    struct Inst; op::API.Opcode; type::LLVMType; ops::Vector; callee::Union{Function, Nothing}; end
-    Inst(op, type, ops) = Inst(op, type, ops, nothing)
+    struct Inst; op::API.Opcode; type::LLVMType; ops::Vector; callee::Union{Function, Nothing}; contract::Bool; end
+    Inst(op, type, ops, callee = nothing; contract = false) = Inst(op, type, ops, callee, contract)
+    fast_math(i::Inst) = (; contract = i.contract)
     struct Block; insts::Vector{Inst}; end
     struct Module; fns::Vector{Function}; end
     functions(m::Module) = m.fns
@@ -632,5 +634,15 @@ end
         @test c.fp64_cvt == 3 && c.fp64_fma == 1 && c.fp64_sqrt == 1 && c.fp64_intrinsic == 1
         @test c.fp32 == 4 && c.int == 3 && c.call == 1 && c.mem_load == 1 && c.mem_store == 1 && c.mem_atomic == 1
         @test c.control == 2 && c.other == 3 && sum(c) == length(insts)
+        # `contract`-flagged double fmul/fadd (what `muladd` lowers to) are counted separately and
+        # not added to the fp64 total
+        fc = FakeLLVM.Function("k", false, [FakeLLVM.Block([
+            FakeLLVM.Inst(FakeLLVM.API.LLVMFMul, FakeLLVM.LLVMDouble(), []; contract = true),
+            FakeLLVM.Inst(FakeLLVM.API.LLVMFAdd, FakeLLVM.LLVMDouble(), []; contract = true),
+            FakeLLVM.Inst(FakeLLVM.API.LLVMFMul, FakeLLVM.LLVMDouble(), []),
+            FakeLLVM.Inst(FakeLLVM.API.LLVMFMul, FakeLLVM.LLVMFloat(), []; contract = true)])])
+        cc = _ir_counts(FakeLLVM, FakeLLVM.Module([fc]))["k"]
+        @test cc.fp64_mul == 2 && cc.fp64_add == 1 && cc.fp64_contract == 2 && cc.fp32 == 1
+        @test :fp64_contract ∉ IR_FP64_CLASSES
     end
 end

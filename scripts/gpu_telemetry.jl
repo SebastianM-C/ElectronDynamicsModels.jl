@@ -184,7 +184,7 @@ function record_kernel_mix!(gpu, backend, ck)
             gpu["kernel_mix_hot_loop_confidence"] = String(mix.hot_loop_confidence)
         end
         if mix.ir !== nothing   # typed LLVM-IR counts of the same job (before backend contraction)
-            for c in (:fp64_fma, :fp64_add, :fp64_mul, :fp64_div, :fp64_sqrt)
+            for c in (:fp64_fma, :fp64_add, :fp64_mul, :fp64_div, :fp64_sqrt, :fp64_contract)
                 gpu["kernel_ir_" * String(c)] = mix.ir.counts[c]
             end
         end
