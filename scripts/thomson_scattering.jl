@@ -35,7 +35,11 @@ include(joinpath(@__DIR__, "gpu_telemetry.jl"))   # with_gpu_sampler + gpu_manif
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
 if GPU_BACKEND == "cuda"
     using CUDA
-    const gpu_backend = CUDA.CUDABackend()
+    # `always_inline = true`: without it Julia leaves the per-pixel closure body and the spline
+    # evaluations as out-of-line device functions whose arguments/returns round-trip through a
+    # ~1.7 KB local-memory frame per thread (2.5× slower per launch on an RTX 5090, 2026-09-08);
+    # AMDGPU.jl inlines unconditionally. Results move at the last-bit level only.
+    const gpu_backend = CUDA.CUDABackend(; always_inline = true)
 elseif GPU_BACKEND == "rocm"
     using AMDGPU
     const gpu_backend = AMDGPU.ROCBackend()

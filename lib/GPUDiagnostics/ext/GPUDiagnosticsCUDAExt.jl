@@ -83,15 +83,58 @@ function GD._kernel_occupancy(::CUDABackend, k::CUDA.HostKernel, block_size::Int
     )
 end
 
-# PTX / SASS binary versions the kernel was built for (CUDA.jl ships no SASS resource-usage
-# parser; the driver attributes above already carry registers and spill (local) bytes).
-function GD._kernel_isa_info(::CUDABackend, k::CUDA.HostKernel)
+# PTX / SASS binary versions the kernel was built for, plus the `ptxas --verbose` report of a
+# regenerated compile. The driver attribute `local_mem_bytes` lumps the call-ABI stack frame
+# (arguments/returns of device functions Julia did not inline, private arrays) together with
+# true register spills; only ptxas separates them, and it also names every function it
+# assembled out of line. CUDA.jl ships ptxas (CUDA_Compiler_jll) and compiles through it, so
+# the same binary is run here on the module PTX generated with the kernel's own options
+# (`always_inline` from the backend, `maxthreads` = the static KA workgroup size); the register
+# count is checked against the runtime attribute so a mismatched regeneration is flagged, not
+# trusted. Costs a few seconds of compiler time; nothing is launched.
+function GD._kernel_isa_info(backend::CUDABackend, ck::GD.CompiledKernel{<:CUDA.HostKernel})
+    k = ck.kernel
+    info = Dict{String, Any}()
     try
         v = _CC.version(k)
-        return Dict{String, Any}("ptx_version" => string(v.ptx), "binary_version" => string(v.binary))
+        info["ptx_version"] = string(v.ptx)
+        info["binary_version"] = string(v.binary)
     catch err
         @warn "kernel_resources: PTX/binary version query failed" exception = err
-        return Dict{String, Any}()
+    end
+    try
+        merge!(info, _ptxas_report(backend, k, ck.workgroup_size))
+        if haskey(info, "ptxas_registers")
+            info["ptxas_matches_attributes"] = info["ptxas_registers"] == Int(CUDA.registers(k))
+        end
+    catch err
+        @warn "kernel_resources: ptxas report unavailable — reporting driver attributes only" exception = err
+    end
+    return info
+end
+
+_ptxas_cmd() = isdefined(_CC, :CUDA_Compiler_jll) ? _CC.CUDA_Compiler_jll.ptxas() :
+    isdefined(CUDA, :CUDA_Compiler_jll) ? CUDA.CUDA_Compiler_jll.ptxas() :
+    error("CUDA_Compiler_jll (ptxas) not reachable from CUDA.jl")
+
+function _ptxas_report(backend::CUDABackend, k::CUDA.HostKernel{F, TT}, workgroup_size) where {F, TT}
+    io = IOBuffer()
+    kw = workgroup_size === nothing ? (;) : (; maxthreads = Int(workgroup_size))
+    CUDA.code_ptx(io, k.f, TT; kernel = true, raw = true, dump_module = true,
+        always_inline = backend.always_inline, kw...)
+    ptx = String(take!(io))
+    m = match(r"\.target\s+(sm_\w+)", ptx)
+    m === nothing && error("no .target line in the generated PTX")
+    arch = m[1]
+    ptxfile = tempname(; cleanup = false) * ".ptx"
+    write(ptxfile, ptx)
+    try
+        cmd = `$(_ptxas_cmd()) --verbose --gpu-name $arch --output-file /dev/null $ptxfile`
+        buf = IOBuffer()   # ptxas writes its report to stderr; capture both streams
+        run(pipeline(ignorestatus(cmd); stdout = buf, stderr = buf))
+        return GD._parse_ptxas_verbose(String(take!(buf)))
+    finally
+        rm(ptxfile; force = true)
     end
 end
 

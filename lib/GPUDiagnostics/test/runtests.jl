@@ -1,6 +1,6 @@
 using GPUDiagnostics
 using GPUDiagnostics: _fma_chain_reference, _fma_chain_kernel!, _PEAK_CHAINS
-using GPUDiagnostics: _static_workgroup_size, _parse_amdgpu_kernel_info, _compiled_kernel
+using GPUDiagnostics: _static_workgroup_size, _parse_amdgpu_kernel_info, _compiled_kernel, _parse_ptxas_verbose
 import KernelAbstractions as KA
 using KernelAbstractions: CPU, Backend
 using Test
@@ -155,6 +155,28 @@ struct NoVendorBackend <: Backend end
         @test info["max_flat_workgroup_size"] == 1024 && info["wavefront_size"] == 32
         @test info["kernarg_bytes"] == 1016 && !haskey(info, "agpr_count")
         @test isempty(_parse_amdgpu_kernel_info("s_endpgm\n"))
+
+        # ptxas --verbose parser: entry-function frame/spill split + out-of-line functions
+        log = """
+        ptxas info    : 256 bytes gmem
+        ptxas info    : Compiling entry function '_Z23gpu__forindices_global_16CompilerMetadata' for 'sm_120a'
+        ptxas info    : Function properties for _Z23gpu__forindices_global_16CompilerMetadata
+            1712 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+        ptxas info    : Used 128 registers, used 0 barriers, 1712 bytes cumulative stack size
+        ptxas info    : Compile time = 93.809 ms
+        ptxas info    : Function properties for gpu_report_exception
+            0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+        ptxas info    : Function properties for julia_GPUCubicSpline_15704
+            0 bytes stack frame, 0 bytes spill stores, 8 bytes spill loads
+        ptxas info    : Function properties for julia__140_15713
+            0 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+        """
+        pi = _parse_ptxas_verbose(log)
+        @test pi["stack_frame_bytes"] == 1712 && pi["spill_store_bytes"] == 0 && pi["spill_load_bytes"] == 0
+        @test pi["ptxas_registers"] == 128 && pi["cumulative_stack_bytes"] == 1712
+        @test pi["ptxas_functions"] == ["gpu_report_exception", "julia_GPUCubicSpline_15704", "julia__140_15713"]
+        @test !haskey(pi, "ptxas_entry")
+        @test isempty(_parse_ptxas_verbose("ptxas fatal   : Unresolved extern function\n"))
         # comment-only dumps (no metadata) still yield the figures; CDNA's AGPR line is picked up
         info2 = _parse_amdgpu_kernel_info("; NumSgprs: 40\n; NumVgprs: 64\n; NumAgprs: 8\n; TotalNumVgprs: 72\n; ScratchSize: 0\n; Occupancy: 8\n")
         @test info2["sgpr_count"] == 40 && info2["agpr_count"] == 8 && info2["total_vgpr_count"] == 72 && info2["scratch_bytes"] == 0
@@ -166,7 +188,7 @@ struct NoVendorBackend <: Backend end
             (; registers = 123, local_mem_bytes = 584, shared_mem_bytes = 65536, const_mem_bytes = -1, max_threads_per_block = 1024)
         GPUDiagnostics._kernel_occupancy(::FakeGPU, k::FakeKernel, block_size::Int) =
             (; active_blocks_per_sm = min(65536 ÷ 65536, 2048 ÷ block_size), warp_size = 32, max_threads_per_sm = 2048, shared_mem_per_sm = 65536)
-        GPUDiagnostics._kernel_isa_info(::FakeGPU, k::FakeKernel) = Dict{String, Any}("vgpr_count" => 123)
+        GPUDiagnostics._kernel_isa_info(::FakeGPU, c::CompiledKernel{<:FakeKernel}) = Dict{String, Any}("vgpr_count" => 123)
         @test length(compiled_kernels(FakeGPU())) == 1
         @test length(compiled_kernels(FakeGPU(); pattern = "StaticSize")) == 1
         @test isempty(compiled_kernels(FakeGPU(); pattern = r"no such kernel"))

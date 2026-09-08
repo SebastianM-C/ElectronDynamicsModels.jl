@@ -91,17 +91,25 @@ Returns a NamedTuple:
   `max_flat_workgroup_size`, `wavefront_size`, `code_bytes` and the compiler's own
   `occupancy_waves_per_simd` estimate (register budget only — compare with `occupancy` to see
   whether LDS or the block size is the binding constraint); on NVIDIA the `ptx_version` and
-  `binary_version` the kernel was built for.
+  `binary_version` the kernel was built for, plus the `ptxas --verbose` figures of a
+  regenerated compile with the kernel's own options: `ptxas_registers`, `stack_frame_bytes`
+  (the call-ABI / private-array frame), `spill_store_bytes`, `spill_load_bytes` (true
+  register spills — the driver's local-memory figure lumps both together),
+  `cumulative_stack_bytes`, and `ptxas_functions`, the device functions assembled
+  out-of-line (a non-empty list beyond the runtime's exception helpers means Julia did not
+  inline them; compare `CUDABackend(always_inline = true)`). `ptxas_matches_attributes`
+  says whether that regenerated compile reproduced the runtime's register count.
 
 The `pattern` form maps [`compiled_kernels`](@ref)`(backend; pattern)` through the report
-(possibly empty). Nothing is launched; the AMD ISA dump re-runs the compiler for ~0.5 s.
+(possibly empty). Nothing is launched; the AMD ISA dump and the NVIDIA PTX regeneration re-run
+the compiler for a few seconds.
 """
 function kernel_resources(backend::KA.Backend, ck::CompiledKernel;
         block_size::Integer = something(ck.workgroup_size, 256))
     block_size > 0 || throw(ArgumentError("kernel_resources: block_size must be > 0 (got $block_size)"))
     attrs = _kernel_attributes(backend, ck.kernel)          # registers, local/shared/const bytes, max threads
     occ = _kernel_occupancy(backend, ck.kernel, Int(block_size))   # active blocks/SM + device capacities
-    isa = _kernel_isa_info(backend, ck.kernel)              # vendor extras (may be empty)
+    isa = _kernel_isa_info(backend, ck)                     # vendor extras (may be empty)
     warps_per_block = cld(Int(block_size), occ.warp_size)
     max_warps = occ.max_threads_per_sm ÷ occ.warp_size
     active_warps = occ.active_blocks_per_sm * warps_per_block
@@ -128,7 +136,7 @@ kernel_resources(::KA.CPU, ck::CompiledKernel; kwargs...) = error(
 # `::Any` kernel objects: the vendor types are only known inside the extensions.
 function _kernel_attributes end
 function _kernel_occupancy end
-_kernel_isa_info(::KA.Backend, kernel) = Dict{String, Any}()
+_kernel_isa_info(::KA.Backend, ck::CompiledKernel) = Dict{String, Any}()
 
 # ── Pure helpers (vendor-neutral, tested on the CPU) ────────────────────────────────────────
 
@@ -188,5 +196,46 @@ function _parse_amdgpu_kernel_info(asm::AbstractString)
         m2 = match(r"^\s*;\s*LDSByteSize:\s*(\d+)", line)
         m2 === nothing || haskey(info, "lds_bytes") || (info["lds_bytes"] = parse(Int, m2[1]))
     end
+    return info
+end
+
+# Parse `ptxas --verbose` output for the entry function: its stack frame / spill bytes and
+# register count, plus the names of the other functions ptxas assembled (device functions
+# Julia left out of line — the runtime's exception helpers always appear). ptxas prints:
+#   ptxas info    : Compiling entry function '<entry>' for 'sm_120a'
+#   ptxas info    : Function properties for <entry>
+#       1712 bytes stack frame, 0 bytes spill stores, 0 bytes spill loads
+#   ptxas info    : Used 128 registers, used 0 barriers, 1712 bytes cumulative stack size
+#   ptxas info    : Function properties for julia_GPUCubicSpline_15704
+#       0 bytes stack frame, 0 bytes spill stores, 8 bytes spill loads
+# Returns the figures found (an empty Dict for text without them).
+function _parse_ptxas_verbose(log::AbstractString)
+    info = Dict{String, Any}()
+    entry = nothing
+    m = match(r"Compiling entry function '([^']+)'", log)
+    m === nothing || (entry = m[1])
+    current = nothing
+    others = String[]
+    for line in eachline(IOBuffer(log))
+        m = match(r"Function properties for (\S+)", line)
+        if m !== nothing
+            current = m[1]
+            current == entry || push!(others, current)
+            continue
+        end
+        m = match(r"(\d+) bytes stack frame, (\d+) bytes spill stores, (\d+) bytes spill loads", line)
+        if m !== nothing && current == entry
+            info["stack_frame_bytes"] = parse(Int, m[1])
+            info["spill_store_bytes"] = parse(Int, m[2])
+            info["spill_load_bytes"] = parse(Int, m[3])
+            continue
+        end
+        m = match(r"Used (\d+) registers.*?(\d+) bytes cumulative stack size", line)
+        if m !== nothing
+            info["ptxas_registers"] = parse(Int, m[1])
+            info["cumulative_stack_bytes"] = parse(Int, m[2])
+        end
+    end
+    isempty(others) || (info["ptxas_functions"] = others)   # the entry name itself is mangled noise
     return info
 end
