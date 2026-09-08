@@ -124,9 +124,12 @@ function with_gpm_sampler(f, backend, dt::Real;
     samples = permutedims(reduce(hcat, rows))
     ticks = count(==(samples[1, 2]), @view samples[:, 2])
     first_sample_s = minimum(@view samples[:, 1])
-    starved = window > 10 * dt && ticks < 0.5 * window / dt
+    # Starvation watchdog over the window the child was actually sampling: a Julia child needs a
+    # few seconds to load its NVML bindings (first_sample_s), which must not count as missed ticks.
+    sampled = window - first_sample_s
+    starved = sampled > 10 * dt && ticks < 0.5 * sampled / dt
     starved &&
-        @warn "GPM sampler starved: $ticks ticks over $(round(window; digits = 1)) s at dt=$(dt) s — GPM stats are unreliable"
+        @warn "GPM sampler starved: $ticks ticks over $(round(sampled; digits = 1)) s at dt=$(dt) s — GPM stats are unreliable"
     return result, (columns = columns, samples = samples, ticks = ticks, dt = Float64(dt),
         window = window, first_sample_s = first_sample_s, starved = starved,
         trace = tracefile, supported = true)

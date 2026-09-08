@@ -111,6 +111,12 @@ struct NoVendorBackend <: Backend end
         @test telem.ticks >= 3 && size(telem.samples) == (2 * telem.ticks, 6)
         @test telem.trace == trace && isfile(trace) && startswith(readline(trace), "# epoch_s\tdevice")
         @test 0.1 <= telem.first_sample_s < 0.6          # the child's startup shows up here
+        # the starvation watchdog discounts the child's startup: 4 s of startup + full-rate ticks
+        # over a 6 s window is fine, ticks missing over the sampled part is not
+        fake(ticks, window, first) = (columns = [:t_rel_s, :device, :sm_util], samples = hcat(range(first, window; length = ticks), ones(ticks), zeros(ticks)), dt = 0.5, window = window, first_sample_s = first)
+        starvedq(t) = (s = t.window - t.first_sample_s; s > 10 * t.dt && size(t.samples, 1) < 0.5 * s / t.dt)
+        @test !starvedq(fake(5, 6.4, 4.3))
+        @test starvedq(fake(3, 20.0, 4.0))
         @test all(∈((1.0, 2.0)), gpm_column(telem, :device))
         @test all(v -> 0 <= v <= 1, gpm_column(telem, :sm_util))   # the 7.0 row was dropped
         @test count(isnan, gpm_column(telem, :fp64_util)) == telem.ticks   # nan metric kept
