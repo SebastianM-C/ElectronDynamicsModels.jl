@@ -352,6 +352,115 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         @test ElectronDynamicsModels._shard_indices(2, 3) == [1:1, 2:2]   # empty shards dropped
     end
 
+    @testset "electron batching: persistent device buffers" begin
+        # `buffers` + `finish` keep the accumulation buffers alive across `accumulate_field`
+        # calls, so a driver can solve a batch of electrons, accumulate it and drop its splines
+        # (the host cost of a production run: ~7.4 MB of spline per electron for the whole field
+        # phase). The kernels, the per-electron uploads and the launch order are untouched, so on
+        # ONE device the batched sum adds the same contributions in the same order and comes out
+        # bit-identical — the assertions below only require a relative L2 of 1e-12, because that
+        # is what the API promises: any reordering of a floating-point sum (a different batch
+        # split on the sharded path, a device reduce) is free to move the last bits.
+        trajs = [analytic_traj(; g = 1.2 + 0.01i, A = 0.25, Ω = 2.0, vz = 0.0,
+            τspan = (0.0, 20.0), N = 800) for i in 1:20]
+        τi, τf = first(trajs[1].itp.t), last(trajs[1].itp.t)
+        z = 50.0
+        Nx, Ny = 7, 5
+        half = 6.0
+        x⁰ = LinRange(1.2τi + (z - 2half), 1.2τf + (z + 2half), 60)
+        screen = ObserverScreen(LinRange(-half, half, Nx), LinRange(-half, half, Ny), z, x⁰; c = 1.0)
+
+        # Feed `trajs` in batches of `B`, holding the buffers across the calls; the last call
+        # finishes and downloads. Returns the cube exactly as the single call would.
+        function batched(alg, mode, B; kw...)
+            acc = nothing
+            res = nothing
+            for i0 in 1:B:length(trajs)
+                rng = i0:min(i0 + B - 1, length(trajs))
+                last_batch = rng[end] == length(trajs)
+                res = accumulate_field(trajs[rng], screen, alg, CPU();
+                    mode, buffers = acc, finish = last_batch, kw...)
+                last_batch || (acc = res)
+            end
+            return res
+        end
+
+        for (alg, kw) in ((GPUKernelRK4(), (; n_substeps = 2)), (GPUKernelNewton(), (; n_iters = 2))),
+                mode in (Val(:split), Val(:total))
+            one = accumulate_field(trajs, screen, alg, CPU(); mode, kw...)
+            for B in (20, 25, 3, 7)   # 20 = one batch of all, 25 > N, then genuine splits
+                b = batched(alg, mode, B; kw...)
+                @test propertynames(b) == propertynames(one)
+                for k in propertynames(one)
+                    @test rel_l2(getproperty(b, k), getproperty(one, k)) < 1.0e-12
+                end
+                # one device, one stream, same launch order ⇒ nothing moved at all
+                @test all(k -> getproperty(b, k) == getproperty(one, k), propertynames(one))
+            end
+
+            # The accumulator counts what it swallowed and can be finished explicitly, without
+            # a last batch of electrons; finishing does not consume it.
+            acc = accumulate_field(trajs[1:12], screen, alg, CPU(); mode, finish = false, kw...)
+            @test acc isa FieldAccumulator
+            @test acc.n_electrons == 12
+            acc = accumulate_field(trajs[13:20], screen, alg, CPU(); mode, buffers = acc, finish = false, kw...)
+            @test acc.n_electrons == 20
+            fin = finish_field(acc)
+            @test all(k -> getproperty(fin, k) == getproperty(one, k), propertynames(one))
+            @test all(k -> getproperty(finish_field(acc; workers = 2), k) == getproperty(one, k), propertynames(one))
+            # `sink` sees the live device buffers, as it does on the single-call path
+            seen = Ref(0)
+            @test finish_field(acc; sink = (E1, B1, E2, B2, m) -> (seen[] += 1; m)) === mode
+            @test seen[] == 1
+
+            # Sharded: each device keeps its shard's buffers across the batches and the reduce
+            # runs once, on the finishing call. Splitting into batches re-shards the electrons,
+            # so this is a roundoff-level check, not a bit-identity one.
+            for reduce in (:device, :host)
+                shard_one = accumulate_field_sharded(trajs, screen, alg, CPU();
+                    devices = [1, 1], mode, reduce, kw...)
+                sacc = nothing
+                res = nothing
+                for i0 in 1:7:length(trajs)
+                    rng = i0:min(i0 + 6, length(trajs))
+                    last_batch = rng[end] == length(trajs)
+                    res = accumulate_field_sharded(trajs[rng], screen, alg, CPU();
+                        devices = [1, 1], mode, reduce, buffers = sacc, finish = last_batch, kw...)
+                    last_batch || (sacc = res)
+                end
+                @test sacc isa ShardedFieldAccumulator
+                @test all(a -> a isa FieldAccumulator, sacc.accs)
+                @test sum(a -> a.n_electrons, sacc.accs) == length(trajs)   # every batch, the finishing one included
+                @test propertynames(res) == propertynames(one)
+                for k in propertynames(one)
+                    @test rel_l2(getproperty(res, k), getproperty(shard_one, k)) < 1.0e-12
+                    @test rel_l2(getproperty(res, k), getproperty(one, k)) < 1.0e-12
+                end
+            end
+        end
+
+        # Mismatched buffers are rejected rather than silently summed into the wrong cube.
+        let alg = GPUKernelNewton(), kw = (; n_iters = 2)
+            acc = accumulate_field(trajs[1:2], screen, alg, CPU(); mode = Val(:split), finish = false, kw...)
+            @test_throws ArgumentError accumulate_field(trajs[3:4], screen, alg, CPU();
+                mode = Val(:total), buffers = acc, kw...)
+            small = ObserverScreen(LinRange(-half, half, Nx - 1), LinRange(-half, half, Ny), z, x⁰; c = 1.0)
+            @test_throws DimensionMismatch accumulate_field(trajs[3:4], small, alg, CPU();
+                mode = Val(:split), buffers = acc, kw...)
+            @test_throws ArgumentError accumulate_field(trajs[3:4], screen, alg, CPU(); buffers = (;), kw...)
+            @test_throws ArgumentError FieldAccumulator(screen, CPU(); mode = Val(:nope))
+            sacc = accumulate_field_sharded(trajs[1:4], screen, alg, CPU();
+                devices = [1, 1], finish = false, kw...)
+            @test_throws ArgumentError accumulate_field_sharded(trajs[5:8], screen, alg, CPU();
+                devices = [1], buffers = sacc, kw...)
+        end
+        # padded shards: always one range per device (empty where the batch runs out), and the
+        # same split as `_shard_indices` whenever there are at least as many electrons as devices
+        @test ElectronDynamicsModels._shard_indices_padded(5, 2) == [1:3, 4:5]
+        @test ElectronDynamicsModels._shard_indices_padded(2, 3) == [1:1, 2:2, 3:2]
+        @test ElectronDynamicsModels._shard_indices_padded(0, 2) == [1:0, 1:0]
+    end
+
     @testset "sample_chunks: chunk grid reproduces the per-pixel walk" begin
         # One thread per (pixel, chunk) walking a slice of the pixel's executed slots. Chunk 1 is
         # today's path (bit-identical); later chunks start from a cold light-cone solve, so the
