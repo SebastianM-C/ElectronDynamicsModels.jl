@@ -38,7 +38,7 @@ echo "[profile] $tag under rocprofv3 --pmc ($set_or_counters) → $out  (timeout
 ( cd "$REPO" && "${JL[@]}" -t 1 --project=scripts -e '
     using GPUDiagnostics
     spec, dir, name, timeout_s = ARGS[1], ARGS[2], ARGS[3], parse(Float64, ARGS[4])
-    sym = Symbol(lstrip(spec, [':', ' ']))
+    sym = Symbol(strip(replace(spec, ":" => "")))
     counters = haskey(ROCPROF_COUNTER_SETS, sym) ? sym : String.(split(spec))
     cmd = rocprof_command(Cmd(String.(ARGS[5:end])); counters, dir, name, timeout_s)
     println("[profile] ", cmd); flush(stdout)
