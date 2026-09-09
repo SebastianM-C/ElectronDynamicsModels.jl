@@ -372,8 +372,15 @@ metrics its docstring lists). With `cycles = GRBM_GUI_ACTIVE / n_xcd` (the dispa
 cycles on one die; the CSV sums the counter over the dies), `n_cu` / `n_se` / `wave_size` /
 `max_waves_per_cu` from `rc.device` and `slots` from the caller:
 
-- `clock_GHz = cycles / duration` — the engine clock the dispatch actually ran at (sanity check
-  of `n_xcd`: 14 GHz means the die sum was not divided).
+- `clock_GHz = cycles / duration` — the MEAN ACTIVE clock over the dispatch: `GRBM_GUI_ACTIVE`
+  counts cycles while a die's GUI is active, so this equals the engine clock only while every
+  die is busy for the whole dispatch and is a lower bound otherwise (idle tails count no cycles;
+  it is meaningless for sub-ms dispatches, whose counter window exceeds the kernel). It is also
+  the `n_xcd` sanity check (14 GHz means the die sum was not divided). The clock is power-managed
+  on the MI300X (1.7 GHz at 7 waves/CU, 1.25 GHz at 14 waves/CU on the same kernel), so compare
+  two runs of the SAME work in CYCLES (`GRBM_GUI_ACTIVE / n_xcd`, `SQ_BUSY_CYCLES`), not in
+  seconds: fewer cycles = more work per cycle; wall time falling less than the cycles = the clock
+  dropped.
 - `insts_per_slot_<class> = SQ_INSTS_<CLASS> × wave_size / slots` for every `SQ_INSTS_*`
   counter (`vmem_rd`, `valu`, `valu_fma_f64`, …); `fp64_flop_per_slot = (2·FMA + ADD + MUL +
   TRANS) × wave_size / slots` when the four FP64 classes are present.
