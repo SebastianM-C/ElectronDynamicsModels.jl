@@ -180,21 +180,57 @@ end
 
 # Spline value on a known interval `idx` (1 ≤ idx ≤ length(t) - 1): the arithmetic of the
 # evaluation, shared by the cold and the warm-started calls.
-@muladd function _eval_at(spline::GPUCubicSpline{D}, τ, idx) where {D}
-    h_idx = spline.h[idx + 1]
-    dt1 = τ - spline.t[idx]
-    dt2 = spline.t[idx + 1] - τ
-    inv_6h = inv(6 * h_idx)
+_eval_at(spline::GPUCubicSpline, τ, idx) = _eval_poly(_fetch_interval(spline, idx), τ)
 
+"""
+    IntervalCoefs{D, T}
+
+Everything a cubic-spline evaluation needs on one knot interval: its end knots, `inv(6h)` and
+the four D-vectors `z[i]`, `z[i+1]`, `c1[i]`, `c2[i]` (3 + 4D scalars). [`_fetch_interval`](@ref)
+loads it once; [`_eval_poly`](@ref) evaluates the cubic at any `τ` from it. The per-slot solvers
+can hold it in registers across the Newton corrections (or RK4 stages) of a slot, which leave
+the interval only at a knot crossing, instead of reloading the coefficients for every
+evaluation (`coef_reuse = Val(true)` in the accumulate functions: bit-identical values, fewer
+loads, more live registers).
+"""
+struct IntervalCoefs{D, T}
+    t_i::T
+    t_ip1::T
+    inv_6h::T
+    z_i::SVector{D, T}
+    z_ip1::SVector{D, T}
+    c1::SVector{D, T}
+    c2::SVector{D, T}
+end
+
+@inline function _fetch_interval(spline::GPUCubicSpline{D}, idx) where {D}
+    t_i = spline.t[idx]
+    t_ip1 = spline.t[idx + 1]
+    inv_6h = inv(6 * spline.h[idx + 1])
+    z_i = SVector{D}(ntuple(d -> spline.z[d, idx], Val(D)))
+    z_ip1 = SVector{D}(ntuple(d -> spline.z[d, idx + 1], Val(D)))
+    c1 = SVector{D}(ntuple(d -> spline.c1[d, idx], Val(D)))
+    c2 = SVector{D}(ntuple(d -> spline.c2[d, idx], Val(D)))
+    return IntervalCoefs(t_i, t_ip1, inv_6h, z_i, z_ip1, c1, c2)
+end
+
+# The evaluation arithmetic — one definition for the cold, the warm-started and the
+# register-cached paths, so all three produce bit-identical values.
+@muladd @inline function _eval_poly(c::IntervalCoefs{D}, τ) where {D}
+    dt1 = τ - c.t_i
+    dt2 = c.t_ip1 - τ
     return SVector{D}(
         ntuple(Val(D)) do d
-            spline.z[d, idx] * dt2^3 * inv_6h +
-                spline.z[d, idx + 1] * dt1^3 * inv_6h +
-                spline.c1[d, idx] * dt1 +
-                spline.c2[d, idx] * dt2
+            c.z_i[d] * dt2^3 * c.inv_6h +
+                c.z_ip1[d] * dt1^3 * c.inv_6h +
+                c.c1[d] * dt1 +
+                c.c2[d] * dt2
         end
     )
 end
+
+# τ inside the fetched interval ⇔ the warm-started search would return the same index.
+@inline _in_interval(c::IntervalCoefs, τ) = (c.t_i ≤ τ) & (τ < c.t_ip1)
 
 # ── Adapt.jl integration ─────────────────────────────────────────────
 

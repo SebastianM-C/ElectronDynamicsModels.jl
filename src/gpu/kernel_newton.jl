@@ -63,8 +63,7 @@ struct GPUKernelNewton end
 # `to_gpu` guarantees the canonical order. Indexing through the runtime `x_idxs`/`u_idxs`
 # vectors forced the SVector{8} into a private array (scratch, and on AMD a 64 KB LDS
 # reservation via promote-alloca that capped residency at one workgroup per WGP).
-@muladd @inline function _lightcone_eval(τ, gpu_traj, r_obs, tₖ, idx)
-    v, idx = gpu_traj.itp(τ, idx)   # warm-started knot search: idx = interval of the previous eval
+@muladd @inline function _lightcone_from_state(v, r_obs, tₖ)
     x⁰ = v[1] # x⁰(τ)
     x³ = v[4] # x³(τ)
     d¹ = r_obs[1] - v[2]
@@ -91,6 +90,13 @@ struct GPUKernelNewton end
     rhs = r_norm / xr_dot_u
     # f = tₖ − ψ(τ) − ρ²/(R + d³)  ≡  x⁰_k − x⁰(τ) − R  with  x⁰_k = z_screen + tₖ
     f = tₖ - ψ - screen_dist
+    return f, rhs, r_norm, d¹, d², d³
+end
+
+# Spline evaluation + residual; the warm-started search carries `idx` from the previous eval.
+@inline function _lightcone_eval(τ, gpu_traj, r_obs, tₖ, idx)
+    v, idx = gpu_traj.itp(τ, idx)
+    f, rhs, r_norm, d¹, d², d³ = _lightcone_from_state(v, r_obs, tₖ)
     return v, f, rhs, r_norm, d¹, d², d³, idx
 end
 
@@ -130,7 +136,7 @@ end
 # (guaranteed progress: the enclosure halves).  Fixed trip count + branchless
 # select keep warp lockstep.  Returns the converged eval so the caller's
 # payload (potential or field write) reuses it with zero extra spline evals.
-@muladd @inline function _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx)
+@muladd @inline function _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx, ::Val{false})
     hi = τf   # the upper bound does not survive the target moving up: rebuilt per slot
     τ = clamp(τ + Δ * rhs, τi, τf)
     v, f, rhs, r_norm, d¹, d², d³, idx = _lightcone_eval(τ, gpu_traj, r_obs, tₖ, idx)
@@ -139,6 +145,33 @@ end
         prop = τ + f * rhs   # Newton proposal (tangent zero-crossing)
         τ = ifelse((prop < lo) | (prop > hi), (lo + hi) / 2, prop)
         v, f, rhs, r_norm, d¹, d², d³, idx = _lightcone_eval(τ, gpu_traj, r_obs, tₖ, idx)
+        f > 0 ? (lo = max(lo, τ)) : (hi = min(hi, τ))
+    end
+    return τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx
+end
+
+# Same solve with the spline interval's coefficients held in registers (`coef_reuse = Val(true)`):
+# fetched once per slot after the warm-started search, re-evaluated from registers by the Newton
+# corrections, refetched only when a correction leaves the interval (a knot crossing). Identical
+# arithmetic to the method above ⇒ bit-identical results; trades ~4D live scalars for the loads.
+@muladd @inline function _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx, ::Val{true})
+    hi = τf
+    τ = clamp(τ + Δ * rhs, τi, τf)
+    itp = gpu_traj.itp
+    idx = _searchsorted_left(itp.t, τ, idx)
+    coef = _fetch_interval(itp, idx)
+    v = _eval_poly(coef, τ)
+    f, rhs, r_norm, d¹, d², d³ = _lightcone_from_state(v, r_obs, tₖ)
+    f > 0 ? (lo = max(lo, τ)) : (hi = min(hi, τ))
+    for _ in 1:n_iters
+        prop = τ + f * rhs   # Newton proposal (tangent zero-crossing)
+        τ = ifelse((prop < lo) | (prop > hi), (lo + hi) / 2, prop)
+        if !_in_interval(coef, τ)
+            idx = _searchsorted_left(itp.t, τ, idx)
+            coef = _fetch_interval(itp, idx)
+        end
+        v = _eval_poly(coef, τ)
+        f, rhs, r_norm, d¹, d², d³ = _lightcone_from_state(v, r_obs, tₖ)
         f > 0 ? (lo = max(lo, τ)) : (hi = min(hi, τ))
     end
     return τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx
@@ -157,7 +190,7 @@ function _gpu_newton_one_electron!(
         A_buf, gpu_traj,
         x_grid, y_grid, z_screen,
         t_first, δx⁰, N_samples, Nx, Ny,
-        τi, τf, pixel_iter, backend, n_iters
+        τi, τf, pixel_iter, backend, n_iters, coef_reuse = Val(false)
     )
     K = gpu_traj.K
     AK.foreachindex(pixel_iter, backend) do i_lin
@@ -196,7 +229,7 @@ function _gpu_newton_one_electron!(
 
         for k in k_start:k_end
             τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx =
-                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx)
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx, coef_reuse)
 
             # Accumulate from the last residual eval — zero extra spline evals.
             coeff = K * rhs / r_norm   # = K / m_dot(xr, uμ)
@@ -229,7 +262,7 @@ per-slot error does not accumulate along the march, so accuracy is set by the
 convergence of the last Newton step alone.
 
 `sync_per_electron` as in the `GPUKernelRK4` method.
-`timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)).
+`timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)). `coef_reuse = Val(true)` holds each slot's spline-interval coefficients in registers across the per-slot evaluations (bit-identical; trades ~4D live registers for the coefficient loads, see [`IntervalCoefs`](@ref)).
 """
 function accumulate_potential(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -237,6 +270,7 @@ function accumulate_potential(
         ::GPUKernelNewton,
         backend::Backend;
         n_iters::Int = 2,
+        coef_reuse::Val = Val(false),
         sync_per_electron::Bool = true,
         timer = nothing,
     )
@@ -269,7 +303,7 @@ function accumulate_potential(
             A_buf, gpu_traj,
             screen.x_grid, screen.y_grid, screen.z,
             t_first, δx⁰, N_samples, Nx, Ny,
-            τi, τf, pixel_iter, backend, n_iters,
+            τi, τf, pixel_iter, backend, n_iters, coef_reuse,
         )
         launch_tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)
@@ -292,7 +326,7 @@ function _gpu_newton_field_one_electron!(
         mode::Val, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
         x_grid, y_grid, z_screen,
         t_first, δx⁰, N_samples, Nx, Ny,
-        τi, τf, pixel_iter, backend, n_iters
+        τi, τf, pixel_iter, backend, n_iters, coef_reuse = Val(false)
     )
     K = gpu_traj.K
     AK.foreachindex(pixel_iter, backend) do i_lin
@@ -327,7 +361,7 @@ function _gpu_newton_field_one_electron!(
 
         for k in k_start:k_end
             τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx =
-                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx)
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx, coef_reuse)
 
             # Field write from the converged eval (X reuses r_norm and d).
             uμ = SVector{4}(v[5], v[6], v[7], v[8])
@@ -362,7 +396,7 @@ end
 Field counterpart of the `GPUKernelNewton` [`accumulate_potential`](@ref)
 method: per-slot Newton light-cone solve instead of the RK4 retarded-time
 march, otherwise identical in buffers, `mode`, and streaming to the
-`GPUKernelRK4` [`accumulate_field`](@ref) method. `timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)).
+`GPUKernelRK4` [`accumulate_field`](@ref) method. `timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)). `coef_reuse = Val(true)` holds each slot's spline-interval coefficients in registers across the per-slot evaluations (bit-identical; trades ~4D live registers for the coefficient loads, see [`IntervalCoefs`](@ref)).
 """
 function accumulate_field(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -370,6 +404,7 @@ function accumulate_field(
         ::GPUKernelNewton,
         backend::Backend;
         n_iters::Int = 2,
+        coef_reuse::Val = Val(false),
         mode::Val = Val(:split),
         sync_per_electron::Bool = true,
         sink = nothing,
@@ -410,7 +445,7 @@ function accumulate_field(
             mode, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
             screen.x_grid, screen.y_grid, screen.z,
             t_first, δx⁰, N_samples, Nx, Ny,
-            τi, τf, pixel_iter, backend, n_iters,
+            τi, τf, pixel_iter, backend, n_iters, coef_reuse,
         )
         launch_tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)

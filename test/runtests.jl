@@ -35,6 +35,9 @@ using JET
     @testset "GPU Radiation Accumulation" begin
         include("gpu_radiation.jl")
     end
+    @testset "Coefficient reuse (bit-identical)" begin
+        include("coef_reuse.jl")
+    end
     @testset "Window coverage" begin
         include("window_coverage.jl")
     end

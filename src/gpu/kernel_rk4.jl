@@ -63,8 +63,7 @@ end
 
 # RHS of dτ_r/dt = 1 / (u⁰ - u⃗·n̂); allocation-free, kernel-callable. State components
 # are read with literal indices — canonical order guaranteed by `to_gpu` (see kernel_newton.jl).
-@muladd @inline function _rt_rhs_kernel(τ, gpu_traj, r_obs, idx)
-    v, idx = gpu_traj.itp(τ, idx)   # warm-started knot search (see _searchsorted_left)
+@muladd @inline function _rt_rhs_from_state(v, r_obs)
     x¹ = v[2]
     x² = v[3]
     x³ = v[4]
@@ -76,11 +75,17 @@ end
     d² = r_obs[2] - x²
     d³ = r_obs[3] - x³
     inv_r = inv(sqrt(d¹ * d¹ + d² * d² + d³ * d³))
-    return inv(u⁰ - (u¹ * d¹ + u² * d² + u³ * d³) * inv_r), idx
+    return inv(u⁰ - (u¹ * d¹ + u² * d² + u³ * d³) * inv_r)
+end
+
+# Spline evaluation + RHS; the warm-started search carries `idx` from the previous eval.
+@inline function _rt_rhs_kernel(τ, gpu_traj, r_obs, idx)
+    v, idx = gpu_traj.itp(τ, idx)
+    return _rt_rhs_from_state(v, r_obs), idx
 end
 
 # One classical RK4 step for the autonomous ODE dτ_r/dt = f(τ_r).
-@muladd @inline function _rk4_step(τ, dt, gpu_traj, r_obs, idx)
+@muladd @inline function _rk4_step(τ, dt, gpu_traj, r_obs, idx, ::Val{false})
     k1, idx = _rt_rhs_kernel(τ, gpu_traj, r_obs, idx)
     k2, idx = _rt_rhs_kernel(τ + 0.5 * dt * k1, gpu_traj, r_obs, idx)
     k3, idx = _rt_rhs_kernel(τ + 0.5 * dt * k2, gpu_traj, r_obs, idx)
@@ -88,9 +93,38 @@ end
     return τ + dt * (k1 + 2 * (k2 + k3) + k4) * (1 / 6), idx
 end
 
+# Same step with the spline interval's coefficients held in registers (`coef_reuse = Val(true)`):
+# the four stages sit in one interval nearly always; a stage that leaves it refetches.
+# Identical arithmetic ⇒ bit-identical results.
+@muladd @inline function _rk4_step(τ, dt, gpu_traj, r_obs, idx, ::Val{true})
+    itp = gpu_traj.itp
+    idx = _searchsorted_left(itp.t, τ, idx)
+    coef = _fetch_interval(itp, idx)
+    k1 = _rt_rhs_from_state(_eval_poly(coef, τ), r_obs)
+    τ2 = τ + 0.5 * dt * k1
+    if !_in_interval(coef, τ2)
+        idx = _searchsorted_left(itp.t, τ2, idx)
+        coef = _fetch_interval(itp, idx)
+    end
+    k2 = _rt_rhs_from_state(_eval_poly(coef, τ2), r_obs)
+    τ3 = τ + 0.5 * dt * k2
+    if !_in_interval(coef, τ3)
+        idx = _searchsorted_left(itp.t, τ3, idx)
+        coef = _fetch_interval(itp, idx)
+    end
+    k3 = _rt_rhs_from_state(_eval_poly(coef, τ3), r_obs)
+    τ4 = τ + dt * k3
+    if !_in_interval(coef, τ4)
+        idx = _searchsorted_left(itp.t, τ4, idx)
+        coef = _fetch_interval(itp, idx)
+    end
+    k4 = _rt_rhs_from_state(_eval_poly(coef, τ4), r_obs)
+    return τ + dt * (k1 + 2 * (k2 + k3) + k4) * (1 / 6), idx
+end
+
 # Cold-start forms (host diagnostics, tests): same values, search from the first interval.
 _rt_rhs_kernel(τ, gpu_traj, r_obs) = first(_rt_rhs_kernel(τ, gpu_traj, r_obs, 1))
-_rk4_step(τ, dt, gpu_traj, r_obs) = first(_rk4_step(τ, dt, gpu_traj, r_obs, 1))
+_rk4_step(τ, dt, gpu_traj, r_obs) = first(_rk4_step(τ, dt, gpu_traj, r_obs, 1, Val(false)))
 
 # Per-electron AK.foreachindex pass over (Nx × Ny) pixels.
 # Implemented as a regular function (not @kernel) because KA's @kernel macro
@@ -102,7 +136,7 @@ function _gpu_unified_one_electron!(
         A_buf, gpu_traj,
         x_grid, y_grid, z_screen,
         x⁰_first, δx⁰, N_samples, Nx, Ny,
-        τi, τf, pixel_iter, backend, n_substeps
+        τi, τf, pixel_iter, backend, n_substeps, coef_reuse = Val(false)
     )
     K = gpu_traj.K
     AK.foreachindex(pixel_iter, backend) do i_lin
@@ -147,7 +181,7 @@ function _gpu_unified_one_electron!(
         if bridge_dt > 0
             sub_dt = bridge_dt / n_substeps
             for _ in 1:n_substeps
-                τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx)
+                τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
             end
             τ = clamp(τ, τi, τf)
         end
@@ -181,7 +215,7 @@ function _gpu_unified_one_electron!(
             if k < k_end
                 sub_dt = δx⁰ / n_substeps
                 for _ in 1:n_substeps
-                    τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx)
+                    τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
                 end
                 τ = clamp(τ, τi, τf)
             end
@@ -220,7 +254,7 @@ stream-ordered async free (the kernel that still reads the buffers is queued
 ahead of the free on the same stream), letting electron N+1's upload overlap
 kernel N.  Verified correct on CUDA and ROCm backends.
 
-`timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)).
+`timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)). `coef_reuse = Val(true)` holds each slot's spline-interval coefficients in registers across the per-slot evaluations (bit-identical; trades ~4D live registers for the coefficient loads, see [`IntervalCoefs`](@ref)).
 """
 function accumulate_potential(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -228,6 +262,7 @@ function accumulate_potential(
         ::GPUKernelRK4,
         backend::Backend;
         n_substeps::Int = 1,
+        coef_reuse::Val = Val(false),
         sync_per_electron::Bool = true,
         timer = nothing,
     )
@@ -261,7 +296,7 @@ function accumulate_potential(
             A_buf, gpu_traj,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny,
-            τi, τf, pixel_iter, backend, n_substeps,
+            τi, τf, pixel_iter, backend, n_substeps, coef_reuse,
         )
         launch_tock!(timer, lane, backend, e0)
         # Release the trajectory's device buffers.  With `sync_per_electron`
@@ -299,7 +334,7 @@ function _gpu_unified_field_one_electron!(
         mode::Val, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
         x_grid, y_grid, z_screen,
         x⁰_first, δx⁰, N_samples, Nx, Ny,
-        τi, τf, pixel_iter, backend, n_substeps
+        τi, τf, pixel_iter, backend, n_substeps, coef_reuse = Val(false)
     )
     K = gpu_traj.K
     AK.foreachindex(pixel_iter, backend) do i_lin
@@ -341,7 +376,7 @@ function _gpu_unified_field_one_electron!(
         if bridge_dt > 0
             sub_dt = bridge_dt / n_substeps
             for _ in 1:n_substeps
-                τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx)
+                τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
             end
             τ = clamp(τ, τi, τf)
         end
@@ -381,7 +416,7 @@ function _gpu_unified_field_one_electron!(
             if k < k_end
                 sub_dt = δx⁰ / n_substeps
                 for _ in 1:n_substeps
-                    τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx)
+                    τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
                 end
                 τ = clamp(τ, τi, τf)
             end
@@ -407,7 +442,7 @@ alone (see [`lienard_wiechert_F_split`](@ref)). `mode = Val(:total)` returns onl
 `(; E, B)` (a type-stable trim); `Val(:split)` (the default) keeps all four.
 
 `n_substeps` and `sync_per_electron` behave exactly as in the potential kernel;
-see [`accumulate_potential`](@ref) and [`recommended_n_substeps`](@ref). `timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)).
+see [`accumulate_potential`](@ref) and [`recommended_n_substeps`](@ref). `timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)). `coef_reuse = Val(true)` holds each slot's spline-interval coefficients in registers across the per-slot evaluations (bit-identical; trades ~4D live registers for the coefficient loads, see [`IntervalCoefs`](@ref)).
 """
 function accumulate_field(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -415,6 +450,7 @@ function accumulate_field(
         ::GPUKernelRK4,
         backend::Backend;
         n_substeps::Int = 1,
+        coef_reuse::Val = Val(false),
         mode::Val = Val(:split),
         sync_per_electron::Bool = true,
         sink = nothing,
@@ -453,7 +489,7 @@ function accumulate_field(
             mode, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny,
-            τi, τf, pixel_iter, backend, n_substeps,
+            τi, τf, pixel_iter, backend, n_substeps, coef_reuse,
         )
         launch_tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)
