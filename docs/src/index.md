@@ -35,6 +35,25 @@ per-slot FP64 count and the measured FP64 rate into the FP64-pipe time floor per
 reference; `scripts/instruction_mix.jl` prints the table). The CUDA.jl / AMDGPU.jl extensions supply the
 vendor methods; the `CPU` backend has host fallbacks.
 
+AMD hardware counters go through **rocprofv3** (there is no in-process counter API on AMD, so
+the profiler wraps the whole solver process): `rocprof_command` builds that wrapper around a
+`Cmd` under `timeout -k` (a counter set the hardware refuses aborts rocprofv3 and leaves the
+child hung — `ROCPROF_COUNTER_SETS` names the sets verified to collect in one pass on gfx942:
+instruction issue `:sq_issue`, wave residency `:sq_waves`, the L1 pipe `:l1_pipe`, `:fp64`,
+`:l2`, and its docstring the six-counter L2 set that does not), `rocprof_counters` parses the
+resulting CSV into the per-dispatch counters of one kernel (`RocprofCounters`: values,
+dispatch durations, the VGPR/AGPR/SGPR/LDS/scratch footprint, the device from the agent info),
+and `rocprof_derived` / `rocprof_summary` / `rocprof_manifest_section` reduce it — medians with
+spreads across dispatches, per-slot instruction counts (`SQ_INSTS_* × wave size / slots`),
+unit-busy fractions (`X_BUSY_sum / (cycles × n_cu)`), L1/L2 miss rates, wave wait/active
+fractions and achieved occupancy — with the normalisation of rocprofv3's own derived metrics:
+the CSV sums `GRBM_GUI_ACTIVE` over the dies (8 XCDs on the MI300X), so `cycles =
+GRBM_GUI_ACTIVE / n_xcd`, and the SQ wave-cycle counters are in quad-cycles.
+`orchestration/profile_cell.sh <set> <outdir> <tag> [EDM_VAR=val …]` runs one solver cell under
+a set and merges the result into the run manifest's `[gpu]` as `rocprof_*` keys
+(`scripts/rocprof_merge.jl`, which takes the slots per dispatch from `[flops].slots_executed`
+and the launch count) — profile the same cell once per set.
+
 ```@autodocs
 Modules = [ElectronDynamicsModels.GPUDiagnostics]
 ```
