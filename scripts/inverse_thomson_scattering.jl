@@ -514,6 +514,9 @@ gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
 launch_timer = LaunchTimer()
 kerneltimesfile = joinpath(OUTDIR, "kerneltimes_$(RUN_TAG).tsv")
 accum_alg = ACCUM_ALG == "newton" ? GPUKernelNewton() : GPUKernelRK4()
+# Register-cached spline interval across a slot's evaluations (bit-identical; manual: "The device
+# spline"). Unset ⇒ on for the Newton kernel, off for RK4 (which spills on gfx942); "1"/"0" forces it.
+const COEF_REUSE = haskey(ENV, "EDM_COEF_REUSE") ? ENV["EDM_COEF_REUSE"] == "1" : ACCUM_ALG == "newton"
 accum_kw = ACCUM_ALG == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = NSUBSTEPS)
 # Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
 # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
@@ -525,12 +528,12 @@ t_field = @elapsed begin
             @info "sharding electrons across $ndev devices"
             accumulate_field_sharded(
                 trajs, screen, accum_alg, gpu_backend;
-                accum_kw..., mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer
+                accum_kw..., coef_reuse = Val(COEF_REUSE), mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer
             )
         else
             accumulate_field(
                 trajs, screen, accum_alg, gpu_backend;
-                accum_kw..., mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer
+                accum_kw..., coef_reuse = Val(COEF_REUSE), mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer
             )
         end
     end
@@ -633,6 +636,7 @@ GAMMA_EPS === nothing || (config["gamma_eps"] = GAMMA_EPS)
 # run_cell), so a manual run never claims "discarded"; lets the dashboard status collector
 # tell discarded-by-policy from location-unknown.
 haskey(ENV, "EDM_KEEP_CUBE") && (config["keep_cube"] = ENV["EDM_KEEP_CUBE"] == "1")
+config["coef_reuse"] = COEF_REUSE
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
