@@ -13,8 +13,9 @@
 # Nothing in the accumulation needs all the electrons at once: the kernels upload ONE trajectory at
 # a time. `EDM_ELECTRON_BATCH = B` therefore solves and accumulates the electrons B at a time into
 # device buffers that persist across the batches (`FieldAccumulator`), and downloads the cube once,
-# at the end. Host peak becomes ≈ B × 7.4 MB (× 2 while the next batch is being solved ahead) plus
-# the one cube copy, independent of N.
+# at the end — after the last batch has been dropped, so the cube copy never lands on top of a
+# batch of splines. Host peak becomes max(B × 7.4 MB × (2 while the next batch is solved ahead),
+# one cube copy) + the baseline, independent of N.
 #
 # `EDM_ELECTRON_BATCH = 0` (the default) keeps the single-pass behaviour, bit-identical to before.
 # With one device a batched run is bit-identical too — the electron loop, the uploads and the

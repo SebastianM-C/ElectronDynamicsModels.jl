@@ -22,15 +22,19 @@ Nothing in the accumulation needs all the electrons at once.
 `scripts/inverse_thomson_scattering.jl` solve and accumulate the electrons `B` at a time: solve a
 batch, run its launches into device buffers that persist across batches, drop its splines, repeat;
 the cube is downloaded and permuted once, at the end. `EDM_ELECTRON_BATCH = 0` (the default) is the
-old single pass. The host peak becomes
+old single pass. The last batch is dropped (and its pages returned to the OS — the GC frees them
+but glibc keeps them in its arenas, where they still count as RSS) *before* the download, so the
+two big consumers never coexist:
 
 ```
-peak ≈ B × 7.4 MB × (2 if the next batch is solved ahead) + one cube copy
+during the batches:  ≈ B × 7.4 MB × (2 with the read-ahead)
+at the download:     ≈ one cube copy + 1/16 of a cube in staging
+host peak         =  max(the two) + the Julia baseline,   independent of N
 ```
 
-independent of `N`. `EDM_ELECTRON_BATCH_OVERLAP = 0` turns off the read-ahead (the solve of batch
-k+1 runs during batch k's launches) and drops that factor of 2 at the cost of leaving the CPU solve
-on the critical path. The manifest records `[config] electron_batch`, keeps `[timing] field` as the
+`EDM_ELECTRON_BATCH_OVERLAP = 0` turns off the read-ahead (the solve of batch k+1 runs during batch
+k's launches) and drops that factor of 2 at the cost of leaving the CPU solve on the critical
+path. The manifest records `[config] electron_batch`, keeps `[timing] field` as the
 wall time of the accumulation phase (first launch → finished download) and `[timing] kernel` as the
 device-event sum, reports `[timing] trajectories` as the SUM of the batch solve times, and adds
 `[timing] trajectories_overlapped` — the part of it the loop never had to wait for because it ran
