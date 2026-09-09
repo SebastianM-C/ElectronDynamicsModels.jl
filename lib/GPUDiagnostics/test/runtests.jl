@@ -777,5 +777,6 @@ end
         # every named set carries GRBM_GUI_ACTIVE (the cycle base of the derived metrics) and fits one pass
         @test all(("GRBM_GUI_ACTIVE" in v) && length(v) <= 8 for v in values(ROCPROF_COUNTER_SETS))
         @test Set(keys(ROCPROF_COUNTER_SETS)) ⊇ Set([:sq_issue, :sq_waves, :l1_pipe, :fp64, :l2])
+        @test count(startswith("TCC_"), ROCPROF_COUNTER_SETS[:l2]) == 4   # the TCC block's per-pass capacity on gfx942
     end
 end

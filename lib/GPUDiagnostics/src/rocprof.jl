@@ -54,16 +54,20 @@ what [`rocprof_derived`](@ref) computes from it:
   (+ `GRBM_GUI_ACTIVE`). → `insts_per_slot_valu_fma_f64` etc. and `fp64_flop_per_slot`
   (2·FMA + ADD + MUL + TRANS, per slot): the hardware's own FLOP count per slot to hold against
   the algorithmic `[flops].flop_per_slot`.
-- `:l2` — L2 (TCC) hit rate: `TCC_HIT_sum`, `TCC_MISS_sum` (+ `GRBM_GUI_ACTIVE`). → `l2_hit`.
+- `:l2` — the L2 (TCC) and what leaves the die: `TCC_HIT_sum`, `TCC_MISS_sum`,
+  `TCC_EA0_RDREQ_sum` (L2 → fabric read requests), `TCC_EA0_RDREQ_DRAM_sum` (of those, to HBM)
+  (+ `GRBM_GUI_ACTIVE`). → `l2_hit`, `l2_dram_read_frac`; the `_median` values / slots give the
+  L2 requests and HBM reads per slot: does the working set live in L2 or in HBM.
 
-Verified on gfx942 (MI300X, ROCm 7.2.4, rocprofv3 1.1.0): `:sq_issue`, `:sq_waves`, `:l1_pipe`
-collect in one pass on the production field kernel; `:fp64` and `:l2` collect on a test kernel
-(see the per-set notes in the repository's docs for the field-kernel figures). KNOWN BAD on the
-same stack: the six-counter L2 set `TCC_HIT_sum TCC_MISS_sum TCC_EA0_RDREQ_sum
-TCC_EA0_RDREQ_DRAM_sum TCC_REQ_sum TCC_READ_sum` — rocprofv3 logs "Request exceeds the
-capabilities of the hardware to collect", aborts with signal 6 and leaves the child process hung
-(hence the `timeout -k` in [`rocprof_command`](@ref)). Sets are `Vector{String}` so a caller can
-pass its own list instead of a name."""
+Verified on gfx942 (MI300X VF, ROCm 7.2.4, rocprofv3 1.1.0): `:sq_issue`, `:sq_waves` and
+`:l1_pipe` collect in one pass on the production field kernel; `:fp64` and `:l2` on a test kernel
+(`c = a + b * 1.5` over 2^22 doubles = 65 536 waves: exactly 1.00 `ADD_F64` + 1.00 `MUL_F64` per
+element from `× 64 / slots`, and TCC hits / misses / fabric / HBM reads all populated). The TCC
+block's capacity is FOUR counters per pass: adding `TCC_REQ_sum` as a fifth — with or without
+`TCC_READ_sum` as a sixth, the original six-counter L2 set — makes rocprofv3 log "Request exceeds
+the capabilities of the hardware to collect", abort with signal 6 and leave the profiled child
+hung until `timeout -k` kills it (exit 137; hence the timeout in [`rocprof_command`](@ref)).
+Sets are `Vector{String}` so a caller can pass its own list instead of a name."""
 const ROCPROF_COUNTER_SETS = Dict{Symbol, Vector{String}}(
     :sq_issue => ["GRBM_GUI_ACTIVE", "SQ_INSTS_VMEM_RD", "SQ_INSTS_VMEM_WR", "SQ_INSTS_SMEM",
         "SQ_INSTS_SALU", "SQ_INSTS_BRANCH", "SQ_INSTS_VALU_INT64", "SQ_INSTS_VALU"],
@@ -73,7 +77,7 @@ const ROCPROF_COUNTER_SETS = Dict{Symbol, Vector{String}}(
         "TCP_TOTAL_READ_sum", "TCP_TCC_READ_REQ_sum", "TCP_TOTAL_CACHE_ACCESSES_sum"],
     :fp64 => ["GRBM_GUI_ACTIVE", "SQ_INSTS_VALU_FMA_F64", "SQ_INSTS_VALU_ADD_F64",
         "SQ_INSTS_VALU_MUL_F64", "SQ_INSTS_VALU_TRANS_F64"],
-    :l2 => ["GRBM_GUI_ACTIVE", "TCC_HIT_sum", "TCC_MISS_sum"],
+    :l2 => ["GRBM_GUI_ACTIVE", "TCC_HIT_sum", "TCC_MISS_sum", "TCC_EA0_RDREQ_sum", "TCC_EA0_RDREQ_DRAM_sum"],
 )
 
 # The SQ counters rocprofv3 reports in quad-cycles (4 clock cycles) on gfx9 — see `--list-avail`.
@@ -276,10 +280,13 @@ substring; every KernelAbstractions kernel is a `gpu__forindices_global_(…)` o
 the default selects the KA kernel of a run with one — pass something more specific when several
 KA kernels ran: the match must resolve to ONE distinct kernel name). `slots` is the number of
 inner-loop iterations (work-items × per-item iterations) of ONE dispatch, the caller's knowledge,
-for the per-slot metrics. `n_cu`, `n_xcd` (dies whose `GRBM_GUI_ACTIVE` the CSV sums; 8 on the
-MI300X, 1 on single-die parts) and `wave_size` override the agent info — required when the run
-has no `_agent_info.csv` (the KNOWN device values, never a hard-coded default). See
-[`rocprof_derived`](@ref) for what is computed from the table."""
+for the per-slot metrics. `n_cu`, `n_xcd` and `wave_size` override the agent info — required when
+the run has no `_agent_info.csv` (the KNOWN device values; nothing is defaulted). `n_xcd` is the
+trap: every die (XCD) has its own GRBM block and the CSV reports `GRBM_GUI_ACTIVE` SUMMED over
+them (`DIMENSION_XCC[0:7]` on gfx942), so a 40 ms dispatch shows 5.7e8 "cycles" — 14 GHz — until
+divided by the 8 dies; the agent info's `Num_Xcc` is 8 on the MI300X and 1 on single-die parts,
+and every per-cycle rate below (unit busy, resident waves, clock) uses `GRBM_GUI_ACTIVE / n_xcd`.
+See [`rocprof_derived`](@ref) for what is computed from the table."""
 function rocprof_counters(dir::AbstractString; name = nothing, kernel = r"forindices", slots = nothing,
         n_cu = nothing, n_xcd = nothing, wave_size = nothing)
     isdir(dir) || throw(ArgumentError("rocprof_counters: no such directory $dir"))
@@ -389,7 +396,7 @@ function rocprof_derived(rc::RocprofCounters)
     dev = rc.device
     has(c) = haskey(rc, c)
     need(field, what) = (v = getfield(dev, field); v > 0 ? v :
-        throw(ArgumentError("rocprof_derived: $what needs `$field` — not in the agent info; pass it to rocprof_counters")))
+        throw(ArgumentError("rocprof_derived: $what needs `$field` — not in the agent info; pass it to rocprof_counters (n_xcd = 8 on gfx942 / MI300X, 1 on single-die parts; n_cu = 304 on the MI300X)")))
     put!(key, v::AbstractVector) = (out[key] = _median(v); nothing)
 
     cycles = has("GRBM_GUI_ACTIVE") ? rc["GRBM_GUI_ACTIVE"] ./ need(:n_xcd, "the dispatch cycle count") : nothing
