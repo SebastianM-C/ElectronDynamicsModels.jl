@@ -96,3 +96,8 @@ Newton `n_iters = 2`, `EDM_COEF_REUSE=1`, `EDM_SAMPLE_CHUNKS=4`) on a W7900, RSS
 
 The plateau is the part that scales with `N`: at `N = 16 000` the unbatched run holds ~92 GB of
 splines there, which is what filled a 123 GB host.
+
+The cell itself, `N = 16 000` at `EDM_ELECTRON_BATCH=2000` on the same W7900, then runs in
+**30.9 GiB peak RSS**: `[timing] field` 4682.7 s, `[timing] kernel` 4642.5 s (16 000 launches,
+289.6 ms median), `[timing] trajectories` 314.9 s of which 271.4 s ran behind the GPU, 0.675 TFLOP/s
+= 61 % of the card's measured FP64 peak, full window coverage.
