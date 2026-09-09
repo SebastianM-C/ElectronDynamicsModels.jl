@@ -15,16 +15,22 @@ where dt1 = t - t[i], dt2 = t[i+1] - t.
 # Fields
 - `t`: knot positions (length N)
 - `h`: interval widths, h[i] = t[i] - t[i-1] (length N, h[1] = 0)
-- `z`: second derivatives at knots (N × D matrix, D = number of components)
-- `c1`: precomputed linear coefficients per interval ((N-1) × D matrix)
-- `c2`: precomputed linear coefficients per interval ((N-1) × D matrix)
+- `z`: second derivatives at knots (D × N matrix, D = number of components)
+- `c1`: precomputed linear coefficients per interval (D × (N-1) matrix)
+- `c2`: precomputed linear coefficients per interval (D × (N-1) matrix)
+
+The matrices are knot-major: the D components of one knot are contiguous (column `i`), the
+layout of DataInterpolations' `Vector{SVector{D}}` fields. A kernel evaluation reads knots `i`
+and `i+1` of `z` and knot `i` of `c1`, `c2`: four contiguous D-vectors, which the GPU compilers
+fetch with 16-byte loads and which touch a handful of cache lines instead of one line per
+component and array.
 """
 struct GPUCubicSpline{D, V, M}
     t::V        # knot times, length N
     h::V        # interval widths, length N (h[1] unused padding)
-    z::M        # second derivatives, N × D
-    c1::M       # linear coefficients, (N-1) × D
-    c2::M       # linear coefficients, (N-1) × D
+    z::M        # second derivatives, D × N (knot-major)
+    c1::M       # linear coefficients, D × (N-1)
+    c2::M       # linear coefficients, D × (N-1)
 end
 
 """
@@ -39,18 +45,18 @@ function GPUCubicSpline(itp::DataInterpolations.CubicSpline)
     N = length(t)
     D = length(first(itp.u))
 
-    # Stack the Vector{SVector{D}} fields into N × D matrices via direct
-    # nested writes.  `permutedims(reduce(hcat, …))` is ~5–10× slower at
-    # N ≈ 10⁵ due to intermediate allocations and a transpose.
+    # Stack the Vector{SVector{D}} fields into D × N matrices (knot-major, see the struct
+    # docstring) via direct nested writes; `reduce(hcat, …)` is ~5–10× slower at N ≈ 10⁵ due
+    # to intermediate allocations.
     Tel = eltype(t)
-    z_mat = Matrix{Tel}(undef, N, D)
-    c1 = Matrix{Tel}(undef, N - 1, D)
-    c2 = Matrix{Tel}(undef, N - 1, D)
+    z_mat = Matrix{Tel}(undef, D, N)
+    c1 = Matrix{Tel}(undef, D, N - 1)
+    c2 = Matrix{Tel}(undef, D, N - 1)
 
     @inbounds for i in 1:N
         zi = itp.z[i]
         for d in 1:D
-            z_mat[i, d] = zi[d]
+            z_mat[d, i] = zi[d]
         end
     end
 
@@ -67,8 +73,8 @@ function GPUCubicSpline(itp::DataInterpolations.CubicSpline)
         zi = itp.z[i]
         zip1 = itp.z[i + 1]
         for d in 1:D
-            c1[i, d] = uip1[d] * inv_hi - zip1[d] * hi_over_6
-            c2[i, d] = ui[d] * inv_hi - zi[d] * hi_over_6
+            c1[d, i] = uip1[d] * inv_hi - zip1[d] * hi_over_6
+            c2[d, i] = ui[d] * inv_hi - zi[d] * hi_over_6
         end
     end
 
@@ -182,10 +188,10 @@ end
 
     return SVector{D}(
         ntuple(Val(D)) do d
-            spline.z[idx, d] * dt2^3 * inv_6h +
-                spline.z[idx + 1, d] * dt1^3 * inv_6h +
-                spline.c1[idx, d] * dt1 +
-                spline.c2[idx, d] * dt2
+            spline.z[d, idx] * dt2^3 * inv_6h +
+                spline.z[d, idx + 1] * dt1^3 * inv_6h +
+                spline.c1[d, idx] * dt1 +
+                spline.c2[d, idx] * dt2
         end
     )
 end
