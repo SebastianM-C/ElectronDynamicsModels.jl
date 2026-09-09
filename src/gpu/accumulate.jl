@@ -319,8 +319,9 @@ they survive one call and several calls can sum into the same buffers.
 
 By default (`buffers = nothing`, `finish = true`) `accumulate_field` allocates a set per call and
 downloads it at the end — the single-call API, unchanged. With `finish = false` it instead returns
-the `FieldAccumulator` holding that call's electrons, and passing it back as `buffers` on the next
-call continues the accumulation in place; the cube is downloaded once, by the call that runs with
+the `FieldAccumulator` holding that call's electrons — after draining the call's launches, so the
+buffers are safe to hand to another task — and passing it back as `buffers` on the next call
+continues the accumulation in place; the cube is downloaded once, by the call that runs with
 `finish = true` (or by [`finish_field`](@ref)).
 
 This is the memory model behind the solver scripts' `EDM_ELECTRON_BATCH` knob: the host then holds

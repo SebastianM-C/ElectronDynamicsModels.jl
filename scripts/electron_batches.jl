@@ -30,18 +30,33 @@ const ELECTRON_BATCH_OVERLAP = get(ENV, "EDM_ELECTRON_BATCH_OVERLAP", "1") == "1
 electron_batch_ranges(N::Integer, batch::Integer) =
     (batch <= 0 || batch >= N) ? [1:N] : [i:min(i + batch - 1, N) for i in 1:batch:N]
 
+# Release a finished batch's splines to the OS. Julia's GC frees them, but glibc keeps the freed
+# chunks in its arenas, so RSS — the number the OOM killer reads — stays at the high-water mark
+# unless the allocator is asked to give the pages back. `malloc_trim` is glibc-only; anywhere else
+# the ccall simply fails and the GC alone has to do.
+function release_batch_memory()
+    GC.gc()
+    Sys.islinux() && try
+        ccall(:malloc_trim, Cint, (Csize_t,), 0)
+    catch
+    end
+    return nothing
+end
+
 """
-    run_electron_batches(ranges, solve_batch, accumulate_batch; primed = nothing, primed_s = 0.0, overlap = true)
+    run_electron_batches(ranges, solve_batch, accumulate_batch, finish_accumulation;
+                         primed = nothing, primed_s = 0.0, overlap = true)
         -> (result, (; solve_s, overlapped_s, n_batches))
 
 Drive the solve → accumulate → discard loop over `ranges`.
 
 `solve_batch(rng)` returns whatever the accumulation needs for the electrons `rng` (the batch's
-`TrajectoryInterpolant`s and any per-batch host-side products); `accumulate_batch(batch, b, last)`
-runs that batch's GPU launches and returns the finished field cube when `last` is true. The batch
-handed to `accumulate_batch` is dropped as soon as it returns, and a full GC runs before the next
-one is accumulated, so the host holds one batch (two with `overlap`, which spawns the solve of
-batch k+1 before accumulating batch k).
+`TrajectoryInterpolant`s and any per-batch host-side products); `accumulate_batch(batch, b)` runs
+that batch's GPU launches into the persistent device buffers; `finish_accumulation()` downloads the
+cube once, at the end. The batch handed to `accumulate_batch` is dropped as soon as it returns and
+its pages are returned to the OS before the next one is accumulated, so the host holds one batch
+(two with `overlap`, which spawns the solve of batch k+1 before accumulating batch k) — and none at
+all during the download, which is where the cube copy lands.
 
 `primed` is a `Ref` holding an already-solved first batch (`primed_s` = the seconds it took): the
 caller solves batch 1 outside its own field-phase timer, so `[timing].field` still measures first
@@ -53,7 +68,7 @@ wait for because it ran while the GPU was busy. The launches are enqueued asynch
 batch small enough to fit whole in the launch queue reports ≈ 0 even though it did overlap; at
 production batch sizes the enqueue throttles on the queue and the number is meaningful.
 """
-function run_electron_batches(ranges, solve_batch, accumulate_batch;
+function run_electron_batches(ranges, solve_batch, accumulate_batch, finish_accumulation;
         primed = nothing, primed_s::Real = 0.0, overlap::Bool = true)
     nb = length(ranges)
     solve_s = 0.0
@@ -70,7 +85,6 @@ function run_electron_batches(ranges, solve_batch, accumulate_batch;
         primed[] = nothing   # the caller's handle on batch 1 goes away with the first fetch
         p
     end
-    result = nothing
     for b in 1:nb
         t_wait = time_ns()
         spawned = pending isa Task
@@ -81,14 +95,12 @@ function run_electron_batches(ranges, solve_batch, accumulate_batch;
         # ran before the field phase started, so none of its time was overlapped.
         spawned && (overlapped_s += max(0.0, s - waited))
         pending = (overlap && b < nb) ? spawn_solve(b + 1) : nothing
-        result = accumulate_batch(batch, b, b == nb)
+        accumulate_batch(batch, b)
         batch = nothing
-        if b < nb
-            overlap || (pending = spawn_solve(b + 1))
-            GC.gc()   # release the accumulated batch's splines before the next one lands
-        end
+        overlap || b == nb || (pending = spawn_solve(b + 1))
+        release_batch_memory()   # the accumulated batch's splines go back to the OS here
     end
-    return result, (; solve_s, overlapped_s, n_batches = nb)
+    return finish_accumulation(), (; solve_s, overlapped_s, n_batches = nb)
 end
 
 # Fold the per-batch `window_coverage` results of a batched run into the single summary the

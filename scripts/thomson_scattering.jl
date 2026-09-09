@@ -302,38 +302,51 @@ gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
 # timer that works with the async electron loop (→ [timing].kernel, [gpu].kernel_*, kerneltimes TSV).
 launch_timer = LaunchTimer()
 kerneltimesfile = joinpath(OUTDIR, "kerneltimes_$(RUN_TAG).tsv")
-# One batch's accumulation. The device buffers persist across the batches (`buffers`), the cube is
-# downloaded once — by the last batch (`finish = true`) — and the batch's window coverage is folded
-# in here. A single-pass run (EDM_ELECTRON_BATCH=0) is one batch, i.e. exactly the old call with
-# `buffers = nothing, finish = true`.
+# One batch's accumulation: launches into the device buffers, which persist across the batches
+# (`buffers`), and the fold of the batch's window coverage. Nothing is downloaded here — the
+# batch's splines are dropped and returned to the OS first, and `finish_accumulation` then
+# downloads the cube once with no trajectory memory left in the way. A single-pass run
+# (EDM_ELECTRON_BATCH=0) is one batch: the same launches, the same single download.
 const FIELD_BUFFERS = Ref{Any}(nothing)
+const EMPTY_TRAJS = Ref{Any}(nothing)   # typed empty vector for the sharded finishing call
 const COVS = Any[]
-function accumulate_batch(bp, b, is_last)
+function accumulate_batch(bp, b)
     push!(COVS, bp.cov)
-    res = if ndev > 1
+    EMPTY_TRAJS[] = similar(bp.trajs, 0)
+    FIELD_BUFFERS[] = if ndev > 1
         b == 1 && @info "sharding electrons across $ndev devices"
         accumulate_field_sharded(
             bp.trajs, screen, solver_alg, gpu_backend;
             solver_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
             reduce = REDUCE, reduce_workers = REDUCE_WORKERS, reduce_stats = REDUCE_STATS,
-            buffers = FIELD_BUFFERS[], finish = is_last
+            buffers = FIELD_BUFFERS[], finish = false
         )
     else
         accumulate_field(
             bp.trajs, screen, solver_alg, gpu_backend;
             solver_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
-            buffers = FIELD_BUFFERS[], finish = is_last
+            buffers = FIELD_BUFFERS[], finish = false
         )
     end
-    is_last || (FIELD_BUFFERS[] = res)
-    return res
+    return nothing
 end
+
+# The one download: the multi-device reduce over the per-device buffers (an empty electron list —
+# every electron is already in them), or the plain permuted download of the single device's.
+finish_accumulation() = ndev > 1 ?
+    accumulate_field_sharded(
+        EMPTY_TRAJS[], screen, solver_alg, gpu_backend;
+        solver_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
+        reduce = REDUCE, reduce_workers = REDUCE_WORKERS, reduce_stats = REDUCE_STATS,
+        buffers = FIELD_BUFFERS[], finish = true
+    ) :
+    finish_field(FIELD_BUFFERS[])
 
 const BATCH_STATS = Ref{Any}(nothing)
 t_field = @elapsed begin
     fld, gpu_telem = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT;
             devices = 1:ndev, tracefile = gputracefile) do
-        out, stats = run_electron_batches(BATCHES, solve_batch_products, accumulate_batch;
+        out, stats = run_electron_batches(BATCHES, solve_batch_products, accumulate_batch, finish_accumulation;
             primed = BATCH1, primed_s = t_batch1, overlap = ELECTRON_BATCH_OVERLAP)
         BATCH_STATS[] = stats
         out

@@ -496,6 +496,13 @@ function accumulate_field(
     # download (or hand to `sink`) while they are still alive — see _finish_fields /
     # _collect_fields / _add_fields! in accumulate.jl.
     acc.n_electrons += length(trajs)
-    finish || return acc
+    if !finish
+        # Hand the live buffers back — but drain this call's launches first. A later batch may be
+        # accumulated from a DIFFERENT task (the sharded driver spawns one per device per batch),
+        # and a different task is a different stream: two streams read-modify-writing the same
+        # accumulator would lose updates. One sync per batch, against thousands of launches.
+        KernelAbstractions.synchronize(backend)
+        return acc
+    end
     return _finish_fields(sink, E1_buf, B1_buf, E2_buf, B2_buf, mode)
 end
