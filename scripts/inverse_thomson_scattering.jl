@@ -505,6 +505,11 @@ screen = ObserverScreen(
 # Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
 # them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
 ndev = gpu_device_count(gpu_backend)
+# Multi-device reduce (ndev > 1 only): EDM_REDUCE=device sums the partials on the GPUs and downloads
+# one cube (default); =host is the streamed host reduce. EDM_REDUCE_WORKERS threads permute the
+# final download (each holds a 1/16-cube staging slab).
+const REDUCE = Symbol(get(ENV, "EDM_REDUCE", "device"))
+const REDUCE_WORKERS = parse(Int, get(ENV, "EDM_REDUCE_WORKERS", "4"))
 # Sample GPU power/util/VRAM — and, on GPUs that have them, GPM hardware counters (achieved
 # occupancy, FP64/DRAM-bandwidth utilization) — across the accumulate_field window on all sharded
 # devices (→ manifest [gpu] stats incl. gpm_*, + the gputrace TSV time series; see gpu_telemetry.jl).
@@ -528,7 +533,8 @@ t_field = @elapsed begin
             @info "sharding electrons across $ndev devices"
             accumulate_field_sharded(
                 trajs, screen, accum_alg, gpu_backend;
-                accum_kw..., coef_reuse = Val(COEF_REUSE), mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer
+                accum_kw..., coef_reuse = Val(COEF_REUSE), mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
+                reduce = REDUCE, reduce_workers = REDUCE_WORKERS
             )
         else
             accumulate_field(
@@ -637,6 +643,7 @@ GAMMA_EPS === nothing || (config["gamma_eps"] = GAMMA_EPS)
 # tell discarded-by-policy from location-unknown.
 haskey(ENV, "EDM_KEEP_CUBE") && (config["keep_cube"] = ENV["EDM_KEEP_CUBE"] == "1")
 config["coef_reuse"] = COEF_REUSE
+ndev > 1 && (config["reduce"] = String(REDUCE); config["reduce_workers"] = REDUCE_WORKERS)
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
