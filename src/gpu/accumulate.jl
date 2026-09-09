@@ -300,3 +300,113 @@ _finish_fields(sink::Nothing, E1_buf, B1_buf, E2_buf, B2_buf, mode::Val) =
     _collect_fields(E1_buf, B1_buf, E2_buf, B2_buf, mode)
 _finish_fields(sink, E1_buf, B1_buf, E2_buf, B2_buf, mode::Val) =
     sink(E1_buf, B1_buf, E2_buf, B2_buf, mode)
+
+# ── Persistent device accumulation buffers: electron batching ──────────────────────────────
+# The host cost of a field run is dominated by the trajectory splines: at 16 knots per proper-time
+# period a production electron carries ~7.4 MB of state + acceleration coefficients, so solving
+# every electron up front and keeping its splines for the whole field phase costs ~7.4 MB × N — at
+# N = 16 000 that is ~118 GB, on top of one cube copy at the download. Nothing in the accumulation
+# needs them all at once: the electron loop uploads ONE trajectory at a time and the device buffers
+# are the only state that must live across electrons. `FieldAccumulator` makes those buffers
+# outlive a single `accumulate_field` call, so a driver can solve a batch, accumulate it, drop its
+# splines, and continue — with the download still happening exactly once, at the end.
+
+"""
+    FieldAccumulator(screen, backend; mode = Val(:split))
+
+The device-resident accumulation buffers of [`accumulate_field`](@ref), held as an object so that
+they survive one call and several calls can sum into the same buffers.
+
+By default (`buffers = nothing`, `finish = true`) `accumulate_field` allocates a set per call and
+downloads it at the end — the single-call API, unchanged. With `finish = false` it instead returns
+the `FieldAccumulator` holding that call's electrons, and passing it back as `buffers` on the next
+call continues the accumulation in place; the cube is downloaded once, by the call that runs with
+`finish = true` (or by [`finish_field`](@ref)).
+
+This is the memory model behind the solver scripts' `EDM_ELECTRON_BATCH` knob: the host then holds
+one batch of trajectory splines instead of every electron's for the whole field phase, while the
+device keeps the same single buffer set as an unbatched run. The kernels, the per-electron uploads
+and the launch order are untouched, so on one device a batched run adds the same per-electron
+contributions in the same order as the single call (bit-identical); across devices the shard
+composition changes with the batching, which moves the sum by the last bits.
+
+Fields: `E1`, `B1` (far field in `:split`, total in `:total`), `E2`, `B2` (near field; aliases of
+`E1`, `B1` in `:total`, where the kernel sums far + near before the write and never touches them),
+the `mode`, the `dev`ice the buffers live on, and the running `n_electrons` count.
+
+```julia
+acc = accumulate_field(trajs[1:500], screen, alg, backend; finish = false)
+acc = accumulate_field(trajs[501:1000], screen, alg, backend; buffers = acc, finish = false)
+fld = accumulate_field(trajs[1001:1500], screen, alg, backend; buffers = acc)   # downloads once
+```
+"""
+mutable struct FieldAccumulator{B, A, M}
+    backend::B
+    dev::Int
+    E1::A
+    B1::A
+    E2::A
+    B2::A
+    mode::M
+    n_electrons::Int
+end
+
+# The device the buffers were allocated on, when the backend can say. A backend with no vendor
+# extension loaded (`gpu_device` errors) is still a perfectly good accumulation target for the
+# single-device path, so this must not be the thing that makes it fail: 0 = "unknown", used only
+# by the sharded driver, which needs the vendor API anyway.
+_accumulator_device(backend) = try
+    Int(gpu_device(backend))
+catch
+    0
+end
+
+function FieldAccumulator(screen::ObserverScreen, backend::Backend; mode::Val = Val(:split))
+    mode == Val(:split) || mode == Val(:total) ||
+        throw(ArgumentError("FieldAccumulator: mode must be Val(:split) or Val(:total), got $mode"))
+    Nx, Ny = length(screen.x_grid), length(screen.y_grid)
+    N_samples = length(screen.x⁰_samples)
+    # Pixel-fastest accumulators for coalesced writes; `:total` collapses far+near in the kernel
+    # into a single (E, B) pair (2 buffers instead of 4), halving device memory.
+    E1 = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
+    B1 = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
+    E2 = mode == Val(:split) ? Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples)) : E1
+    B2 = mode == Val(:split) ? Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples)) : B1
+    return FieldAccumulator(backend, _accumulator_device(backend), E1, B1, E2, B2, mode, 0)
+end
+
+# `buffers` resolution shared by the `accumulate_field` methods: nothing ⇒ a fresh set (the
+# single-call path), an accumulator ⇒ reuse it after checking it matches this screen and mode.
+_field_buffers(::Nothing, screen::ObserverScreen, backend::Backend, mode::Val) =
+    FieldAccumulator(screen, backend; mode)
+
+function _field_buffers(acc::FieldAccumulator, screen::ObserverScreen, backend::Backend, mode::Val)
+    acc.mode === mode || throw(ArgumentError(
+        "accumulate_field: buffers were allocated with mode = $(acc.mode), called with mode = $mode"))
+    want = (length(screen.x_grid), length(screen.y_grid), 3, length(screen.x⁰_samples))
+    size(acc.E1) == want || throw(DimensionMismatch(
+        "accumulate_field: buffers are $(size(acc.E1)), this screen needs $want"))
+    return acc
+end
+
+_field_buffers(x, ::ObserverScreen, ::Backend, ::Val) = throw(ArgumentError(
+    "accumulate_field: `buffers` must be a FieldAccumulator or nothing, got $(typeof(x))"))
+
+"""
+    finish_field(acc::FieldAccumulator; sink = nothing, workers = 1) -> (; E, B[, E_far, B_far])
+
+Download the accumulated cube from a [`FieldAccumulator`](@ref) without adding more electrons —
+the explicit form of `accumulate_field(no_more_electrons, …; buffers = acc)`. `workers > 1`
+spreads the download's permute over that many tasks (see `_download_permuted`). `sink` receives
+the device buffers instead, exactly as in `accumulate_field`.
+
+The accumulator keeps its buffers (and its sum) afterwards; call it again, or keep accumulating
+into it, if that is what the driver wants.
+"""
+function finish_field(acc::FieldAccumulator; sink = nothing, workers::Integer = 1)
+    sink === nothing || return sink(acc.E1, acc.B1, acc.E2, acc.B2, acc.mode)
+    # The threaded permute pins its tasks with `gpu_device!`, so it needs a known device.
+    w = acc.dev == 0 ? 1 : workers
+    return _collect_fields(acc.E1, acc.B1, acc.E2, acc.B2, acc.mode;
+        backend = acc.backend, dev = acc.dev, workers = w)
+end

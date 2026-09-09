@@ -63,6 +63,7 @@ export ReferenceFrame, Worldline,
     gpu_event, gpu_elapsed, LaunchTimer, launch_times,
     CompiledKernel, compiled_kernels, kernel_resources,
     accumulate_field_sharded, ReduceStats,
+    FieldAccumulator, ShardedFieldAccumulator, finish_field,
     window_coverage, flop_profile,
     hann, blackman_harris
 
