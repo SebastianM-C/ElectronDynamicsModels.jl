@@ -49,6 +49,37 @@ function _shard_indices(n::Integer, k::Integer)
     return ranges
 end
 
+# Same split, but ALWAYS k ranges: a device that draws no electron from this batch gets an empty
+# range instead of vanishing. Batched runs need that — a device's buffers hold the electrons of
+# every earlier batch, so it must still take part in the final reduce even if the last batch has
+# nothing for it. Identical to `_shard_indices` whenever n ≥ k.
+function _shard_indices_padded(n::Integer, k::Integer)
+    base, rem = divrem(n, k)
+    ranges = Vector{UnitRange{Int}}(undef, k)
+    start = 1
+    for i in 1:k
+        len = base + (i <= rem ? 1 : 0)
+        ranges[i] = start:(start + len - 1)
+        start += len
+    end
+    return ranges
+end
+
+"""
+    ShardedFieldAccumulator(devices)
+
+Per-device [`FieldAccumulator`](@ref)s of a batched [`accumulate_field_sharded`](@ref) run: one
+buffer set per device, each holding that device's shard of every batch accumulated so far. Created
+by the first `finish = false` call and passed back as `buffers`; the device reduce runs once, on
+the call with `finish = true`. `accs[i]` is `nothing` until device `i` has drawn its first shard.
+"""
+struct ShardedFieldAccumulator
+    devices::Vector{Int}
+    accs::Vector{Any}
+end
+ShardedFieldAccumulator(devices) =
+    ShardedFieldAccumulator(collect(Int, devices), Any[nothing for _ in devices])
+
 """
     accumulate_field_sharded(trajs, screen, alg, backend;
                              devices = 1:gpu_device_count(backend),
@@ -70,6 +101,14 @@ every partial is downloaded, permuted and added on the host under a lock (one cu
 one single-threaded full-cube permute per device). `reduce_stats = ReduceStats()` receives the
 wall-clock time of the folds and of the final download (see [`ReduceStats`](@ref)).
 
+`buffers` / `finish` extend the electron BATCHING of [`accumulate_field`](@ref) to the sharded
+path: `finish = false` shards this batch, accumulates it into each device's own buffers and
+returns the [`ShardedFieldAccumulator`](@ref) holding them, which the next batch takes as
+`buffers`; the reduce and the download run once, on the call with `finish = true`. Each batch is
+split over the same devices, so a device that draws nothing from the last batch still folds in
+the electrons it accumulated earlier. Batching changes which electrons meet on which device, so
+the summation order — and with it the last bits of the cube — differs from an unbatched run.
+
 Needs ≥`length(devices)` Julia threads (`julia -t`): each per-device task is GPU-bound and blocks its
 thread on the final device→host copy, so they only overlap on separate OS threads. Each device holds
 a full prod-size buffer set (see the VRAM budget), so this trades device count for memory, not memory
@@ -81,6 +120,7 @@ function accumulate_field_sharded(
         trajs::Vector{<:TrajectoryInterpolant}, screen::ObserverScreen, alg, backend::KA.Backend;
         devices = 1:gpu_device_count(backend), reduce::Symbol = :device,
         reduce_workers::Integer = min(4, Threads.nthreads()), reduce_stats::Union{Nothing, ReduceStats} = nothing,
+        buffers::Union{Nothing, ShardedFieldAccumulator} = nothing, finish::Bool = true,
         kwargs...
     )
     nd = length(devices)
@@ -92,7 +132,23 @@ function accumulate_field_sharded(
         @warn "accumulate_field_sharded: $(Threads.nthreads()) Julia thread(s) < $nd devices — \
                per-device tasks will serialize; rerun with julia -t$nd"
 
-    shards = _shard_indices(length(trajs), nd)
+    # Batched (`buffers` given, or `finish = false`): every device keeps its own buffers across the
+    # batches, so the shard list must name all of them — including one this batch has nothing for.
+    batched = buffers !== nothing || !finish
+    sacc = if !batched
+        nothing
+    elseif buffers === nothing
+        ShardedFieldAccumulator(devices)
+    else
+        buffers.devices == collect(Int, devices) || throw(ArgumentError(
+            "accumulate_field_sharded: buffers hold devices $(buffers.devices), called with $(collect(Int, devices))"))
+        buffers
+    end
+    shards = batched ? _shard_indices_padded(length(trajs), nd) : _shard_indices(length(trajs), nd)
+    if !finish
+        _run_shards(trajs, shards, devices, screen, alg, backend, nothing; sacc, finish, kwargs...)
+        return sacc
+    end
     lk = ReentrantLock()
     if reduce == :host
         acc = Ref{Any}(nothing)
@@ -109,7 +165,7 @@ function accumulate_field_sharded(
             end
             nothing
         end
-        _run_shards(trajs, shards, devices, screen, alg, backend, sink; kwargs...)
+        _run_shards(trajs, shards, devices, screen, alg, backend, sink; sacc, finish, kwargs...)
         return acc[]
     end
 
@@ -134,7 +190,7 @@ function accumulate_field_sharded(
         end
         nothing
     end
-    _run_shards(trajs, shards, devices, screen, alg, backend, sink; kwargs...)
+    _run_shards(trajs, shards, devices, screen, alg, backend, sink; sacc, finish, kwargs...)
     p = part[]
     p === nothing && return nothing
     gpu_device!(backend, p.dev)
@@ -144,12 +200,21 @@ function accumulate_field_sharded(
     return out
 end
 
-function _run_shards(trajs, shards, devices, screen, alg, backend, sink; kwargs...)
+# One task per shard, each pinned to its device. `sacc` (a `ShardedFieldAccumulator`) carries the
+# per-device buffers of a batched run: the task accumulates into its own set and, on the finishing
+# call, hands it to `sink` from INSIDE that task — the sink's `KA.synchronize` and device-to-device
+# folds are only correct on the task (and hence the stream) that issued the kernels.
+function _run_shards(trajs, shards, devices, screen, alg, backend, sink; sacc = nothing, finish::Bool = true, kwargs...)
     @sync for (i, rng) in enumerate(shards)
         d = devices[i]
+        buffers = sacc === nothing ? nothing : sacc.accs[i]
+        # A device with neither electrons in this batch nor buffers from an earlier one has
+        # nothing to contribute and must not allocate a zero partial for the reduce.
+        isempty(rng) && buffers === nothing && continue
         Threads.@spawn begin
             gpu_device!(backend, d)
-            accumulate_field(trajs[rng], screen, alg, backend; sink, kwargs...)
+            out = accumulate_field(trajs[rng], screen, alg, backend; sink, buffers, finish, kwargs...)
+            sacc === nothing || finish || (sacc.accs[i] = out)
         end
     end
     return nothing
