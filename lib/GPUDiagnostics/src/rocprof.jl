@@ -42,9 +42,10 @@ what [`rocprof_derived`](@ref) computes from it:
 - `:sq_waves` — wave residency and what waves do: `SQ_WAVES`, `SQ_BUSY_CYCLES`, `SQ_WAVE_CYCLES`,
   `SQ_ACTIVE_INST_ANY/_VALU`, `SQ_WAIT_INST_ANY`, `SQ_WAIT_ANY` (+ `GRBM_GUI_ACTIVE`). →
   `resident_waves`, `waves_per_cu`, `occupancy` (achieved, vs `kernel_occupancy` at compile
-  time), `wave_wait_frac` (waiting for anything), `wave_wait_inst_frac` (dependency waits),
-  `wave_active_inst_frac`, `wave_active_valu_frac`, `sq_busy`: latency-bound (waves mostly waiting)
-  vs issue-bound.
+  time), `wave_wait_frac` (waiting for anything), `wave_wait_inst_frac` (waiting for an
+  instruction to ISSUE — the difference to `wave_wait_frac` is the dependency / memory-latency
+  wait), `wave_active_inst_frac`, `wave_active_valu_frac`, `sq_busy`: latency-bound (waves
+  mostly waiting on data) vs issue-bound (waiting on the arbiter).
 - `:l1_pipe` — the vector-memory pipe: `TA_TA_BUSY_sum`, `TD_TD_BUSY_sum`,
   `TCP_PENDING_STALL_CYCLES_sum`, `TCP_TOTAL_READ_sum`, `TCP_TCC_READ_REQ_sum`,
   `TCP_TOTAL_CACHE_ACCESSES_sum` (+ `GRBM_GUI_ACTIVE`). → `ta_busy`, `td_busy`,
@@ -380,8 +381,9 @@ cycles on one die; the CSV sums the counter over the dies), `n_cu` / `n_se` / `w
   (`ta_busy`, `td_busy`, …); `tcp_pending_stall = TCP_PENDING_STALL_CYCLES_sum / (cycles × n_cu)`.
 - `l1_miss = TCP_TCC_READ_REQ_sum / TCP_TOTAL_CACHE_ACCESSES_sum`; `l2_hit = TCC_HIT_sum /
   (TCC_HIT_sum + TCC_MISS_sum)`; `l2_dram_read_frac = TCC_EA0_RDREQ_DRAM_sum / TCC_EA0_RDREQ_sum`.
-- `wave_wait_frac = SQ_WAIT_ANY / SQ_WAVE_CYCLES`, `wave_wait_inst_frac = SQ_WAIT_INST_ANY /
-  SQ_WAVE_CYCLES`, `wave_active_inst_frac = SQ_ACTIVE_INST_ANY / SQ_WAVE_CYCLES`,
+- `wave_wait_frac = SQ_WAIT_ANY / SQ_WAVE_CYCLES` (waiting for anything), `wave_wait_inst_frac
+  = SQ_WAIT_INST_ANY / SQ_WAVE_CYCLES` (waiting for an instruction to issue; the difference is
+  the dependency / memory-latency wait), `wave_active_inst_frac = SQ_ACTIVE_INST_ANY / SQ_WAVE_CYCLES`,
   `wave_active_valu_frac = SQ_ACTIVE_INST_VALU / SQ_WAVE_CYCLES` (all quad-cycle counters, so
   unit-free); `resident_waves = 4·SQ_WAVE_CYCLES / cycles`, `waves_per_cu = resident_waves /
   n_cu`, `occupancy = waves_per_cu / max_waves_per_cu` (rocprofv3's `OccupancyPercent` / 100);
