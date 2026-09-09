@@ -217,11 +217,8 @@ function _gpu_newton_one_electron!(
             return
         end
 
-        # Warm start at the window edge: τ(t_i_px) = τi exactly — no RK4 bridge. A chunk
-        # beyond the first has no such anchor: its first slot takes N_COLD_ITERS safeguarded
-        # corrections from the same predictor, then the one-slot warm start resumes.
+        # Warm start at the window edge: τ(t_i_px) = τi exactly — no RK4 bridge.
         τ = τi
-        iters = ifelse(chunk == 1, n_iters, N_COLD_ITERS)
 
         tₖ = t_first + (k_first - 1) * δx⁰
         Δ = tₖ - t_i_px   # ∈ (0, δx⁰] unless k_start clamped to 1 (chunk 1); the chunk's stride otherwise
@@ -233,11 +230,19 @@ function _gpu_newton_one_electron!(
         # Spline interval of the previous evaluation: the warm start of the knot search
         # (see _searchsorted_left). Bit-identical to a cold search; saves its dependent loads.
         idx = 1
+        # A chunk beyond the first has no anchor at its first slot: solve it here with
+        # N_COLD_ITERS safeguarded corrections from the window-edge predictor, then enter the
+        # loop with Δ = 0 so its first pass re-solves that slot from the converged τ. Kept
+        # outside the loop so the loop body (and its register footprint) is chunk 1's.
+        if chunk > 1
+            τ, lo, _, _, rhs, _, _, _, _, idx =
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, N_COLD_ITERS, idx, Val(false))
+            Δ = zero(Δ)
+        end
 
         for k in k_first:k_last
             τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx =
-                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, iters, idx, coef_reuse)
-            iters = n_iters
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx, coef_reuse)
 
             # Accumulate from the last residual eval — zero extra spline evals.
             coeff = K * rhs / r_norm   # = K / m_dot(xr, uμ)
@@ -364,7 +369,6 @@ function _gpu_newton_field_one_electron!(
         end
 
         τ = τi
-        iters = ifelse(chunk == 1, n_iters, N_COLD_ITERS)   # cold start for chunks > 1 (see the potential kernel)
         tₖ = t_first + (k_first - 1) * δx⁰
         Δ = tₖ - t_i_px
 
@@ -373,11 +377,15 @@ function _gpu_newton_field_one_electron!(
         # Spline interval of the previous evaluation: the warm start of the knot search
         # (see _searchsorted_left). Bit-identical to a cold search; saves its dependent loads.
         idx = 1
+        if chunk > 1   # cold start of a later chunk, outside the loop (see the potential kernel)
+            τ, lo, _, _, rhs, _, _, _, _, idx =
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, N_COLD_ITERS, idx, Val(false))
+            Δ = zero(Δ)
+        end
 
         for k in k_first:k_last
             τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx =
-                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, iters, idx, coef_reuse)
-            iters = n_iters
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx, coef_reuse)
 
             # Field write from the converged eval (X reuses r_norm and d).
             uμ = SVector{4}(v[5], v[6], v[7], v[8])
