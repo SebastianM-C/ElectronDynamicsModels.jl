@@ -44,7 +44,7 @@ previous evaluation of the same pixel as the guess (`spline(τ, guess) -> (value
 the acceleration spline is evaluated on the interval the state spline found (`to_gpu` refuses
 an acceleration spline on different knots). Cubes are bit-identical to the cold search; the
 time removed is the search's dependent loads, four to six per sample: 1.44× (MI300X) and
-1.47× (H100) for the Newton kernel at the benchmark cell, 1.1× on the workstation cards.
+1.47× (H100) for the Newton kernel at the benchmark cell, 1.1× on the W7900 and the RTX 5090.
 
 ## The register-cached interval (`coef_reuse`)
 
