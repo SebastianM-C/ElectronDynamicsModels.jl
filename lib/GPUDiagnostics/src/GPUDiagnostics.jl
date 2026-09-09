@@ -34,6 +34,14 @@ fallbacks so the plumbing (and its tests) run without a GPU.
   job's optimized LLVM IR by typed opcode (the arithmetic before backend contraction);
   `fp64_issue_floor` turns a per-slot FP64 count and the measured FP64 rate into the FP64-pipe
   time floor per launch.
+- **AMD hardware counters (rocprofv3)** — `rocprof_command` wraps a process in a rocprofv3 counter
+  collection (`ROCPROF_COUNTER_SETS`: instruction issue, wave residency, the L1 pipe, FP64, L2 —
+  the sets that fit one pass on gfx942, and the one that does not), `rocprof_counters` parses its
+  CSV into per-dispatch values of one kernel, and `rocprof_derived` / `rocprof_summary` /
+  `rocprof_manifest_section` reduce them: medians with spreads, per-slot instruction counts,
+  unit-busy fractions and achieved occupancy with the normalisation rocprofv3's own derived
+  metrics use (die-summed `GRBM_GUI_ACTIVE`, quad-cycle SQ counters). Pure Julia, no GPU needed
+  to parse.
 """
 module GPUDiagnostics
 
@@ -52,12 +60,15 @@ export gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_arch,
     measure_peak_fp64_flops, gpu_peak_fp64_flops,
     CompiledKernel, compiled_kernels, kernel_resources,
     MIX_CLASSES, SASS_RULES, AMD_RULES, instruction_mix, kernel_instruction_mix, fp64_issue_floor,
-    IR_CLASSES, kernel_ir_mix
+    IR_CLASSES, kernel_ir_mix,
+    ROCPROF_COUNTER_SETS, RocprofCounters, rocprof_available, rocprof_command, rocprof_counters,
+    rocprof_median, rocprof_derived, rocprof_summary, rocprof_manifest_section
 
 include("device_api.jl")   # generics + CPU fallbacks + LaunchTimer; vendor methods in ext/
 include("sampler.jl")      # gpu_sample sources, the telemetry child, with_gpu_sampler, gpu_telemetry_stats
 include("peakflops.jl")    # FMA-chain FP64 peak probe
 include("resources.jl")    # compile-time resource report: registers / spills / LDS / occupancy
 include("instruction_mix.jl")   # static instruction mix of the disassembly + loop nest + FP64-issue floor
+include("rocprof.jl")           # AMD hardware counters: rocprofv3 wrapper + CSV parser + normalised derived metrics
 
 end
