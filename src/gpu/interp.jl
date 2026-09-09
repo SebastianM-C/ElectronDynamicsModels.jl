@@ -6,7 +6,12 @@
     GPUCubicSpline{V, M}
 
 A GPU-compatible cubic spline interpolant. Stores precomputed coefficients
-in flat arrays (works with both `Vector` and `CuArray`).
+in flat arrays (works with both `Vector` and `CuArray`). The coefficient matrices are
+column-major over the knots (`N × D`: for one component the knots are contiguous), because
+the kernels' reuse of a cache line is along the knot index — consecutive samples of a pixel
+and the lanes of a wave sit on the same or the neighbouring knot. The knot-major
+alternative (`D × N`) issues fewer, wider loads but turns a cache line over every two knots
+and measured 20 % slower on the MI300X; see the manual page "The device spline".
 
 Evaluates the standard natural cubic spline formula:
     S(t) = (z[i]*dt2³ + z[i+1]*dt1³) / (6*h[i+1]) + c1[i]*dt1 + c2[i]*dt2

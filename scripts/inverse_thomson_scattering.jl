@@ -514,7 +514,9 @@ gputracefile = joinpath(OUTDIR, "gputrace_$(RUN_TAG).tsv")
 launch_timer = LaunchTimer()
 kerneltimesfile = joinpath(OUTDIR, "kerneltimes_$(RUN_TAG).tsv")
 accum_alg = ACCUM_ALG == "newton" ? GPUKernelNewton() : GPUKernelRK4()
-const COEF_REUSE = get(ENV, "EDM_COEF_REUSE", "0") == "1"   # hold spline-interval coefficients in registers across a slot's evaluations (bit-identical)
+# Register-cached spline interval across a slot's evaluations (bit-identical; manual: "The device
+# spline"). Unset ⇒ on for the Newton kernel, off for RK4 (which spills on gfx942); "1"/"0" forces it.
+const COEF_REUSE = haskey(ENV, "EDM_COEF_REUSE") ? ENV["EDM_COEF_REUSE"] == "1" : ACCUM_ALG == "newton"
 accum_kw = ACCUM_ALG == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = NSUBSTEPS)
 # Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
 # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).

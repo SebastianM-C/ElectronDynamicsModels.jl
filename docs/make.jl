@@ -15,6 +15,7 @@ makedocs(;
     pages=[
         "Home" => "index.md",
         "Experimental" => "experimental.md",
+        "The device spline" => "gpu_spline.md",
     ],
 )
 
