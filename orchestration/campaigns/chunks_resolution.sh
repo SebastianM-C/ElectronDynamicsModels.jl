@@ -5,6 +5,7 @@
 CAMPAIGN=smoke
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=0
+REDUCE_OVERLAP=0   # field-only: no background post-processing of the cube (the pod config defaults it to 1)
 BASE=(
   EDM_FIELD_MODE=total EDM_NSUBSTEPS=1 EDM_RELTOL=1e-13 EDM_A0=0.3 EDM_INTERP_SAVEAT=16
   EDM_INITIAL_PHASE=-1.5707963267948966 EDM_WINDOW=narrow EDM_APODIZATION=none EDM_DIRECT_READ=1
