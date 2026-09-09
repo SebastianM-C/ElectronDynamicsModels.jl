@@ -190,13 +190,12 @@ function _gpu_newton_one_electron!(
         A_buf, gpu_traj,
         x_grid, y_grid, z_screen,
         t_first, δx⁰, N_samples, Nx, Ny,
-        τi, τf, pixel_iter, backend, n_iters, coef_reuse = Val(false)
+        τi, τf, pixel_iter, backend, n_iters, coef_reuse = Val(false), n_chunks = 1
     )
     K = gpu_traj.K
     AK.foreachindex(pixel_iter, backend) do i_lin
-        # Column-major unpacking: ix runs fastest, iy outer
-        ix = ((i_lin - 1) % Nx) + 1
-        iy = ((i_lin - 1) ÷ Nx) + 1
+        # Chunk-major unpacking of the (pixels × chunks) index space: ix fastest, iy, then chunk.
+        ix, iy, chunk = _chunk_pixel(i_lin, Nx, Ny, n_chunks)
         r_obs = SVector{3}(x_grid[ix], y_grid[iy], z_screen)
 
         # Arrival-window edges in screen-relative offsets (shared helper); the
@@ -212,12 +211,20 @@ function _gpu_newton_one_electron!(
         if k_start > k_end
             return
         end
+        # This thread's slice of the executed slots; chunks beyond the range are empty.
+        k_first, k_last = _chunk_slots(k_start, k_end, chunk, n_chunks)
+        if k_first > k_last
+            return
+        end
 
-        # Warm start at the window edge: τ(t_i_px) = τi exactly — no RK4 bridge.
+        # Warm start at the window edge: τ(t_i_px) = τi exactly — no RK4 bridge. A chunk
+        # beyond the first has no such anchor: its first slot takes N_COLD_ITERS safeguarded
+        # corrections from the same predictor, then the one-slot warm start resumes.
         τ = τi
+        iters = ifelse(chunk == 1, n_iters, N_COLD_ITERS)
 
-        tₖ = t_first + (k_start - 1) * δx⁰
-        Δ = tₖ - t_i_px   # ∈ (0, δx⁰] unless k_start clamped to 1
+        tₖ = t_first + (k_first - 1) * δx⁰
+        Δ = tₖ - t_i_px   # ∈ (0, δx⁰] unless k_start clamped to 1 (chunk 1); the chunk's stride otherwise
 
         # Bracket lower bound: raised only at sign-verified points (f > 0), so
         # it lower-bounds every later root too (targets increase along k) —
@@ -227,9 +234,10 @@ function _gpu_newton_one_electron!(
         # (see _searchsorted_left). Bit-identical to a cold search; saves its dependent loads.
         idx = 1
 
-        for k in k_start:k_end
+        for k in k_first:k_last
             τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx =
-                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx, coef_reuse)
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, iters, idx, coef_reuse)
+            iters = n_iters
 
             # Accumulate from the last residual eval — zero extra spline evals.
             coeff = K * rhs / r_norm   # = K / m_dot(xr, uμ)
@@ -271,11 +279,13 @@ function accumulate_potential(
         backend::Backend;
         n_iters::Int = 2,
         coef_reuse::Val = Val(false),
+        sample_chunks::Int = 1,
         sync_per_electron::Bool = true,
         timer = nothing,
     )
     n_iters ≥ 1 || throw(ArgumentError(
         "n_iters must be ≥ 1 — n_iters = 0 degrades to an unchecked Euler march"))
+    sample_chunks ≥ 1 || throw(ArgumentError("sample_chunks must be ≥ 1, got $sample_chunks"))
     step(screen.x⁰_samples) > 0 || throw(ArgumentError(
         "screen.x⁰_samples must be strictly increasing (got step = $(step(screen.x⁰_samples)))"))
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
@@ -291,7 +301,7 @@ function accumulate_potential(
     δx⁰ = step(screen.x⁰_samples)
 
     # Iteration target: one element per pixel. Sentinel array; never read.
-    pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny))
+    pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny, sample_chunks))   # one thread per (pixel, chunk)
     lane = launch_lane(timer, backend)
 
     for traj in trajs
@@ -303,7 +313,7 @@ function accumulate_potential(
             A_buf, gpu_traj,
             screen.x_grid, screen.y_grid, screen.z,
             t_first, δx⁰, N_samples, Nx, Ny,
-            τi, τf, pixel_iter, backend, n_iters, coef_reuse,
+            τi, τf, pixel_iter, backend, n_iters, coef_reuse, sample_chunks,
         )
         launch_tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)
@@ -326,13 +336,12 @@ function _gpu_newton_field_one_electron!(
         mode::Val, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
         x_grid, y_grid, z_screen,
         t_first, δx⁰, N_samples, Nx, Ny,
-        τi, τf, pixel_iter, backend, n_iters, coef_reuse = Val(false)
+        τi, τf, pixel_iter, backend, n_iters, coef_reuse = Val(false), n_chunks = 1
     )
     K = gpu_traj.K
     AK.foreachindex(pixel_iter, backend) do i_lin
-        # Column-major unpacking: ix runs fastest, iy outer
-        ix = ((i_lin - 1) % Nx) + 1
-        iy = ((i_lin - 1) ÷ Nx) + 1
+        # Chunk-major unpacking of the (pixels × chunks) index space: ix fastest, iy, then chunk.
+        ix, iy, chunk = _chunk_pixel(i_lin, Nx, Ny, n_chunks)
         r_obs = SVector{3}(x_grid[ix], y_grid[iy], z_screen)
 
         # Arrival-window edges in screen-relative offsets (shared helper); the
@@ -348,9 +357,15 @@ function _gpu_newton_field_one_electron!(
         if k_start > k_end
             return
         end
+        # This thread's slice of the executed slots; chunks beyond the range are empty.
+        k_first, k_last = _chunk_slots(k_start, k_end, chunk, n_chunks)
+        if k_first > k_last
+            return
+        end
 
         τ = τi
-        tₖ = t_first + (k_start - 1) * δx⁰
+        iters = ifelse(chunk == 1, n_iters, N_COLD_ITERS)   # cold start for chunks > 1 (see the potential kernel)
+        tₖ = t_first + (k_first - 1) * δx⁰
         Δ = tₖ - t_i_px
 
         # Bracket lower bound (see _bracketed_slot_solve) — carried across slots.
@@ -359,9 +374,10 @@ function _gpu_newton_field_one_electron!(
         # (see _searchsorted_left). Bit-identical to a cold search; saves its dependent loads.
         idx = 1
 
-        for k in k_start:k_end
+        for k in k_first:k_last
             τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx =
-                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx, coef_reuse)
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, iters, idx, coef_reuse)
+            iters = n_iters
 
             # Field write from the converged eval (X reuses r_norm and d).
             uμ = SVector{4}(v[5], v[6], v[7], v[8])
@@ -405,6 +421,7 @@ function accumulate_field(
         backend::Backend;
         n_iters::Int = 2,
         coef_reuse::Val = Val(false),
+        sample_chunks::Int = 1,
         mode::Val = Val(:split),
         sync_per_electron::Bool = true,
         sink = nothing,
@@ -412,6 +429,7 @@ function accumulate_field(
     )
     n_iters ≥ 1 || throw(ArgumentError(
         "n_iters must be ≥ 1 — n_iters = 0 degrades to an unchecked Euler march"))
+    sample_chunks ≥ 1 || throw(ArgumentError("sample_chunks must be ≥ 1, got $sample_chunks"))
     step(screen.x⁰_samples) > 0 || throw(ArgumentError(
         "screen.x⁰_samples must be strictly increasing (got step = $(step(screen.x⁰_samples)))"))
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
@@ -433,7 +451,7 @@ function accumulate_field(
     t_first = x⁰_first - screen.z
     δx⁰ = step(screen.x⁰_samples)
 
-    pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny))
+    pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny, sample_chunks))   # one thread per (pixel, chunk)
     lane = launch_lane(timer, backend)
 
     for traj in trajs
@@ -445,7 +463,7 @@ function accumulate_field(
             mode, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
             screen.x_grid, screen.y_grid, screen.z,
             t_first, δx⁰, N_samples, Nx, Ny,
-            τi, τf, pixel_iter, backend, n_iters, coef_reuse,
+            τi, τf, pixel_iter, backend, n_iters, coef_reuse, sample_chunks,
         )
         launch_tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)

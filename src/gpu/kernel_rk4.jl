@@ -136,13 +136,12 @@ function _gpu_unified_one_electron!(
         A_buf, gpu_traj,
         x_grid, y_grid, z_screen,
         x⁰_first, δx⁰, N_samples, Nx, Ny,
-        τi, τf, pixel_iter, backend, n_substeps, coef_reuse = Val(false)
+        τi, τf, pixel_iter, backend, n_substeps, coef_reuse = Val(false), n_chunks = 1
     )
     K = gpu_traj.K
     AK.foreachindex(pixel_iter, backend) do i_lin
-        # Column-major unpacking: ix runs fastest, iy outer
-        ix = ((i_lin - 1) % Nx) + 1
-        iy = ((i_lin - 1) ÷ Nx) + 1
+        # Chunk-major unpacking of the (pixels × chunks) index space: ix fastest, iy, then chunk.
+        ix, iy, chunk = _chunk_pixel(i_lin, Nx, Ny, n_chunks)
         r_obs = SVector{3}(x_grid[ix], y_grid[iy], z_screen)
 
         # Pixel-specific advanced-time window x⁰_i, x⁰_f.  NOTE: kernel_newton.jl
@@ -169,25 +168,40 @@ function _gpu_unified_one_electron!(
         if k_start > k_end
             return
         end
+        # This thread's slice of the executed slots; chunks beyond the range are empty.
+        k_first, k_last = _chunk_slots(k_start, k_end, chunk, n_chunks)
+        if k_first > k_last
+            return
+        end
 
         # Bridge τ from τi (the τ at observer time x⁰_i_px) up to observer time
         # x⁰_samples[k_start], then advance τ by δx⁰ between successive slots.
         # Each advance is taken as `n_substeps` RK4 sub-steps of dt =
         # δx⁰/n_substeps, bringing ω·dt into RK4's accurate range (a single
         # step works only for ω·δx⁰ ≪ 1, which fails at ω·δx⁰ ≈ π/2).
+        # A chunk beyond the first has no anchor at its first slot: it takes the
+        # retarded time there from N_COLD_ITERS safeguarded Newton corrections on
+        # the light-cone residual (kernel_newton.jl), then marches as usual.
         τ = τi
         idx = 1   # spline interval of the previous evaluation: warm start of the knot search
-        bridge_dt = x⁰_first + (k_start - 1) * δx⁰ - x⁰_i_px
-        if bridge_dt > 0
-            sub_dt = bridge_dt / n_substeps
-            for _ in 1:n_substeps
-                τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
+        if chunk == 1
+            bridge_dt = x⁰_first + (k_start - 1) * δx⁰ - x⁰_i_px
+            if bridge_dt > 0
+                sub_dt = bridge_dt / n_substeps
+                for _ in 1:n_substeps
+                    τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
+                end
+                τ = clamp(τ, τi, τf)
             end
-            τ = clamp(τ, τi, τf)
+        else
+            tₖc = (x⁰_first - z_screen) + (k_first - 1) * δx⁰
+            t_i_px, rhs0 = _window_edge(gpu_traj, r_obs, τi)
+            τ, _, _, _, _, _, _, _, _, idx =
+                _bracketed_slot_solve(τi, tₖc - t_i_px, rhs0, τi, gpu_traj, r_obs, tₖc, τi, τf, N_COLD_ITERS, 1, Val(false))
         end
 
         # March through saveat slots, accumulating at each
-        for k in k_start:k_end
+        for k in k_first:k_last
             τ_safe = clamp(τ, τi, τf)
             v, idx = gpu_traj.itp(τ_safe, idx)
 
@@ -212,7 +226,7 @@ function _gpu_unified_one_electron!(
             @inbounds A_buf[ix, iy, 3, k] += coeff * u²
             @inbounds A_buf[ix, iy, 4, k] += coeff * u³
 
-            if k < k_end
+            if k < k_last
                 sub_dt = δx⁰ / n_substeps
                 for _ in 1:n_substeps
                     τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
@@ -263,9 +277,11 @@ function accumulate_potential(
         backend::Backend;
         n_substeps::Int = 1,
         coef_reuse::Val = Val(false),
+        sample_chunks::Int = 1,
         sync_per_electron::Bool = true,
         timer = nothing,
     )
+    sample_chunks ≥ 1 || throw(ArgumentError("sample_chunks must be ≥ 1, got $sample_chunks"))
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
 
@@ -279,7 +295,7 @@ function accumulate_potential(
     δx⁰ = step(screen.x⁰_samples)
 
     # Iteration target: one element per pixel. Sentinel array; never read.
-    pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny))
+    pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny, sample_chunks))   # one thread per (pixel, chunk)
 
     # Per-electron upload-and-free streaming: each trajectory's spline
     # arrays (~21 MB at N_t = 10⁵) are uploaded just before the kernel
@@ -296,7 +312,7 @@ function accumulate_potential(
             A_buf, gpu_traj,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny,
-            τi, τf, pixel_iter, backend, n_substeps, coef_reuse,
+            τi, τf, pixel_iter, backend, n_substeps, coef_reuse, sample_chunks,
         )
         launch_tock!(timer, lane, backend, e0)
         # Release the trajectory's device buffers.  With `sync_per_electron`
@@ -334,13 +350,12 @@ function _gpu_unified_field_one_electron!(
         mode::Val, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
         x_grid, y_grid, z_screen,
         x⁰_first, δx⁰, N_samples, Nx, Ny,
-        τi, τf, pixel_iter, backend, n_substeps, coef_reuse = Val(false)
+        τi, τf, pixel_iter, backend, n_substeps, coef_reuse = Val(false), n_chunks = 1
     )
     K = gpu_traj.K
     AK.foreachindex(pixel_iter, backend) do i_lin
-        # Column-major unpacking: ix runs fastest, iy outer
-        ix = ((i_lin - 1) % Nx) + 1
-        iy = ((i_lin - 1) ÷ Nx) + 1
+        # Chunk-major unpacking of the (pixels × chunks) index space: ix fastest, iy, then chunk.
+        ix, iy, chunk = _chunk_pixel(i_lin, Nx, Ny, n_chunks)
         r_obs = SVector{3}(x_grid[ix], y_grid[iy], z_screen)
 
         # Pixel-specific advanced-time window x⁰_i, x⁰_f.  NOTE: kernel_newton.jl
@@ -367,22 +382,35 @@ function _gpu_unified_field_one_electron!(
         if k_start > k_end
             return
         end
+        # This thread's slice of the executed slots; chunks beyond the range are empty.
+        k_first, k_last = _chunk_slots(k_start, k_end, chunk, n_chunks)
+        if k_first > k_last
+            return
+        end
 
         # Bridge τ from τi up to observer time x⁰_samples[k_start], then advance
-        # by δx⁰ between successive slots (each as n_substeps RK4 sub-steps).
+        # by δx⁰ between successive slots (each as n_substeps RK4 sub-steps);
+        # chunks > 1 start from a cold light-cone solve (see the potential kernel).
         τ = τi
         idx = 1   # spline interval of the previous evaluation: warm start of the knot search
-        bridge_dt = x⁰_first + (k_start - 1) * δx⁰ - x⁰_i_px
-        if bridge_dt > 0
-            sub_dt = bridge_dt / n_substeps
-            for _ in 1:n_substeps
-                τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
+        if chunk == 1
+            bridge_dt = x⁰_first + (k_start - 1) * δx⁰ - x⁰_i_px
+            if bridge_dt > 0
+                sub_dt = bridge_dt / n_substeps
+                for _ in 1:n_substeps
+                    τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
+                end
+                τ = clamp(τ, τi, τf)
             end
-            τ = clamp(τ, τi, τf)
+        else
+            tₖc = (x⁰_first - z_screen) + (k_first - 1) * δx⁰
+            t_i_px, rhs0 = _window_edge(gpu_traj, r_obs, τi)
+            τ, _, _, _, _, _, _, _, _, idx =
+                _bracketed_slot_solve(τi, tₖc - t_i_px, rhs0, τi, gpu_traj, r_obs, tₖc, τi, τf, N_COLD_ITERS, 1, Val(false))
         end
 
         # March through saveat slots, writing the (E, B) field at each
-        for k in k_start:k_end
+        for k in k_first:k_last
             τ_safe = clamp(τ, τi, τf)
 
             v, idx = gpu_traj.itp(τ_safe, idx)
@@ -413,7 +441,7 @@ function _gpu_unified_field_one_electron!(
                 end
             end
 
-            if k < k_end
+            if k < k_last
                 sub_dt = δx⁰ / n_substeps
                 for _ in 1:n_substeps
                     τ, idx = _rk4_step(τ, sub_dt, gpu_traj, r_obs, idx, coef_reuse)
@@ -451,11 +479,13 @@ function accumulate_field(
         backend::Backend;
         n_substeps::Int = 1,
         coef_reuse::Val = Val(false),
+        sample_chunks::Int = 1,
         mode::Val = Val(:split),
         sync_per_electron::Bool = true,
         sink = nothing,
         timer = nothing,
     )
+    sample_chunks ≥ 1 || throw(ArgumentError("sample_chunks must be ≥ 1, got $sample_chunks"))
     Nx, Ny = length(screen.x_grid), length(screen.y_grid)
     N_samples = length(screen.x⁰_samples)
     c = screen.c
@@ -477,7 +507,7 @@ function accumulate_field(
     x⁰_first = first(screen.x⁰_samples)
     δx⁰ = step(screen.x⁰_samples)
 
-    pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny))
+    pixel_iter = Adapt.adapt(backend, zeros(Int8, Nx, Ny, sample_chunks))   # one thread per (pixel, chunk)
     lane = launch_lane(timer, backend)
 
     for traj in trajs
@@ -489,7 +519,7 @@ function accumulate_field(
             mode, E1_buf, B1_buf, E2_buf, B2_buf, gpu_traj, c,
             screen.x_grid, screen.y_grid, screen.z,
             x⁰_first, δx⁰, N_samples, Nx, Ny,
-            τi, τf, pixel_iter, backend, n_substeps, coef_reuse,
+            τi, τf, pixel_iter, backend, n_substeps, coef_reuse, sample_chunks,
         )
         launch_tock!(timer, lane, backend, e0)
         sync_per_electron && KernelAbstractions.synchronize(backend)
