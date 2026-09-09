@@ -65,6 +65,7 @@ using RunManifests
 include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with the recovery path)
 include(joinpath(@__DIR__, "trajectory_products.jl"))   # gamma_trace + write_ic_products (shared with gammatau_backfill.jl)
 include(joinpath(@__DIR__, "gpu_telemetry.jl"))   # with_gpu_sampler + gpu_manifest_section → the manifest [gpu] section
+include(joinpath(@__DIR__, "electron_batches.jl"))   # EDM_ELECTRON_BATCH: solve → accumulate → discard, batch by batch
 
 # GPU backend selected via ENV: "rocm" (default) or "cuda" (e.g. an H200 cluster node).
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "rocm"))
@@ -449,40 +450,20 @@ const ABSTOL = isempty(ABSTOL_ENV) ? 1.0e-11 : parse(Float64, ABSTOL_ENV)
 # boxes; lower EDM_INTERP_SAVEAT (or EDM_N) if host RAM binds. With the campaign convention
 # TSPAN_TAU·γ = 16 the count is γ-free (~24k at knots=16 → ~47 GB at N=10⁴).
 saveat = collect(τi_solve:((2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)):τf_solve)
-ensemble = EnsembleProblem(prob; prob_func, safetycopy = false)
-t_trajectories = @elapsed solution = solve(
-    ensemble, Vern9(), EnsembleThreads();
-    reltol = RELTOL, abstol = ABSTOL, dtmax = DTMAX, trajectories = N, saveat
+# Solve the electrons `rng` of the ensemble. The batch's sim_id is offset into the global electron
+# index, so a batch boundary changes nothing about which electron gets which initial condition —
+# `EDM_ELECTRON_BATCH` only changes how many of them are resident at once (electron_batches.jl).
+solve_trajectories(rng) = trajectory_interpolants(
+    solve(
+        EnsembleProblem(prob; safetycopy = false,
+            prob_func = (p, ctx) -> prob_func(p, (; sim_id = first(rng) - 1 + ctx.sim_id))),
+        Vern9(), EnsembleThreads();
+        reltol = RELTOL, abstol = ABSTOL, dtmax = DTMAX, trajectories = length(rng), saveat
+    )
 )
-@info "trajectories solved" t_trajectories RELTOL ABSTOL DTMAX knots_per_period = INTERP_SAVEAT
-
-# Radiation computation
-trajs = trajectory_interpolants(solution)
-
-# ── γ(τ)/γ₀ trace, sampled through the trajectory INTERPOLANTS rather than the raw ODE
-# solutions: the uniform-saveat CubicSpline is what the radiation kernel actually integrates,
-# so reading γ through it — between knots, at EDM_GAMMA_TRACE_OVERSAMPLE× the knot rate —
-# keeps saveat-undersampling and spline artifacts visible in the trace instead of hidden by
-# the solver's dense output. Emits a small (~MBs) gammatau_<tag>.jls sidecar next to the cube;
-# ll_system_chips.jl overlays the classical|LL pair of traces as a 2-parent comparison
-# product. EDM_GAMMA_TRACE_OVERSAMPLE=0 disables the trace entirely.
-const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
-GAMMA_TRACE_OS >= 0 || error("EDM_GAMMA_TRACE_OVERSAMPLE must be ≥ 0, got $GAMMA_TRACE_OS")
-if GAMMA_TRACE_OS > 0
-    t_gtrace = @elapsed begin
-        knot_dt = (2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)
-        γτ_grid = collect(τi:(knot_dt / GAMMA_TRACE_OS):τf)
-        γmean, γmin, γmax, γdrain = gamma_trace(trajs, γτ_grid, c, GAMMA, τf)
-        gtfile = joinpath(OUTDIR, "gammatau_$(RUN_TAG).jls")
-        serialize(gtfile, (; τs = γτ_grid, γ0 = Float64(GAMMA), ω, τ_pulse = τ,
-            γmean, γmin, γmax, drain = γdrain, oversample = GAMMA_TRACE_OS,
-            knots_per_period = parse(Float64, INTERP_SAVEAT)))
-    end
-    @info "γ(τ)/γ₀ trace serialized" t_gtrace n_τ = length(γτ_grid) mean_drain = sum(γdrain) / length(γdrain)
-end
 
 # As-run initial-conditions cache + chip (write_ic_products lives in trajectory_products.jl,
-# shared with the gammatau_backfill.jl path).
+# shared with the gammatau_backfill.jl path). Reads the initial conditions, not the solutions.
 write_ic_products(xμ, u⁰, [bunch_dz(r) for r in R₀], OUTDIR, RUN_TAG;
     γ0 = GAMMA, λ, w₀, nb = BUNCH_NB, l = BUNCH_L, chirp = BUNCH_CHIRP)
 
@@ -498,6 +479,40 @@ screen = ObserverScreen(
     x⁰_samples;
     c,
 )
+
+# ── γ(τ)/γ₀ trace, sampled through the trajectory INTERPOLANTS rather than the raw ODE
+# solutions: the uniform-saveat CubicSpline is what the radiation kernel actually integrates,
+# so reading γ through it — between knots, at EDM_GAMMA_TRACE_OVERSAMPLE× the knot rate —
+# keeps saveat-undersampling and spline artifacts visible in the trace instead of hidden by
+# the solver's dense output. Emits a small (~MBs) gammatau_<tag>.jls sidecar next to the cube;
+# ll_system_chips.jl overlays the classical|LL pair of traces as a 2-parent comparison
+# product. EDM_GAMMA_TRACE_OVERSAMPLE=0 disables the trace entirely.
+const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
+GAMMA_TRACE_OS >= 0 || error("EDM_GAMMA_TRACE_OVERSAMPLE must be ≥ 0, got $GAMMA_TRACE_OS")
+knot_dt = (2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)
+γτ_grid = GAMMA_TRACE_OS > 0 ? collect(τi:(knot_dt / GAMMA_TRACE_OS):τf) : Float64[]
+
+# One batch: its trajectories plus the host-side products that used to be reduced over the whole
+# ensemble at once. Both reduce exactly across batches (γ: sums and elementwise extrema; window
+# coverage: per-electron records, see merge_window_coverage), and computing them here puts them
+# inside the batch's solve task, where they overlap the previous batch's GPU launches.
+function solve_batch_products(rng)
+    t0 = time()
+    trajs_b = solve_trajectories(rng)
+    @info "trajectories solved" batch = (first(rng), last(rng)) t_trajectories = time() - t0 RELTOL ABSTOL DTMAX knots_per_period = INTERP_SAVEAT
+    # Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
+    # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
+    cov = check_window_coverage(trajs_b, screen)
+    γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, γτ_grid, c, GAMMA, τf) : nothing
+    return (; trajs = trajs_b, cov, γ, n = length(rng))
+end
+
+# Batch 1 is solved BEFORE the field-phase timer starts, so [timing].field keeps measuring the
+# accumulation phase alone (first launch → finished download) as it did in the single-pass path.
+const BATCHES = electron_batch_ranges(N, ELECTRON_BATCH)
+length(BATCHES) > 1 && @info "electron batching" batch = ELECTRON_BATCH n_batches = length(BATCHES) overlap = ELECTRON_BATCH_OVERLAP
+const BATCH1 = Ref{Any}(nothing)   # emptied by run_electron_batches: no global handle on batch 1
+t_batch1 = @elapsed BATCH1[] = solve_batch_products(BATCHES[1])
 
 # Exact field via the split Liénard–Wiechert GPU kernel.
 # Returns (; E, B, E_far, B_far), each (N_samples, 3, Nx, Ny): E, B are the total
@@ -529,29 +544,72 @@ const COEF_REUSE = haskey(ENV, "EDM_COEF_REUSE") ? ENV["EDM_COEF_REUSE"] == "1" 
 # samples (1 = one thread per pixel over every sample; chunks > 1 start from a cold light-cone solve).
 const SAMPLE_CHUNKS = parse(Int, get(ENV, "EDM_SAMPLE_CHUNKS", "1"))
 accum_kw = ACCUM_ALG == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = NSUBSTEPS)
-# Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
-# part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
-window_cov = check_window_coverage(trajs, screen)
+
+# One batch's accumulation. The device buffers persist across the batches (`buffers`), the cube is
+# downloaded once — by the last batch (`finish = true`) — and the batch's host-side products are
+# folded in here. A single-pass run (EDM_ELECTRON_BATCH=0) is one batch, i.e. exactly the old call
+# with `buffers = nothing, finish = true`.
+const FIELD_BUFFERS = Ref{Any}(nothing)
+const COVS = Any[]
+const Γ_SUM = zeros(length(γτ_grid))
+const Γ_LO = fill(Inf, length(γτ_grid))
+const Γ_HI = fill(-Inf, length(γτ_grid))
+const Γ_DRAIN = Float64[]
+function accumulate_batch(bp, b, is_last)
+    push!(COVS, bp.cov)
+    if bp.γ !== nothing
+        γm, γn, γx, γd = bp.γ
+        Γ_SUM .+= γm .* bp.n   # batch means → ensemble mean (÷ N below)
+        Γ_LO .= min.(Γ_LO, γn)
+        Γ_HI .= max.(Γ_HI, γx)
+        append!(Γ_DRAIN, γd)
+    end
+    res = if ndev > 1
+        b == 1 && @info "sharding electrons across $ndev devices"
+        accumulate_field_sharded(
+            bp.trajs, screen, accum_alg, gpu_backend;
+            accum_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
+            reduce = REDUCE, reduce_workers = REDUCE_WORKERS, reduce_stats = REDUCE_STATS,
+            buffers = FIELD_BUFFERS[], finish = is_last
+        )
+    else
+        accumulate_field(
+            bp.trajs, screen, accum_alg, gpu_backend;
+            accum_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
+            buffers = FIELD_BUFFERS[], finish = is_last
+        )
+    end
+    is_last || (FIELD_BUFFERS[] = res)
+    return res
+end
+
+const BATCH_STATS = Ref{Any}(nothing)
 t_field = @elapsed begin
     fld, gpu_telem = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT;
             devices = 1:ndev, tracefile = gputracefile) do
-        if ndev > 1
-            @info "sharding electrons across $ndev devices"
-            accumulate_field_sharded(
-                trajs, screen, accum_alg, gpu_backend;
-                accum_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
-                reduce = REDUCE, reduce_workers = REDUCE_WORKERS, reduce_stats = REDUCE_STATS
-            )
-        else
-            accumulate_field(
-                trajs, screen, accum_alg, gpu_backend;
-                accum_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer
-            )
-        end
+        out, stats = run_electron_batches(BATCHES, solve_batch_products, accumulate_batch;
+            primed = BATCH1, primed_s = t_batch1, overlap = ELECTRON_BATCH_OVERLAP)
+        BATCH_STATS[] = stats
+        out
     end
 end
+FIELD_BUFFERS[] = nothing   # release the device accumulators before the post-processing
+GC.gc()
+# [timing].trajectories is the SUM of the batch solves; trajectories_overlapped how much of it ran
+# behind the GPU. Window coverage is the exact fold of the per-batch checks (electron_batches.jl).
+t_trajectories = BATCH_STATS[].solve_s
+window_cov = merge_window_coverage(COVS)
 t_kernel = try maximum(sum, values(launch_times(launch_timer))) catch; NaN end
-@info "field accumulated" t_field t_kernel ndev
+@info "field accumulated" t_field t_kernel ndev n_batches = BATCH_STATS[].n_batches t_trajectories trajectories_overlapped = BATCH_STATS[].overlapped_s
+
+# γ(τ)/γ₀ sidecar: written after the field phase, since the trace is reduced batch by batch.
+if GAMMA_TRACE_OS > 0
+    gtfile = joinpath(OUTDIR, "gammatau_$(RUN_TAG).jls")
+    serialize(gtfile, (; τs = γτ_grid, γ0 = Float64(GAMMA), ω, τ_pulse = τ,
+        γmean = Γ_SUM ./ N, γmin = Γ_LO, γmax = Γ_HI, drain = Γ_DRAIN,
+        oversample = GAMMA_TRACE_OS, knots_per_period = parse(Float64, INTERP_SAVEAT)))
+    @info "γ(τ)/γ₀ trace serialized" n_τ = length(γτ_grid) mean_drain = sum(Γ_DRAIN) / length(Γ_DRAIN)
+end
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default
@@ -651,6 +709,9 @@ haskey(ENV, "EDM_KEEP_CUBE") && (config["keep_cube"] = ENV["EDM_KEEP_CUBE"] == "
 config["coef_reuse"] = COEF_REUSE
 ndev > 1 && (config["reduce"] = String(REDUCE); config["reduce_workers"] = REDUCE_WORKERS)
 config["sample_chunks"] = SAMPLE_CHUNKS
+# Electrons per solve→accumulate→discard batch (0 = the single-pass path). Bounds the host peak at
+# ≈ batch × spline size + one cube copy instead of N × spline size; see scripts/electron_batches.jl.
+config["electron_batch"] = ELECTRON_BATCH
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
@@ -697,6 +758,8 @@ if ndev > 1   # the sharded reduce's own wall-clock (folds under the lock; final
     timing["reduce_fold"] = REDUCE_STATS.fold_s
     timing["reduce_download"] = REDUCE_STATS.download_s
 end
+# Batched runs: how much of [timing].trajectories (the SUM of the batch solves) ran behind the GPU.
+BATCH_STATS[].n_batches > 1 && (timing["trajectories_overlapped"] = BATCH_STATS[].overlapped_s)
 # Sharding → [sharding] (axis → partition count). Flat + generic so future axes (e.g. a Z-split
 # 3D screen) slot in with no schema change. NOT in [timing] — a device count is not a duration.
 sharding = Dict{String, Any}("electrons" => ndev)
