@@ -645,4 +645,137 @@ end
         @test cc.fp64_mul == 2 && cc.fp64_add == 1 && cc.fp64_contract == 2 && cc.fp32 == 1
         @test :fp64_contract ∉ IR_FP64_CLASSES
     end
+
+    @testset "rocprofv3 counters: CSV parser, normalisation, command wrapper" begin
+        fx = joinpath(@__DIR__, "fixtures", "rocprof")   # trimmed real MI300X collections (3 sets)
+        S = 401 * 401 * 1666   # slots of one dispatch of the fixture cell (pixels × window samples)
+        med = GPUDiagnostics._median
+
+        # CSV: quoted kernel names with commas, bare numbers, RFC 4180 doubled quotes
+        @test GPUDiagnostics._csv_fields("1,\"a, b\",\"x\"\"y\",,3.5") == ["1", "a, b", "x\"y", "", "3.5"]
+        @test GPUDiagnostics._csv_fields("") == [""]
+        @test med([3.0, 1.0, 2.0]) == 2 && med([4.0, 1.0, 2.0, 3.0]) == 2.5 && isnan(med(Float64[]))
+
+        @test_throws ArgumentError rocprof_counters(fx)                      # three collections → name required
+        @test_throws ArgumentError rocprof_counters(joinpath(fx, "nonexistent"))
+        @test_throws ArgumentError rocprof_counters(fx; name = "nosuch")
+        @test_throws ArgumentError rocprof_counters(fx; name = "sq2", kernel = "no_such_kernel")
+        @test_throws ArgumentError rocprof_counters(fx; name = "sq2", kernel = r"gpu__")   # forindices + fma_chain
+        @test_throws ArgumentError rocprof_counters(fx; name = "sq2", slots = 0)
+
+        rc = rocprof_counters(fx; name = "sq2", slots = S)
+        @test rc isa RocprofCounters && rc.name == "sq2" && rc.dir == fx
+        @test startswith(rc.kernel, "gpu__forindices_global_(CompilerMetadata") && occursin(", ", rc.kernel)
+        @test rc.dispatch_ids == [2, 3, 4] && length(rc) == 3
+        @test Set(rc.counters) == Set(ROCPROF_COUNTER_SETS[:sq_issue]) && keys(rc) === rc.counters
+        @test rc["GRBM_GUI_ACTIVE"] == [575399494.0, 570161410.0, 537860558.0]
+        @test rc["SQ_INSTS_VMEM_RD"] == [365118475.0, 365365297.0, 364581971.0]
+        @test haskey(rc, "SQ_INSTS_VALU") && !haskey(rc, "TCC_HIT_sum")
+        @test_throws KeyError rc["TCC_HIT_sum"]
+        @test rc.duration_s ≈ [0.040019311, 0.039977577, 0.040177312]
+        @test rc.resources == (grid_size = 161024, workgroup_size = 256, vgpr_count = 64, agpr_count = 64,
+            sgpr_count = 112, lds_bytes = 0, scratch_bytes = 92)
+        @test rc.device == (name = "gfx942", product = "AMD Instinct MI300X VF", n_cu = 304, n_xcd = 8, n_se = 32,
+            n_simd = 1216, wave_size = 64, max_waves_per_cu = 32)
+        @test rc.slots == S
+        @test [d.id for d in rc.dispatches] == [1, 2, 3, 4, 10] && occursin("initHeap", rc.dispatches[1].kernel)
+        @test rc.dispatches[2].duration_s ≈ 0.040019311   # from the kernel trace
+        @test rocprof_median(rc, "GRBM_GUI_ACTIVE") == 570161410.0
+        @test occursin("3 dispatches of gpu__forindices_global_", sprint(show, rc))
+
+        # kernel selection by substring: the FMA-chain peak probe of the same run
+        fma = rocprof_counters(fx; name = "sq2", kernel = "fma_chain")
+        @test fma.dispatch_ids == [10] && fma.resources.grid_size == 1048576 && fma.resources.vgpr_count == 24
+        @test fma.slots === nothing && length(fma.dispatches) == 5
+
+        # derived: per-slot instruction counts (× wave64 / slots), the die-corrected clock — each
+        # per dispatch, reduced by the median
+        d = rocprof_derived(rc)
+        @test d["insts_per_slot_vmem_rd"] ≈ 365118475 * 64 / S
+        @test d["insts_per_slot_valu"] ≈ med(rc["SQ_INSTS_VALU"]) * 64 / S
+        @test 87 < d["insts_per_slot_vmem_rd"] < 88 && 1100 < d["insts_per_slot_valu"] < 1120
+        @test d["clock_GHz"] ≈ 570161410 / 8 / 0.039977577 / 1e9 && 1.5 < d["clock_GHz"] < 2.2
+        @test !haskey(d, "td_busy") && !haskey(d, "resident_waves") && !haskey(d, "fp64_flop_per_slot")
+        d2 = rocprof_derived(rocprof_counters(fx; name = "sq2", slots = S ÷ 2))
+        @test d2["insts_per_slot_vmem_rd"] ≈ 2 * d["insts_per_slot_vmem_rd"]
+        @test !haskey(rocprof_derived(rocprof_counters(fx; name = "sq2")), "insts_per_slot_vmem_rd")   # no slots
+
+        # unit-busy normalisation: X_BUSY_sum / (GRBM_GUI_ACTIVE / n_xcd × n_cu), per dispatch, median
+        l1 = rocprof_counters(fx; name = "c2a")
+        @test l1.dispatch_ids == [2, 3, 9] && l1.device.n_cu == 304 && l1.device.n_xcd == 8
+        @test [d.id for d in l1.dispatches] == [2, 3, 9]   # no kernel trace → the counter file's dispatches
+        e = rocprof_derived(l1)
+        @test e["td_busy"] ≈ 18225880212 / (544437400 / 8 * 304)    # dispatch 2 is the median of the three
+        @test e["ta_busy"] ≈ med(l1["TA_TA_BUSY_sum"] ./ (l1["GRBM_GUI_ACTIVE"] ./ 8 .* 304))
+        @test e["tcp_pending_stall"] ≈ med(l1["TCP_PENDING_STALL_CYCLES_sum"] ./ (l1["GRBM_GUI_ACTIVE"] ./ 8 .* 304))
+        @test e["l1_miss"] ≈ 1228667602 / 9642135941
+        @test 0.85 < e["td_busy"] < 0.9 && 0.5 < e["ta_busy"] < 0.56 && 0.12 < e["l1_miss"] < 0.13
+        # explicit device values override the agent info: die-summed cycles (n_xcd = 1) give 1/8 of
+        # the fraction; 38 CUs per die with n_xcd = 1 is the same number as 304 CUs with n_xcd = 8
+        e1 = rocprof_derived(rocprof_counters(fx; name = "c2a", n_xcd = 1))
+        @test e1["td_busy"] ≈ e["td_busy"] / 8 && e1["clock_GHz"] ≈ 8 * e["clock_GHz"]
+        @test rocprof_derived(rocprof_counters(fx; name = "c2a", n_cu = 38, n_xcd = 1))["td_busy"] ≈ e["td_busy"]
+
+        # wave residency: quad-cycle SQ counters (×4); no agent info → device values from the caller
+        w0 = rocprof_counters(fx; name = "sq1")
+        @test w0.device.n_cu == 0 && w0.device.name == "" && w0.dispatch_ids == [2, 3]
+        @test_throws ArgumentError rocprof_derived(w0)      # n_xcd unknown
+        w = rocprof_counters(fx; name = "sq1", n_cu = 304, n_xcd = 8, wave_size = 64)
+        f = rocprof_derived(w)
+        @test f["resident_waves"] ≈ med(4 .* w["SQ_WAVE_CYCLES"] ./ (w["GRBM_GUI_ACTIVE"] ./ 8))
+        @test 2190 < f["resident_waves"] < 2200 && f["waves_per_cu"] ≈ f["resident_waves"] / 304
+        @test f["wave_wait_frac"] ≈ med(w["SQ_WAIT_ANY"] ./ w["SQ_WAVE_CYCLES"]) && 0.8 < f["wave_wait_frac"] < 0.81
+        @test f["wave_active_inst_frac"] ≈ med(w["SQ_ACTIVE_INST_ANY"] ./ w["SQ_WAVE_CYCLES"])
+        @test f["wave_active_valu_frac"] < f["wave_active_inst_frac"] < 0.2
+        @test f["wave_wait_inst_frac"] ≈ med(w["SQ_WAIT_INST_ANY"] ./ w["SQ_WAVE_CYCLES"])
+        @test f["wave_cycles"] ≈ (4 * 39699968966 / 2516 + 4 * 39290248983 / 2516) / 2
+        @test !haskey(f, "occupancy") && !haskey(f, "sq_busy")   # need max_waves_per_cu / n_se (agent info)
+        td = mktempdir()   # the same collection with an agent file: single collection → name discovered
+        cp(joinpath(fx, "sq1_counter_collection.csv"), joinpath(td, "sq1_counter_collection.csv"))
+        cp(joinpath(fx, "sq2_agent_info.csv"), joinpath(td, "sq1_agent_info.csv"))
+        wa = rocprof_counters(td)
+        @test wa.name == "sq1" && wa.device.n_cu == 304 && wa.device.max_waves_per_cu == 32 && wa.device.n_se == 32
+        fa = rocprof_derived(wa)
+        @test fa["occupancy"] ≈ fa["waves_per_cu"] / 32 && 0.2 < fa["occupancy"] < 0.25
+        @test fa["sq_busy"] ≈ med(wa["SQ_BUSY_CYCLES"] ./ (wa["GRBM_GUI_ACTIVE"] ./ 8 .* 32)) && 0.9 < fa["sq_busy"] < 1
+        @test fa["resident_waves"] ≈ f["resident_waves"]
+
+        # summary + manifest section: flat, prefixed, TOML-serialisable
+        s = rocprof_summary(rc)
+        @test s["kernel"] == "gpu__forindices_global_" && s["dispatches"] == 3 && s["slots"] == S
+        @test s["dispatch_median_s"] ≈ 0.040019311 && s["dispatch_min_s"] ≈ 0.039977577 && s["dispatch_max_s"] ≈ 0.040177312
+        @test s["dispatch_total_s"] ≈ sum(rc.duration_s)
+        @test s["grid_size"] == 161024 && s["vgpr_count"] == 64 && s["scratch_bytes"] == 92
+        @test s["device"] == "AMD Instinct MI300X VF" && s["n_cu"] == 304 && s["n_xcd"] == 8 && s["wave_size"] == 64
+        @test s["SQ_INSTS_SMEM_median"] == 110575.0 && s["SQ_INSTS_SMEM_rel_spread"] == 0
+        @test s["GRBM_GUI_ACTIVE_median"] == 570161410.0 && s["GRBM_GUI_ACTIVE_rel_spread"] ≈ (575399494 - 537860558) / 570161410
+        @test s["insts_per_slot_vmem_rd"] == d["insts_per_slot_vmem_rd"] && s["counters"] == rc.counters
+        @test_throws ArgumentError rocprof_summary(w0)   # the summary carries the derived metrics
+        @test !haskey(rocprof_summary(rocprof_counters(fx; name = "sq1", n_xcd = 8)), "n_cu")   # unknown device values are omitted
+        ms = rocprof_manifest_section(fx; name = "sq2", slots = S)
+        @test ms["rocprof_insts_per_slot_vmem_rd"] == d["insts_per_slot_vmem_rd"] && ms["rocprof_dispatches"] == 3
+        @test all(startswith(k, "rocprof_") for k in keys(ms))
+        @test all(v isa Union{Real, String, Vector{String}} for v in values(ms))
+        @test rocprof_manifest_section(fx; name = "c2a", prefix = "hw_")["hw_td_busy"] ≈ e["td_busy"]
+
+        # the wrapper: timeout -k, rocprofv3 flags, counters from a set or a list, env/dir preserved
+        @test rocprof_available() == (Sys.which("rocprofv3") !== nothing)
+        c = rocprof_command(`julia -e 1`; counters = :sq_waves, dir = "/tmp/out", name = "cell")
+        @test c.exec[1:6] == ["timeout", "-k", "20", "600", "rocprofv3", "--kernel-trace"]
+        @test c.exec[7] == "--pmc" && c.exec[8:15] == ROCPROF_COUNTER_SETS[:sq_waves]
+        @test c.exec[16:end] == ["--output-format", "csv", "-d", "/tmp/out", "-o", "cell", "--", "julia", "-e", "1"]
+        @test c.env === nothing && c.dir == ""
+        c2 = rocprof_command(setenv(`env FOO=1 julia -e 1`, ["A=1"]; dir = "/tmp"); counters = ["TCC_HIT_sum", "TCC_MISS_sum"],
+            dir = "o", name = "n", timeout_s = 120, kill_after_s = 5, kernel_trace = false, rocprofv3 = "/opt/rocm/bin/rocprofv3")
+        @test c2.env == ["A=1"] && c2.dir == "/tmp" && c2.exec[1:5] == ["timeout", "-k", "5", "120", "/opt/rocm/bin/rocprofv3"]
+        @test "--kernel-trace" ∉ c2.exec && c2.exec[6:8] == ["--pmc", "TCC_HIT_sum", "TCC_MISS_sum"]
+        @test c2.exec[(end - 5):end] == ["--", "env", "FOO=1", "julia", "-e", "1"]
+        @test_throws ArgumentError rocprof_command(`julia`; counters = :nosuch, dir = "o", name = "n")
+        @test_throws ArgumentError rocprof_command(`julia`; counters = String[], dir = "o", name = "n")
+        @test_throws ArgumentError rocprof_command(`julia`; counters = :fp64, dir = "o", name = "")
+        @test_throws ArgumentError rocprof_command(`julia`; counters = :fp64, dir = "o", name = "n", timeout_s = 0)
+        # every named set carries GRBM_GUI_ACTIVE (the cycle base of the derived metrics) and fits one pass
+        @test all(("GRBM_GUI_ACTIVE" in v) && length(v) <= 8 for v in values(ROCPROF_COUNTER_SETS))
+        @test Set(keys(ROCPROF_COUNTER_SETS)) ⊇ Set([:sq_issue, :sq_waves, :l1_pipe, :fp64, :l2])
+    end
 end
