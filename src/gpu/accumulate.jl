@@ -187,9 +187,11 @@ function _download_permuted(buf::AbstractArray{T, 4}; backend = nothing, dev::In
     @sync for _ in 1:min(workers, length(starts))
         Threads.@spawn begin
             gpu_device!(backend, dev)
-            stage = Array{T}(undef, slab * chunk)
+            # `local`: the serial branch above binds a function-level `stage`; without it every
+            # worker would assign that one shared (boxed) variable and race on a single slab.
+            local mystage = Array{T}(undef, slab * chunk)
             for k0 in queue
-                permute_chunk!(stage, k0)
+                permute_chunk!(mystage, k0)
             end
         end
     end
