@@ -1,6 +1,7 @@
 using ElectronDynamicsModels
-using ElectronDynamicsModels: GPUCubicSpline, _searchsorted_left,
+using ElectronDynamicsModels: GPUCubicSpline, _searchsorted_left, _eval_at,
     advanced_time, retarded_time_rhs
+using Random
 using DataInterpolations
 using StaticArrays
 using Test
@@ -24,6 +25,52 @@ using OrdinaryDiffEqTsit5
 
         # Edge: just past first knot
         @test _searchsorted_left(t, 1.001) == 1
+    end
+
+    @testset "warm-started _searchsorted_left == plain search" begin
+        rng = MersenneTwister(20260908)
+        for _ in 1:200
+            N = rand(rng, 2:60)
+            # sorted knots, uniform or not, sometimes with duplicates
+            t = sort(rand(rng, Bool) ? rand(rng, N) .* 10 : round.(rand(rng, N) .* 10; digits = 1))
+            for _ in 1:200
+                x = rand(rng, (-1.0, 11.0, rand(rng) * 12 - 1, t[rand(rng, 1:N)], t[rand(rng, 1:N)] + eps()))
+                g = rand(rng, -2:(N + 2))   # out-of-range guesses are clamped
+                @test _searchsorted_left(t, x, g) == _searchsorted_left(t, x)
+            end
+        end
+        # a monotone walk, the kernels' access pattern
+        t = collect(range(0.0, 1.0; length = 1001))
+        idx = 1
+        for x in range(-0.1, 1.1; length = 5000)
+            idx = _searchsorted_left(t, x, idx)
+            @test idx == _searchsorted_left(t, x)
+        end
+        # spline evaluation through a guess is bit-identical to the cold evaluation
+        ts = collect(range(0.0, 10.0; length = 50))
+        us = [SVector{8}(sin(τ), cos(τ), τ^2 / 100, τ, cos(2τ), sin(2τ), exp(-τ / 10), 1.0 + τ / 10) for τ in ts]
+        sp = GPUCubicSpline(CubicSpline(us, ts; extrapolation = DataInterpolations.ExtrapolationType.Extension))
+        for τ in range(-0.5, 10.5; length = 300), g in (1, 7, 25, 49, 60)
+            v, i = sp(τ, g)
+            @test i == _searchsorted_left(sp.t, τ)
+            @test v === sp(τ)
+            @test _eval_at(sp, τ, i) === sp(τ)
+        end
+    end
+
+    @testset "to_gpu rejects an acceleration spline on other knots" begin
+        ts = collect(range(0.0, 10.0; length = 40))
+        us = [SVector{8}(sin(t), cos(t), t, 0.0, -sin(t), -cos(t), 1.0, 0.0) for t in ts]
+        as = [SVector{4}(cos(t), -sin(t), 0.0, 0.0) for t in ts]
+        E = DataInterpolations.ExtrapolationType.Extension
+        itp = CubicSpline(us, ts; extrapolation = E)
+        same = CubicSpline(as, ts; extrapolation = E)
+        other = CubicSpline(as[1:2:end], ts[1:2:end]; extrapolation = E)
+        x_idxs = SVector{4, Int}(1, 2, 3, 4)
+        u_idxs = SVector{4, Int}(5, 6, 7, 8)
+        gt = ElectronDynamicsModels.to_gpu(TrajectoryInterpolant(itp, same, x_idxs, u_idxs, 1.0); with_acceleration = true)
+        @test gt isa TrajectoryInterpolant
+        @test_throws ArgumentError ElectronDynamicsModels.to_gpu(TrajectoryInterpolant(itp, other, x_idxs, u_idxs, 1.0); with_acceleration = true)
     end
 
     @testset "GPUCubicSpline accuracy" begin

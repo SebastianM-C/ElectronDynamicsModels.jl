@@ -63,8 +63,8 @@ struct GPUKernelNewton end
 # `to_gpu` guarantees the canonical order. Indexing through the runtime `x_idxs`/`u_idxs`
 # vectors forced the SVector{8} into a private array (scratch, and on AMD a 64 KB LDS
 # reservation via promote-alloca that capped residency at one workgroup per WGP).
-@muladd @inline function _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
-    v = gpu_traj.itp(τ)
+@muladd @inline function _lightcone_eval(τ, gpu_traj, r_obs, tₖ, idx)
+    v, idx = gpu_traj.itp(τ, idx)   # warm-started knot search: idx = interval of the previous eval
     x⁰ = v[1] # x⁰(τ)
     x³ = v[4] # x³(τ)
     d¹ = r_obs[1] - v[2]
@@ -91,8 +91,11 @@ struct GPUKernelNewton end
     rhs = r_norm / xr_dot_u
     # f = tₖ − ψ(τ) − ρ²/(R + d³)  ≡  x⁰_k − x⁰(τ) − R  with  x⁰_k = z_screen + tₖ
     f = tₖ - ψ - screen_dist
-    return v, f, rhs, r_norm, d¹, d², d³
+    return v, f, rhs, r_norm, d¹, d², d³, idx
 end
+
+# Cold-start form (host diagnostics, scripts, tests): same values, search from the first interval.
+_lightcone_eval(τ, gpu_traj, r_obs, tₖ) = Base.front(_lightcone_eval(τ, gpu_traj, r_obs, tₖ, 1))
 
 # Pixel arrival-window edge in screen-relative offsets — the light-front
 # spelling of x⁰(τ) + R − z_screen — plus the Doppler factor 1/(u⁰ − n̂·u⃗)
@@ -127,18 +130,18 @@ end
 # (guaranteed progress: the enclosure halves).  Fixed trip count + branchless
 # select keep warp lockstep.  Returns the converged eval so the caller's
 # payload (potential or field write) reuses it with zero extra spline evals.
-@muladd @inline function _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters)
+@muladd @inline function _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx)
     hi = τf   # the upper bound does not survive the target moving up: rebuilt per slot
     τ = clamp(τ + Δ * rhs, τi, τf)
-    v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
+    v, f, rhs, r_norm, d¹, d², d³, idx = _lightcone_eval(τ, gpu_traj, r_obs, tₖ, idx)
     f > 0 ? (lo = max(lo, τ)) : (hi = min(hi, τ))
     for _ in 1:n_iters
         prop = τ + f * rhs   # Newton proposal (tangent zero-crossing)
         τ = ifelse((prop < lo) | (prop > hi), (lo + hi) / 2, prop)
-        v, f, rhs, r_norm, d¹, d², d³ = _lightcone_eval(τ, gpu_traj, r_obs, tₖ)
+        v, f, rhs, r_norm, d¹, d², d³, idx = _lightcone_eval(τ, gpu_traj, r_obs, tₖ, idx)
         f > 0 ? (lo = max(lo, τ)) : (hi = min(hi, τ))
     end
-    return τ, lo, v, f, rhs, r_norm, d¹, d², d³
+    return τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx
 end
 
 # Per-electron AK.foreachindex pass over (Nx × Ny) pixels; same closure pattern
@@ -187,10 +190,13 @@ function _gpu_newton_one_electron!(
         # it lower-bounds every later root too (targets increase along k) —
         # carried across slots, the one extra live register.
         lo = τi
+        # Spline interval of the previous evaluation: the warm start of the knot search
+        # (see _searchsorted_left). Bit-identical to a cold search; saves its dependent loads.
+        idx = 1
 
         for k in k_start:k_end
-            τ, lo, v, f, rhs, r_norm, d¹, d², d³ =
-                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters)
+            τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx =
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx)
 
             # Accumulate from the last residual eval — zero extra spline evals.
             coeff = K * rhs / r_norm   # = K / m_dot(xr, uμ)
@@ -315,14 +321,17 @@ function _gpu_newton_field_one_electron!(
 
         # Bracket lower bound (see _bracketed_slot_solve) — carried across slots.
         lo = τi
+        # Spline interval of the previous evaluation: the warm start of the knot search
+        # (see _searchsorted_left). Bit-identical to a cold search; saves its dependent loads.
+        idx = 1
 
         for k in k_start:k_end
-            τ, lo, v, f, rhs, r_norm, d¹, d², d³ =
-                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters)
+            τ, lo, v, f, rhs, r_norm, d¹, d², d³, idx =
+                _bracketed_slot_solve(τ, Δ, rhs, lo, gpu_traj, r_obs, tₖ, τi, τf, n_iters, idx)
 
             # Field write from the converged eval (X reuses r_norm and d).
             uμ = SVector{4}(v[5], v[6], v[7], v[8])
-            𝔞μ = gpu_traj.a_itp(τ)
+            𝔞μ = _eval_at(gpu_traj.a_itp, τ, idx)   # same knots as itp (checked in to_gpu): reuse the interval
             X = SVector{4}(r_norm, d¹, d², d³)
             F_near, F_far = lienard_wiechert_F_split(X, uμ, 𝔞μ, K, c)
             E_near, B_near = extract_EB(F_near, c)
