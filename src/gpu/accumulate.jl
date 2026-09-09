@@ -143,7 +143,7 @@ function _gpu_accumulate_kernel!(gpu_traj, screen, τ_all_cpu, τ_buf, A_buf, ba
 end
 
 """
-    _download_permuted(buf) -> Array{T,4}
+    _download_permuted(buf; backend = nothing, dev = 0, workers = 1) -> Array{T,4}
 
 Download an accumulation buffer laid out `[ix, iy, μ, k]` (pixel-fastest for coalesced
 device writes; observer slot `k` slowest) into the cube layout `[k, μ, ix, iy]` without a
@@ -154,21 +154,44 @@ linear indices, cudaError 700). Downloading contiguous `k`-chunks through the li
 `copyto!` DMA path and `permutedims!`-ing each into a view of the preallocated cube keeps
 the host peak at ~(1 + 1/16)× cube; device memory and kernels are untouched, and every
 transfer stays far below 2³¹ elements. Works unchanged on the CPU backend (`buf::Array`).
+
+`workers > 1` spreads the 16 chunks over that many tasks, each with its own staging slab
+(host peak ~(1 + workers/16)× cube): the download DMA and the single-threaded
+`permutedims!` of the chunks then overlap. The tasks pin themselves to `dev` through
+`gpu_device!(backend, dev)`, so `backend` and `dev` are required for that path.
 """
-function _download_permuted(buf::AbstractArray{T, 4}) where {T}
+function _download_permuted(buf::AbstractArray{T, 4}; backend = nothing, dev::Integer = 0,
+        workers::Integer = 1) where {T}
     Nx, Ny, M, K = size(buf)
     out = Array{T, 4}(undef, K, M, Nx, Ny)
     chunk = max(1, cld(K, 16))
-    stage = Array{T}(undef, Nx * Ny * M * chunk)
     bufv = vec(buf)
     slab = Nx * Ny * M
-    for k0 in 1:chunk:K
+    starts = collect(1:chunk:K)
+    permute_chunk!(stage, k0) = begin
         nk = min(chunk, K - k0 + 1)
         copyto!(stage, 1, bufv, (k0 - 1) * slab + 1, nk * slab)
         permutedims!(
             view(out, k0:(k0 + nk - 1), :, :, :),
             reshape(view(stage, 1:(nk * slab)), Nx, Ny, M, nk), (4, 3, 1, 2),
         )
+    end
+    if workers <= 1 || length(starts) == 1 || backend === nothing
+        stage = Array{T}(undef, slab * chunk)
+        foreach(k0 -> permute_chunk!(stage, k0), starts)
+        return out
+    end
+    queue = Channel{Int}(length(starts))
+    foreach(k0 -> put!(queue, k0), starts)
+    close(queue)
+    @sync for _ in 1:min(workers, length(starts))
+        Threads.@spawn begin
+            gpu_device!(backend, dev)
+            stage = Array{T}(undef, slab * chunk)
+            for k0 in queue
+                permute_chunk!(stage, k0)
+            end
+        end
     end
     return out
 end
@@ -209,18 +232,20 @@ end
 # return; a callable ⇒ it receives `(E1, B1, E2, B2, mode)` device buffers while they are
 # still alive and its return value is what `accumulate_field` returns (the sharded driver
 # passes a sink that locks and `_add_fields!`s, so partials never coexist on the host).
-function _collect_fields(E1_buf, B1_buf, E2_buf, B2_buf, mode::Val)
+function _collect_fields(E1_buf, B1_buf, E2_buf, B2_buf, mode::Val; backend = nothing, dev::Integer = 0,
+        workers::Integer = 1)
+    dl(buf) = _download_permuted(buf; backend, dev, workers)
     if mode == Val(:split)
-        E_far = _download_permuted(E1_buf)
-        B_far = _download_permuted(B1_buf)
-        E_near = _download_permuted(E2_buf)
-        B_near = _download_permuted(B2_buf)
+        E_far = dl(E1_buf)
+        B_far = dl(B1_buf)
+        E_near = dl(E2_buf)
+        B_near = dl(B2_buf)
         E = E_far .+ E_near
         B = B_far .+ B_near
         return (; E, B, E_far, B_far)
     else
-        E = _download_permuted(E1_buf)
-        B = _download_permuted(B1_buf)
+        E = dl(E1_buf)
+        B = dl(B1_buf)
         return (; E, B)
     end
 end

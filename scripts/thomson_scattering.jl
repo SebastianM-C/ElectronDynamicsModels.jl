@@ -256,6 +256,11 @@ screen = ObserverScreen(
 # Multi-GPU: when >1 device is visible (e.g. SLURM --gres=gpu:h200:2) shard the electrons across
 # them — linear superposition ⇒ the summed partials are exact; one device ⇒ the plain path.
 ndev = gpu_device_count(gpu_backend)
+# Multi-device reduce (ndev > 1 only): EDM_REDUCE=device sums the partials on the GPUs and downloads
+# one cube (default); =host is the streamed host reduce. EDM_REDUCE_WORKERS threads permute the
+# final download (each holds a 1/16-cube staging slab).
+const REDUCE = Symbol(get(ENV, "EDM_REDUCE", "device"))
+const REDUCE_WORKERS = parse(Int, get(ENV, "EDM_REDUCE_WORKERS", "4"))
 # Retarded-time solver: sentinel alg + its accuracy kwarg (rk4 marches between slots with
 # n_substeps; newton root-solves each slot with n_iters warm-started corrections).
 solver_alg = GPU_SOLVER == "newton" ? GPUKernelNewton() : GPUKernelRK4()
@@ -278,7 +283,8 @@ t_field = @elapsed begin
             @info "sharding electrons across $ndev devices"
             accumulate_field_sharded(
                 trajs, screen, solver_alg, gpu_backend;
-                solver_kw..., coef_reuse = Val(COEF_REUSE), mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer
+                solver_kw..., coef_reuse = Val(COEF_REUSE), mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
+                reduce = REDUCE, reduce_workers = REDUCE_WORKERS
             )
         else
             accumulate_field(
@@ -348,6 +354,7 @@ config = config_dict(resolved_spec)
 # knob, not a replay input.
 haskey(ENV, "EDM_KEEP_CUBE") && (config["keep_cube"] = ENV["EDM_KEEP_CUBE"] == "1")
 config["coef_reuse"] = COEF_REUSE
+ndev > 1 && (config["reduce"] = String(REDUCE); config["reduce_workers"] = REDUCE_WORKERS)
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),

@@ -320,15 +320,31 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         for (alg, kw) in ((GPUKernelRK4(), (; n_substeps = 2)), (GPUKernelNewton(), (; n_iters = 2))),
                 mode in (Val(:split), Val(:total))
             one = accumulate_field(trajs, screen, alg, CPU(); mode, kw...)
-            shd = accumulate_field_sharded(trajs, screen, alg, CPU(); devices = [1, 1], mode, kw...)
-            @test propertynames(shd) == propertynames(one)
-            for k in propertynames(one)
-                @test size(getproperty(shd, k)) == size(getproperty(one, k))
-                @test rel_l2(getproperty(shd, k), getproperty(one, k)) < 1.0e-12
+            # both reduces: on the "device" (the one CPU device folds the second shard into the
+            # first shard's buffers, then one threaded download) and streamed through the host
+            for reduce in (:device, :host)
+                shd = accumulate_field_sharded(trajs, screen, alg, CPU(); devices = [1, 1], mode, reduce,
+                    reduce_workers = 2, kw...)
+                @test propertynames(shd) == propertynames(one)
+                for k in propertynames(one)
+                    @test size(getproperty(shd, k)) == size(getproperty(one, k))
+                    @test rel_l2(getproperty(shd, k), getproperty(one, k)) < 1.0e-12
+                end
             end
+            @test_throws ArgumentError accumulate_field_sharded(trajs, screen, alg, CPU(); devices = [1, 1], mode, reduce = :nope, kw...)
             # a single shard must be the plain path bit-for-bit
             solo = accumulate_field_sharded(trajs, screen, alg, CPU(); devices = [1], mode, kw...)
             @test all(k -> getproperty(solo, k) == getproperty(one, k), propertynames(one))
+        end
+        # the device-side fold and the threaded permuted download, on plain arrays
+        let buf = rand(5, 4, 3, 40), part = rand(5, 4, 3, 40)
+            ref = permutedims(buf .+ part, (4, 3, 1, 2))
+            acc = copy(buf)
+            @test ElectronDynamicsModels._device_add!(CPU(), 1, acc, part) === acc
+            @test acc == buf .+ part
+            @test ElectronDynamicsModels._download_permuted(acc) == ref
+            @test ElectronDynamicsModels._download_permuted(acc; backend = CPU(), dev = 1, workers = 3) == ref
+            @test_throws DimensionMismatch ElectronDynamicsModels._device_add!(CPU(), 1, acc, part[:, :, :, 1:2])
         end
         @test ElectronDynamicsModels._shard_indices(5, 2) == [1:3, 4:5]
         @test ElectronDynamicsModels._shard_indices(2, 3) == [1:1, 2:2]   # empty shards dropped
