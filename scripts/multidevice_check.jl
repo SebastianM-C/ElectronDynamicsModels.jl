@@ -3,8 +3,9 @@
 # serial one, (3) accumulate_field_sharded over devices [1, 2] against the single-device call, both reduces.
 # Runs as a campaign "cell" (orchestration/campaigns/multidevice_check.sh) or directly:
 #   EDM_GPU_BACKEND=cuda julia -t 4 --project=scripts scripts/multidevice_check.jl
-using ElectronDynamicsModels, GPUDiagnostics, StaticArrays, DataInterpolations, LinearAlgebra, Random
+using ElectronDynamicsModels, GPUDiagnostics, StaticArrays, DataInterpolations, LinearAlgebra
 const EDM = ElectronDynamicsModels
+const KA = ElectronDynamicsModels.KernelAbstractions   # not a direct dependency of the scripts env
 const GPU_BACKEND = lowercase(get(ENV, "EDM_GPU_BACKEND", "cuda"))
 if GPU_BACKEND == "cuda"
     using CUDA; const backend = CUDA.CUDABackend(; always_inline = true)
@@ -13,13 +14,11 @@ elseif GPU_BACKEND == "rocm"
 else
     error("EDM_GPU_BACKEND must be cuda or rocm")
 end
-import KernelAbstractions as KA
 nd = gpu_device_count(backend)
 println("devices: $nd  threads: $(Threads.nthreads())")
 nd >= 2 || error("multidevice_check needs ≥ 2 visible devices")
 fails = 0
 report(name, ok, detail) = (global fails += ok ? 0 : 1; println(rpad(name, 52), ok ? "OK   " : "FAIL ", detail))
-Random.seed!(1)
 # (1) device add across devices
 gpu_device!(backend, 1); a_h = rand(64, 48, 3, 70); a = KA.allocate(backend, Float64, size(a_h)); copyto!(a, a_h)
 gpu_device!(backend, 2); b_h = rand(64, 48, 3, 70); b = KA.allocate(backend, Float64, size(b_h)); copyto!(b, b_h)
