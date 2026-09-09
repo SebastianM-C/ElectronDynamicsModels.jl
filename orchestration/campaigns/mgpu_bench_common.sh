@@ -19,10 +19,20 @@
 # EDM_SWEEP. See orchestration/README.md § "Multi-GPU lanes" for the launch sequence.
 CAMPAIGN=mgpu_bench
 SCRIPT=scripts/inverse_thomson_scattering.jl
-KEEP_CUBE=1          # cubes archived by the R2 drainer (the N=16000 maps are the physics product)
+# Rerun (2026-09-09): field-only timing on the optimized kernels — the physics products exist from the
+# first run (2026-09-04/05), so no post-processing, no cube retention; Newton n=2 replaces the RK4 march
+# (bit-identical stages, harmonic maps within 2e-4 of RK4 at the strong cell). Register cache OFF on
+# Hopper (160 registers ⇒ one block per SM, H100 NVL 54.9 → 59.8 ms). Observer-sample chunks per cell
+# shape from the round model with R = 132 SMs × 2 blocks = 264 resident blocks per device: 401² (629
+# blocks) → C = 5 (11.9 → 12 rounds), 601² (1411 blocks) → C = 5 (26.7 → 27), 1101² (4734 blocks, 17.9 →
+# 18 rounds already) → C = 1.
+KEEP_CUBE=0
+REDUCE_OVERLAP=0   # field-only: no background post-processing of the cubes on the pod (its config defaults to 1)
 BASE=(
   EDM_NX=601 EDM_FIELD_MODE=total
   EDM_N=2000 EDM_NSUBSTEPS=1 EDM_RELTOL=1e-13
+  EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_COEF_REUSE=0 EDM_SAMPLE_CHUNKS=5
+  EDM_SKIP_POSTPROCESS=1 EDM_REDUCE=device EDM_REDUCE_WORKERS=4
   EDM_A0=0.3
   EDM_INTERP_SAVEAT=16
   EDM_INITIAL_PHASE=-1.5707963267948966
@@ -34,4 +44,4 @@ BASE=(
 WEAK="EDM_GAMMA_EPS=2.5 EDM_SPP=256 EDM_TSPAN_TAU=4.571428571428571 EDM_SCREEN_HW=7.0 EDM_HARMONICS=46.5735,46.9788,92.8386,93.9576 EDM_SWEEP=mgpu_weak"
 # γ=5 rung (rest_departure_bridge e4e0) at the corrected screen; harmonics = that run's {n_ps, n_th, 2n_ps, 2n_th}
 STRONG="EDM_GAMMA_EPS=4 EDM_SPP=512 EDM_TSPAN_TAU=3.2 EDM_SCREEN_HW=3.0 EDM_NX=401 EDM_N=16000 EDM_HARMONICS=97.1395,98,193.6813,196 EDM_SWEEP=mgpu_strong"
-CAPACITY="EDM_GAMMA_EPS=2.5 EDM_SPP=256 EDM_TSPAN_TAU=4.571428571428571 EDM_SCREEN_HW=7.0 EDM_HARMONICS=46.5735,46.9788,92.8386,93.9576 EDM_NX=1101 EDM_N=2000 EDM_SWEEP=mgpu_capacity"
+CAPACITY="EDM_GAMMA_EPS=2.5 EDM_SPP=256 EDM_TSPAN_TAU=4.571428571428571 EDM_SCREEN_HW=7.0 EDM_HARMONICS=46.5735,46.9788,92.8386,93.9576 EDM_NX=1101 EDM_N=2000 EDM_SWEEP=mgpu_capacity EDM_SAMPLE_CHUNKS=1"
