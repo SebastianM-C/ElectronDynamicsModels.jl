@@ -65,9 +65,11 @@ budget at the kernels' occupancy is 64 architectural + 64 accumulation registers
 W7900, 155 on the 5090 (one block per SM instead of two). RK4 holds the interval across four
 stages and spills 646 registers on the MI300X (85 ms against 50), so the cache is a loss there.
 
-**Default policy in the solver scripts.** `EDM_COEF_REUSE` unset ⇒ on for the Newton kernel,
-off for RK4; `EDM_COEF_REUSE=1|0` forces it either way. The manifest records the value under
-`[config] coef_reuse`. The library kwarg defaults to `Val(false)`.
+**Default policy in the solver scripts.** `EDM_COEF_REUSE` unset ⇒ on for the Newton kernel on
+the ROCm backend only, off otherwise: on Hopper the cached kernel needs 160 registers, which
+halves the resident blocks per SM and costs more than the loads it saves (H100 NVL 54.9 → 59.8 ms
+at the benchmark cell), and RK4 spills on gfx942. `EDM_COEF_REUSE=1|0` forces it either way. The
+manifest records the value under `[config] coef_reuse`. The library kwarg defaults to `Val(false)`.
 
 ## What the kernels do with it
 

@@ -520,8 +520,10 @@ launch_timer = LaunchTimer()
 kerneltimesfile = joinpath(OUTDIR, "kerneltimes_$(RUN_TAG).tsv")
 accum_alg = ACCUM_ALG == "newton" ? GPUKernelNewton() : GPUKernelRK4()
 # Register-cached spline interval across a slot's evaluations (bit-identical; manual: "The device
-# spline"). Unset ⇒ on for the Newton kernel, off for RK4 (which spills on gfx942); "1"/"0" forces it.
-const COEF_REUSE = haskey(ENV, "EDM_COEF_REUSE") ? ENV["EDM_COEF_REUSE"] == "1" : ACCUM_ALG == "newton"
+# spline"). Unset ⇒ on for the Newton kernel on the ROCm backend only: it gains 1.13× on the MI300X
+# and 1.11× on the W7900, but on Hopper the extra registers halve the resident blocks (H100 NVL
+# 54.9 → 59.8 ms) and RK4 spills on gfx942; "1"/"0" forces it either way.
+const COEF_REUSE = haskey(ENV, "EDM_COEF_REUSE") ? ENV["EDM_COEF_REUSE"] == "1" : (ACCUM_ALG == "newton" && GPU_BACKEND == "rocm")
 # Launch shape: threads = pixels × EDM_SAMPLE_CHUNKS, each walking a slice of its pixel's observer
 # samples (1 = one thread per pixel over every sample; chunks > 1 start from a cold light-cone solve).
 const SAMPLE_CHUNKS = parse(Int, get(ENV, "EDM_SAMPLE_CHUNKS", "1"))
