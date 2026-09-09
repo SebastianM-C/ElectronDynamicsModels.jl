@@ -266,6 +266,7 @@ ndev = gpu_device_count(gpu_backend)
 # final download (each holds a 1/16-cube staging slab).
 const REDUCE = Symbol(get(ENV, "EDM_REDUCE", "device"))
 const REDUCE_WORKERS = parse(Int, get(ENV, "EDM_REDUCE_WORKERS", "4"))
+const REDUCE_STATS = ReduceStats()   # wall-clock of the folds + the final download → [timing] reduce_*
 # Retarded-time solver: sentinel alg + its accuracy kwarg (rk4 marches between slots with
 # n_substeps; newton root-solves each slot with n_iters warm-started corrections).
 solver_alg = GPU_SOLVER == "newton" ? GPUKernelNewton() : GPUKernelRK4()
@@ -289,7 +290,7 @@ t_field = @elapsed begin
             accumulate_field_sharded(
                 trajs, screen, solver_alg, gpu_backend;
                 solver_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
-                reduce = REDUCE, reduce_workers = REDUCE_WORKERS
+                reduce = REDUCE, reduce_workers = REDUCE_WORKERS, reduce_stats = REDUCE_STATS
             )
         else
             accumulate_field(
@@ -405,6 +406,10 @@ timing = Dict{String, Any}(
     "trajectories" => t_trajectories,
     "field" => t_field,
 )
+if ndev > 1   # the sharded reduce's own wall-clock (folds under the lock; final download + permute)
+    timing["reduce_fold"] = REDUCE_STATS.fold_s
+    timing["reduce_download"] = REDUCE_STATS.download_s
+end
 # Sharding → [sharding] (axis → partition count). Flat + generic so future axes (e.g. a Z-split
 # 3D screen) slot in with no schema change. NOT in [timing] — a device count is not a duration.
 sharding = Dict{String, Any}("electrons" => ndev)

@@ -323,8 +323,10 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
             # both reduces: on the "device" (the one CPU device folds the second shard into the
             # first shard's buffers, then one threaded download) and streamed through the host
             for reduce in (:device, :host)
+                stats = ReduceStats()
                 shd = accumulate_field_sharded(trajs, screen, alg, CPU(); devices = [1, 1], mode, reduce,
-                    reduce_workers = 2, kw...)
+                    reduce_workers = 2, reduce_stats = stats, kw...)
+                @test stats.n_folds == 1 && stats.fold_s > 0 && stats.download_s > 0
                 @test propertynames(shd) == propertynames(one)
                 for k in propertynames(one)
                     @test size(getproperty(shd, k)) == size(getproperty(one, k))

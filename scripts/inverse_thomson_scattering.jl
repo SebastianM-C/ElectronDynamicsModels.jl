@@ -510,6 +510,7 @@ ndev = gpu_device_count(gpu_backend)
 # final download (each holds a 1/16-cube staging slab).
 const REDUCE = Symbol(get(ENV, "EDM_REDUCE", "device"))
 const REDUCE_WORKERS = parse(Int, get(ENV, "EDM_REDUCE_WORKERS", "4"))
+const REDUCE_STATS = ReduceStats()   # wall-clock of the folds + the final download → [timing] reduce_*
 # Sample GPU power/util/VRAM — and, on GPUs that have them, GPM hardware counters (achieved
 # occupancy, FP64/DRAM-bandwidth utilization) — across the accumulate_field window on all sharded
 # devices (→ manifest [gpu] stats incl. gpm_*, + the gputrace TSV time series; see gpu_telemetry.jl).
@@ -539,7 +540,7 @@ t_field = @elapsed begin
             accumulate_field_sharded(
                 trajs, screen, accum_alg, gpu_backend;
                 accum_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
-                reduce = REDUCE, reduce_workers = REDUCE_WORKERS
+                reduce = REDUCE, reduce_workers = REDUCE_WORKERS, reduce_stats = REDUCE_STATS
             )
         else
             accumulate_field(
@@ -692,6 +693,10 @@ timing = Dict{String, Any}(
     "trajectories" => t_trajectories,
     "field" => t_field,
 )
+if ndev > 1   # the sharded reduce's own wall-clock (folds under the lock; final download + permute)
+    timing["reduce_fold"] = REDUCE_STATS.fold_s
+    timing["reduce_download"] = REDUCE_STATS.download_s
+end
 # Sharding → [sharding] (axis → partition count). Flat + generic so future axes (e.g. a Z-split
 # 3D screen) slot in with no schema change. NOT in [timing] — a device count is not a duration.
 sharding = Dict{String, Any}("electrons" => ndev)
