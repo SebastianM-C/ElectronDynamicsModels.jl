@@ -185,8 +185,8 @@ _eval_at(spline::GPUCubicSpline, τ, idx) = _eval_poly(_fetch_interval(spline, i
     IntervalCoefs{D, T}
 
 Everything a cubic-spline evaluation needs on one knot interval: its end knots, `inv(6h)` and
-the four D-vectors `z[i]`, `z[i+1]`, `c1[i]`, `c2[i]` (3 + 4D scalars). [`_fetch_interval`](@ref)
-loads it once; [`_eval_poly`](@ref) evaluates the cubic at any `τ` from it. The per-slot solvers
+the four D-vectors `z[i]`, `z[i+1]`, `c1[i]`, `c2[i]` (3 + 4D scalars). `_fetch_interval`
+loads it once; `_eval_poly` evaluates the cubic at any `τ` from it. The per-slot solvers
 can hold it in registers across the Newton corrections (or RK4 stages) of a slot, which leave
 the interval only at a knot crossing, instead of reloading the coefficients for every
 evaluation (`coef_reuse = Val(true)` in the accumulate functions: bit-identical values, fewer
