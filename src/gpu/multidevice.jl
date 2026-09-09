@@ -95,6 +95,7 @@ function accumulate_field_sharded(
     part = Ref{Any}(nothing)
     sink = (E1, B1, E2, B2, mode) -> lock(lk) do
         if part[] === nothing
+            KA.synchronize(backend)   # the accumulator's own kernels must have landed before others add into it
             part[] = (; dev = gpu_device(backend), E1, B1, E2, B2, mode)
         else
             p = part[]
@@ -149,6 +150,11 @@ function _device_add!(backend::KA.Backend, dev::Integer, dst::AbstractArray{T}, 
     chunk = _reduce_chunk(n)
     dstv, srcv = vec(dst), vec(src)
     sdev = gpu_device(backend)
+    # The vendors order work per task AND per device stream, not across them: every kernel of
+    # the calling task must have landed in `src` before it is read, and every chunk copy must
+    # have landed in the staging buffer before the add on `dev` reads it. Hence the explicit
+    # drains below (KA.synchronize drains the current task's stream on the CURRENT device).
+    KA.synchronize(backend)
     if sdev == dev
         for k0 in 1:chunk:n
             r = k0:min(n, k0 + chunk - 1)
@@ -158,29 +164,34 @@ function _device_add!(backend::KA.Backend, dev::Integer, dst::AbstractArray{T}, 
         return dst
     end
     gpu_device!(backend, dev)
+    stage = similar(dstv, chunk)
+    KA.synchronize(backend)
+    gpu_device!(backend, sdev)
     try
-        stage = similar(dstv, chunk)
         hstage = nothing        # host slab, only if the direct device-to-device copy is refused
         for k0 in 1:chunk:n
             nk = min(chunk, n - k0 + 1)
             if hstage === nothing
                 try
-                    copyto!(stage, 1, srcv, k0, nk)
+                    copyto!(stage, 1, srcv, k0, nk)       # issued from the source device's task stream
+                    KA.synchronize(backend)               # … and drained there before `dev` reads it
                 catch err
                     @warn "accumulate_field_sharded: device-to-device copy refused; staging the reduce through host memory" exception = (err, catch_backtrace()) maxlog = 1
                     hstage = Vector{T}(undef, chunk)
                 end
             end
             if hstage !== nothing
-                gpu_device!(backend, sdev)
                 copyto!(hstage, 1, srcv, k0, nk)
                 KA.synchronize(backend)
                 gpu_device!(backend, dev)
                 copyto!(stage, 1, hstage, 1, nk)
+                gpu_device!(backend, sdev)
             end
+            gpu_device!(backend, dev)
             view(dstv, k0:(k0 + nk - 1)) .+= view(stage, 1:nk)
+            KA.synchronize(backend)                       # the add (and the staging reuse) complete on `dev`
+            gpu_device!(backend, sdev)
         end
-        KA.synchronize(backend)
     finally
         gpu_device!(backend, sdev)
     end
