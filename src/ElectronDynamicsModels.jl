@@ -62,7 +62,7 @@ export ReferenceFrame, Worldline,
     gpu_arch, gpu_peak_fp64_flops, measure_peak_fp64_flops, thread_fill_occupancy,
     gpu_event, gpu_elapsed, LaunchTimer, launch_times,
     CompiledKernel, compiled_kernels, kernel_resources,
-    accumulate_field_sharded,
+    accumulate_field_sharded, ReduceStats,
     window_coverage, flop_profile,
     hann, blackman_harris
 

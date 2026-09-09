@@ -17,6 +17,24 @@
 # `permutedims!` of a full cube per device, which at eight devices took three times longer
 # than the kernels themselves.
 
+"""
+    ReduceStats()
+
+Wall-clock accounting of the multi-device reduce, filled in by [`accumulate_field_sharded`](@ref)
+when passed as `reduce_stats`: `fold_s` is the time the finishing tasks spent folding their
+partials into the accumulator (under the lock; device-to-device adds for `reduce = :device`,
+host download-permute-add for `:host`), `n_folds` how many partials were folded, and
+`download_s` the final download and permute into the host cube (`:device` only; the `:host`
+path downloads as it folds). The solver scripts record them as `[timing] reduce_fold` /
+`reduce_download`, next to `field` and `kernel`, so a sharded cell's non-kernel time is visible.
+"""
+mutable struct ReduceStats
+    fold_s::Float64
+    n_folds::Int
+    download_s::Float64
+end
+ReduceStats() = ReduceStats(0.0, 0, 0.0)
+
 # Near-even contiguous split of 1:n into k index ranges (first `rem` chunks get one extra).
 function _shard_indices(n::Integer, k::Integer)
     base, rem = divrem(n, k)
@@ -49,7 +67,8 @@ the accumulator, the others fold theirs into it over the device-to-device path a
 and one download + permute produces the host cube (the permute runs on `reduce_workers`
 threads, each holding a 1/16-cube staging slab). `reduce = :host` is the streamed host reduce:
 every partial is downloaded, permuted and added on the host under a lock (one cube resident,
-one single-threaded full-cube permute per device).
+one single-threaded full-cube permute per device). `reduce_stats = ReduceStats()` receives the
+wall-clock time of the folds and of the final download (see [`ReduceStats`](@ref)).
 
 Needs ≥`length(devices)` Julia threads (`julia -t`): each per-device task is GPU-bound and blocks its
 thread on the final device→host copy, so they only overlap on separate OS threads. Each device holds
@@ -61,7 +80,8 @@ CPU-backend test relies on.
 function accumulate_field_sharded(
         trajs::Vector{<:TrajectoryInterpolant}, screen::ObserverScreen, alg, backend::KA.Backend;
         devices = 1:gpu_device_count(backend), reduce::Symbol = :device,
-        reduce_workers::Integer = min(4, Threads.nthreads()), kwargs...
+        reduce_workers::Integer = min(4, Threads.nthreads()), reduce_stats::Union{Nothing, ReduceStats} = nothing,
+        kwargs...
     )
     nd = length(devices)
     nd >= 1 || throw(ArgumentError("accumulate_field_sharded: need ≥1 device, got $nd"))
@@ -79,10 +99,13 @@ function accumulate_field_sharded(
         # The sink runs INSIDE accumulate_field, while the device buffers are alive; it returns
         # nothing so the task holds no host copy of its partial.
         sink = (E1, B1, E2, B2, mode) -> lock(lk) do
+            t0 = time_ns()
             if acc[] === nothing
                 acc[] = _collect_fields(E1, B1, E2, B2, mode)
+                reduce_stats === nothing || (reduce_stats.download_s += (time_ns() - t0) / 1e9)
             else
                 _add_fields!(acc[], E1, B1, E2, B2, mode)
+                reduce_stats === nothing || (reduce_stats.fold_s += (time_ns() - t0) / 1e9; reduce_stats.n_folds += 1)
             end
             nothing
         end
@@ -100,12 +123,14 @@ function accumulate_field_sharded(
         else
             p = part[]
             p.mode == mode || error("accumulate_field_sharded: shards disagree on the field mode")
+            t0 = time_ns()
             _device_add!(backend, p.dev, p.E1, E1)
             _device_add!(backend, p.dev, p.B1, B1)
             if mode == Val(:split)
                 _device_add!(backend, p.dev, p.E2, E2)
                 _device_add!(backend, p.dev, p.B2, B2)
             end
+            reduce_stats === nothing || (reduce_stats.fold_s += (time_ns() - t0) / 1e9; reduce_stats.n_folds += 1)
         end
         nothing
     end
@@ -113,7 +138,10 @@ function accumulate_field_sharded(
     p = part[]
     p === nothing && return nothing
     gpu_device!(backend, p.dev)
-    return _collect_fields(p.E1, p.B1, p.E2, p.B2, p.mode; backend, dev = p.dev, workers = reduce_workers)
+    t0 = time_ns()
+    out = _collect_fields(p.E1, p.B1, p.E2, p.B2, p.mode; backend, dev = p.dev, workers = reduce_workers)
+    reduce_stats === nothing || (reduce_stats.download_s += (time_ns() - t0) / 1e9)
+    return out
 end
 
 function _run_shards(trajs, shards, devices, screen, alg, backend, sink; kwargs...)
