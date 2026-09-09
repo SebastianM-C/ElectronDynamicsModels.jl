@@ -376,8 +376,10 @@ cycles on one die; the CSV sums the counter over the dies), `n_cu` / `n_se` / `w
   counts cycles while a die's GUI is active, so this equals the engine clock only while every
   die is busy for the whole dispatch and is a lower bound otherwise (idle tails count no cycles;
   it is meaningless for sub-ms dispatches, whose counter window exceeds the kernel). It is also
-  the `n_xcd` sanity check (14 GHz means the die sum was not divided). The clock is power-managed
-  on the MI300X (1.7 GHz at 7 waves/CU, 1.25 GHz at 14 waves/CU on the same kernel), so compare
+  the `n_xcd` sanity check (14 GHz means the die sum was not divided). Validated against the
+  amdgpu sysfs engine clock (`freq1_input` sampled at 65 Hz through the same launches): 1.70 vs
+  1.70 GHz and 1.25 vs 1.26 GHz median. The clock is power-managed on the MI300X (1.7 GHz at
+  7 waves/CU, 1.25 GHz at 14 waves/CU on the same kernel — at the 750 W board cap), so compare
   two runs of the SAME work in CYCLES (`GRBM_GUI_ACTIVE / n_xcd`, `SQ_BUSY_CYCLES`), not in
   seconds: fewer cycles = more work per cycle; wall time falling less than the cycles = the clock
   dropped.
