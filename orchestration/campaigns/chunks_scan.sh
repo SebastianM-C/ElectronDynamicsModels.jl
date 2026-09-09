@@ -1,0 +1,25 @@
+# Chunk-grid scan at the benchmark strong cell (one GPU): Newton n=2 (register cache on by default) for
+# EDM_SAMPLE_CHUNKS ∈ {1,2,3,4,6,8,12,16} and RK4 s=1 at {1,4}; field-only, no cubes. CAMPAIGN=smoke is
+# exempt from the cube drainer + teardown gate by name.
+CAMPAIGN=smoke
+SCRIPT=scripts/inverse_thomson_scattering.jl
+KEEP_CUBE=0
+REDUCE_OVERLAP=0   # field-only: no background post-processing of the cube (the pod config defaults it to 1)
+BASE=(
+  EDM_NX=401 EDM_FIELD_MODE=total EDM_NSUBSTEPS=1 EDM_RELTOL=1e-13 EDM_A0=0.3 EDM_INTERP_SAVEAT=16
+  EDM_INITIAL_PHASE=-1.5707963267948966 EDM_WINDOW=narrow EDM_APODIZATION=none EDM_DIRECT_READ=1
+  EDM_GAMMA_EPS=4 EDM_SPP=512 EDM_TSPAN_TAU=3.2 EDM_SCREEN_HW=3.0 EDM_HARMONICS=97.1395,98,193.6813,196
+  EDM_SWEEP=chunks_scan EDM_N=32 EDM_SKIP_POSTPROCESS=1 EDM_GPU_SAMPLE_DT=0.5
+)
+CELLS=(
+  "newt_c1|EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_SAMPLE_CHUNKS=1"
+  "newt_c2|EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_SAMPLE_CHUNKS=2"
+  "newt_c3|EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_SAMPLE_CHUNKS=3"
+  "newt_c4|EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_SAMPLE_CHUNKS=4"
+  "newt_c6|EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_SAMPLE_CHUNKS=6"
+  "newt_c8|EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_SAMPLE_CHUNKS=8"
+  "newt_c12|EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_SAMPLE_CHUNKS=12"
+  "newt_c16|EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_SAMPLE_CHUNKS=16"
+  "rk4_c1|EDM_ACCUM_ALG=rk4 EDM_SAMPLE_CHUNKS=1"
+  "rk4_c4|EDM_ACCUM_ALG=rk4 EDM_SAMPLE_CHUNKS=4"
+)

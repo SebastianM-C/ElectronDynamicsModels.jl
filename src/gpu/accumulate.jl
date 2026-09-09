@@ -142,6 +142,34 @@ function _gpu_accumulate_kernel!(gpu_traj, screen, τ_all_cpu, τ_buf, A_buf, ba
     return
 end
 
+# ── Launch shape: pixels × observer-sample chunks ──────────────────────────────────────────
+# One thread per (pixel, chunk): the thread walks the chunk's slice of the pixel's executed
+# slot range. `n_chunks = 1` is one thread per pixel walking every slot (the original grid).
+# Chunk-major decomposition keeps adjacent threads on adjacent pixels of the same chunk, so
+# the accumulator writes stay coalesced; chunks own disjoint slots, so no atomics are needed.
+# Threads of chunks > 1 start cold: their first slot is solved with N_COLD_ITERS safeguarded
+# Newton corrections (see `_bracketed_slot_solve`) instead of the one-slot warm start.
+const N_COLD_ITERS = 24
+
+@inline function _chunk_pixel(i_lin, Nx, Ny, n_chunks)
+    npx = Nx * Ny
+    p = (i_lin - 1) % npx
+    chunk = (i_lin - 1) ÷ npx + 1
+    ix = p % Nx + 1
+    iy = p ÷ Nx + 1
+    return ix, iy, chunk
+end
+
+# The chunk's slice of the pixel's executed slots `k_start:k_end` (near-even contiguous split;
+# the first `rem` chunks get one extra slot; empty when the range has fewer slots than chunks).
+@inline function _chunk_slots(k_start, k_end, chunk, n_chunks)
+    len = k_end - k_start + 1
+    base, rem = divrem(len, n_chunks)
+    c_start = k_start + (chunk - 1) * base + min(chunk - 1, rem)
+    c_end = c_start + base + (chunk <= rem ? 1 : 0) - 1
+    return c_start, c_end
+end
+
 """
     _download_permuted(buf; backend = nothing, dev = 0, workers = 1) -> Array{T,4}
 

@@ -350,6 +350,50 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
         @test ElectronDynamicsModels._shard_indices(2, 3) == [1:1, 2:2]   # empty shards dropped
     end
 
+    @testset "sample_chunks: chunk grid reproduces the per-pixel walk" begin
+        # One thread per (pixel, chunk) walking a slice of the pixel's executed slots. Chunk 1 is
+        # today's path (bit-identical); later chunks start from a cold light-cone solve, so the
+        # Newton kernel agrees to roundoff and the RK4 march, whose per-step drift the restart
+        # removes, to its own convergence floor.
+        trajs = [
+            analytic_traj(; g = 1.2, A = 0.25, Ω = 2.0, vz = 0.0, τspan = (0.0, 20.0), N = 3000),
+            analytic_traj(; g = 1.3, A = 0.20, Ω = 2.5, vz = 0.0, τspan = (0.0, 20.0), N = 3000),
+        ]
+        τi, τf = first(trajs[1].itp.t), last(trajs[1].itp.t)
+        z = 50.0
+        Nx, Ny = 7, 5
+        half = 6.0
+        x⁰ = LinRange(1.2τi + (z - 2half), 1.2τf + (z + 2half), 240)
+        screen = ObserverScreen(LinRange(-half, half, Nx), LinRange(-half, half, Ny), z, x⁰; c = 1.0)
+        for (alg, kw, tol) in ((GPUKernelNewton(), (; n_iters = 2), 1.0e-12), (GPUKernelRK4(), (; n_substeps = 2), 1.0e-6)),
+                mode in (Val(:split), Val(:total))
+            one = accumulate_field(trajs, screen, alg, CPU(); mode, kw...)
+            c1 = accumulate_field(trajs, screen, alg, CPU(); mode, sample_chunks = 1, kw...)
+            @test all(k -> getproperty(c1, k) == getproperty(one, k), propertynames(one))
+            for C in (3, 8, 500)   # 500 > executed slots per pixel: most chunks empty
+                cC = accumulate_field(trajs, screen, alg, CPU(); mode, sample_chunks = C, kw...)
+                for k in propertynames(one)
+                    @test rel_l2(getproperty(cC, k), getproperty(one, k)) < tol
+                end
+            end
+        end
+        pot1 = accumulate_potential(trajs, screen, GPUKernelNewton(), CPU(); n_iters = 2)
+        pot4 = accumulate_potential(trajs, screen, GPUKernelNewton(), CPU(); n_iters = 2, sample_chunks = 4)
+        @test rel_l2(pot4, pot1) < 1.0e-12
+        @test_throws ArgumentError accumulate_field(trajs, screen, GPUKernelNewton(), CPU(); sample_chunks = 0)
+        # the slice arithmetic: exact cover, disjoint, near-even, empty beyond the range
+        let cs = ElectronDynamicsModels._chunk_slots
+            @test cs(10, 29, 1, 1) == (10, 29)
+            slices = [cs(10, 29, c, 4) for c in 1:4]
+            @test slices == [(10, 14), (15, 19), (20, 24), (25, 29)]
+            slices = [cs(1, 10, c, 3) for c in 1:3]
+            @test slices == [(1, 4), (5, 7), (8, 10)]
+            @test cs(5, 6, 3, 4)[1] > cs(5, 6, 3, 4)[2]
+            @test ElectronDynamicsModels._chunk_pixel(1, 7, 5, 3) == (1, 1, 1)
+            @test ElectronDynamicsModels._chunk_pixel(7 * 5 + 2, 7, 5, 3) == (2, 1, 2)
+        end
+    end
+
     @testset "LaunchTimer: one event pair per launch, results untouched" begin
         # Device-event kernel timing (lib/GPUDiagnostics). On the CPU backend the events are host
         # clocks (kernels are synchronous), so the plumbing — one pair per electron, keyed by

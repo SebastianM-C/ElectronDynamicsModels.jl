@@ -86,8 +86,13 @@ const SYNC = something(SPEC.sync_per_electron, false)
 const FIELD_MODE = Symbol(something(SPEC.mode, "split"))   # :split → (E,B,E_far,B_far) | :total → (E,B) only (halves VRAM/output)
 FIELD_MODE in (:split, :total) || error("spec mode must be \"split\" or \"total\", got \"$FIELD_MODE\"")
 # Register-cached spline interval across a slot's evaluations (bit-identical; manual: "The device
-# spline"). Unset ⇒ on for the Newton kernel, off for RK4 (which spills on gfx942); "1"/"0" forces it.
-const COEF_REUSE = haskey(ENV, "EDM_COEF_REUSE") ? ENV["EDM_COEF_REUSE"] == "1" : GPU_SOLVER == "newton"
+# spline"). Unset ⇒ on for the Newton kernel on the ROCm backend only: it gains 1.13× on the MI300X
+# and 1.11× on the W7900, but on Hopper the extra registers halve the resident blocks (H100 NVL
+# 54.9 → 59.8 ms) and RK4 spills on gfx942; "1"/"0" forces it either way.
+const COEF_REUSE = haskey(ENV, "EDM_COEF_REUSE") ? ENV["EDM_COEF_REUSE"] == "1" : (GPU_SOLVER == "newton" && GPU_BACKEND == "rocm")
+# Launch shape: threads = pixels × EDM_SAMPLE_CHUNKS, each walking a slice of its pixel's observer
+# samples (1 = one thread per pixel over every sample; chunks > 1 start from a cold light-cone solve).
+const SAMPLE_CHUNKS = parse(Int, get(ENV, "EDM_SAMPLE_CHUNKS", "1"))
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 # EDM_OMEGA_SCALE: Doppler-equivalent runs — upshift ω by γ(1+β) = γ+√(γ²−1), the frequency a
@@ -283,13 +288,13 @@ t_field = @elapsed begin
             @info "sharding electrons across $ndev devices"
             accumulate_field_sharded(
                 trajs, screen, solver_alg, gpu_backend;
-                solver_kw..., coef_reuse = Val(COEF_REUSE), mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
+                solver_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
                 reduce = REDUCE, reduce_workers = REDUCE_WORKERS
             )
         else
             accumulate_field(
                 trajs, screen, solver_alg, gpu_backend;
-                solver_kw..., coef_reuse = Val(COEF_REUSE), mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer
+                solver_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer
             )
         end
     end
@@ -355,6 +360,7 @@ config = config_dict(resolved_spec)
 haskey(ENV, "EDM_KEEP_CUBE") && (config["keep_cube"] = ENV["EDM_KEEP_CUBE"] == "1")
 config["coef_reuse"] = COEF_REUSE
 ndev > 1 && (config["reduce"] = String(REDUCE); config["reduce_workers"] = REDUCE_WORKERS)
+config["sample_chunks"] = SAMPLE_CHUNKS
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
