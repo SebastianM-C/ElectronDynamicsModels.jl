@@ -32,6 +32,11 @@ at the download:     ≈ one cube copy + 1/16 of a cube in staging
 host peak         =  max(the two) + the Julia baseline,   independent of N
 ```
 
+Both terms are approximate from below: Julia's scheduler roots the last task that ran on each
+thread, and glibc keeps freed chunks in its arenas (`malloc_trim`, which the loop calls, only
+returns what the arenas can give back), so a batch's pages come back over the following batch
+rather than immediately.
+
 `EDM_ELECTRON_BATCH_OVERLAP = 0` turns off the read-ahead (the solve of batch k+1 runs during batch
 k's launches) and drops that factor of 2 at the cost of leaving the CPU solve on the critical
 path. The manifest records `[config] electron_batch`, keeps `[timing] field` as the
@@ -74,3 +79,20 @@ in `test/gpu_radiation.jl`).
 
 The host-side per-batch products fold exactly: the window-coverage check is per electron, so the
 batches' records concatenate; the γ(τ) trace reduces as batch sums and elementwise extrema.
+
+## Measured
+
+The benchmark strong cell scaled down to `N = 2000` (γ = 5, 401², 1666 samples, total mode,
+Newton `n_iters = 2`, `EDM_COEF_REUSE=1`, `EDM_SAMPLE_CHUNKS=4`) on a W7900, RSS sampled every 2 s:
+
+| | `EDM_ELECTRON_BATCH=0` | `=500` |
+|---|---|---|
+| peak RSS | 26.1 GiB | **18.4 GiB** |
+| RSS during the field phase | 13.4 GiB (all N splines) | 6.0–9.7 GiB (≤ 2 batches) |
+| `[timing] field` | 600.3 s | 605.4 s |
+| `[timing] kernel` median per launch | 288.9 ms | 289.3 ms |
+| `[timing] trajectories` | 43.1 s | 47.4 s (31.7 s overlapped) |
+| wall | 731 s | 709 s |
+
+The plateau is the part that scales with `N`: at `N = 16 000` the unbatched run holds ~92 GB of
+splines there, which is what filled a 123 GB host.
