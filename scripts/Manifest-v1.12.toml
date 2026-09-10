@@ -1145,7 +1145,7 @@ version = "2.5.1"
 
 [[deps.GPUDiagnostics]]
 deps = ["Adapt", "KernelAbstractions", "LinearAlgebra", "Statistics", "Tables"]
-git-tree-sha1 = "53b1d0d4f140c0431017021485ab8bd74c0f5449"
+git-tree-sha1 = "0b4816962c5c2078e19ecfa9bbd20914ec493f2b"
 repo-rev = "main"
 repo-url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"
 uuid = "5ccc9b3c-1187-41e2-9266-b19f02873332"
