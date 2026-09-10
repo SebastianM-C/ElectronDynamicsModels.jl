@@ -38,7 +38,7 @@ function gpu_manifest_section(backend, backend_name::AbstractString, n_threads::
             gpu["samples"] = telem.ticks
             gpu["sample_dt"] = telem.dt
             gpu["sampler_starved"] = telem.starved
-            gpu["sampler_first_sample_s"] = telem.first_sample_s
+            ismissing(telem.first_sample_s) || (gpu["sampler_first_sample_s"] = telem.first_sample_s)
             st = gpu_telemetry_stats(telem)
             gpu["sampler_busy_samples"] = st["busy_samples"]
             for (col, key) in GPU_BASE_COLUMNS
@@ -147,16 +147,22 @@ function record_kernel_resources!(gpu, backend; pattern = FIELD_KERNEL_PATTERN, 
         gpu["kernel_name"] = r.name
         gpu["kernel_driver"] = m === nothing ? "" : String(m.match)
         gpu["kernel_compiled_matches"] = length(cks)
-        for k in (:block_size, :registers, :local_mem_bytes, :shared_mem_bytes, :const_mem_bytes,
-                :max_threads_per_block, :active_blocks_per_sm, :active_warps_per_sm, :max_warps_per_sm,
-                :warp_size, :max_threads_per_sm, :shared_mem_per_sm)
-            gpu["kernel_" * String(k)] = Int(getfield(r, k))
+        # KernelResources: a count the runtime cannot report is `missing` and its key is omitted
+        # (never a sentinel), same for the whole occupancy block; the key layout is unchanged.
+        for k in (:block_size, :registers, :local_mem_bytes, :shared_mem_bytes, :const_mem_bytes, :max_threads_per_block)
+            v = getfield(r, k)
+            ismissing(v) || (gpu["kernel_" * String(k)] = Int(v))
         end
-        gpu["kernel_occupancy"] = Float64(r.occupancy)
+        if !ismissing(r.occupancy)
+            for k in (:active_blocks_per_sm, :active_warps_per_sm, :max_warps_per_sm, :warp_size, :max_threads_per_sm, :shared_mem_per_sm)
+                gpu["kernel_" * String(k)] = Int(getfield(r.occupancy, k))
+            end
+            gpu["kernel_occupancy"] = r.occupancy.fraction
+        end
         for (k, v) in r.isa
             gpu["kernel_isa_" * k] = v
         end
-        @info "kernel resources (compile time)" kernel = gpu["kernel_driver"] registers = r.registers local_mem_bytes = r.local_mem_bytes shared_mem_bytes = r.shared_mem_bytes block_size = r.block_size active_blocks_per_sm = r.active_blocks_per_sm occupancy = round(r.occupancy; digits = 3) isa_info = r.isa
+        @info "kernel resources (compile time)" kernel = gpu["kernel_driver"] report = sprint(show, MIME"text/plain"(), r)
         record_kernel_mix!(gpu, backend, first(cks))
         return r
     catch err
@@ -294,7 +300,7 @@ function flops_manifest_section(backend, alg, mode::Symbol, solver_kw, N, Nx, Ny
         end
         arch === nothing || (f["gpu_arch"] = String(arch))
         peak = try
-            Float64(gpu_peak_fp64_flops(backend))
+            Float64(measure_peak_flops(backend))
         catch err
             @warn "FP64 peak measurement failed — omitting peak_fp64_flops / peak_fraction_field" exception = (err, catch_backtrace())
             NaN
