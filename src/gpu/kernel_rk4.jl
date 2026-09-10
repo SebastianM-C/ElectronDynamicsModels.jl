@@ -268,7 +268,7 @@ stream-ordered async free (the kernel that still reads the buffers is queued
 ahead of the free on the same stream), letting electron N+1's upload overlap
 kernel N.  Verified correct on CUDA and ROCm backends.
 
-`timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)). `coef_reuse = Val(true)` holds each slot's spline-interval coefficients in registers across the per-slot evaluations (bit-identical; trades ~4D live registers for the coefficient loads, see [`IntervalCoefs`](@ref)).
+`timer = LaunchTimer()` records a device-event pair per launch (see `LaunchTimer`). `coef_reuse = Val(true)` holds each slot's spline-interval coefficients in registers across the per-slot evaluations (bit-identical; trades ~4D live registers for the coefficient loads, see [`IntervalCoefs`](@ref)).
 """
 function accumulate_potential(
         trajs::Vector{<:TrajectoryInterpolant},
@@ -479,7 +479,7 @@ holds one batch of trajectory splines. The download happens once, on the call wi
 `finish = true` (or through [`finish_field`](@ref)); on one device the batched sum is
 bit-identical to the single call.
 
-`timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)). `coef_reuse = Val(true)` holds each slot's spline-interval coefficients in registers across the per-slot evaluations (bit-identical; trades ~4D live registers for the coefficient loads, see [`IntervalCoefs`](@ref)).
+`timer = LaunchTimer()` records a device-event pair per launch (see `LaunchTimer`). `coef_reuse = Val(true)` holds each slot's spline-interval coefficients in registers across the per-slot evaluations (bit-identical; trades ~4D live registers for the coefficient loads, see [`IntervalCoefs`](@ref)).
 """
 function accumulate_field(
         trajs::Vector{<:TrajectoryInterpolant},
