@@ -11,7 +11,7 @@
 # `always_inline = true`, the static 256-thread workgroup). `--dump` saves the disassembly.
 # `--slots` (executed hot-loop iterations per launch, e.g. Nx·Ny·N_samples when every slot lies in
 # the window) turns the hot loop's FP64 count into the FP64-issue floor per launch; `--peak` is the
-# FP64 rate to use in FLOP/s (default: `measure_peak_fp64_flops` on the current device — for a
+# FP64 rate to use in FLOP/s (default: `measure_peak_flops` on the current device — for a
 # cross-compiled target pass the target's measured peak); `--kernel-s` a measured median launch
 # time for the fraction.
 
@@ -71,9 +71,9 @@ t = @elapsed mix = kernel_instruction_mix(backend, ck; target = opts["target"], 
 println("kernel   ", ck.name, "  (", something(match(pattern, ck.signature), (; match = "?")).match, ", workgroup ", ck.workgroup_size, ")")
 println("device   ", gpu_name(backend), "  (", gpu_arch(backend), ")")
 println("target   ", mix.target, mix.native ? "  [native: this is the code that runs here]" : "  [CROSS-COMPILED: not this device's code]",
-    "   registers ", something(mix.registers, "n/a (see kernel_resources)"), "   ", round(t; digits = 1), " s")
+    "   registers ", coalesce(mix.registers, "n/a (see kernel_resources)"), "   ", round(t; digits = 1), " s")
 println("blocks   ", mix.blocks, "   loops ", length(mix.loops), "   hot loop ", mix.hot_loop === nothing ? "none" : mix.hot_loop.header,
-    " (confidence ", mix.hot_loop_confidence, mix.llvm_loops_agree === nothing ? "" : ", LLVM loop annotations " * (mix.llvm_loops_agree ? "agree" : "DISAGREE"), ")")
+    " (confidence ", mix.hot_loop_confidence, ismissing(mix.llvm_loops_agree) ? "" : ", LLVM loop annotations " * (mix.llvm_loops_agree ? "agree" : "DISAGREE"), ")")
 println("coverage ", round(100 * mix.coverage; digits = 2), " % of instructions matched a rule",
     mix.unclassified == 0 ? "" : "; unclassified: " * join(["$k×$v" for (k, v) in sort!(collect(mix.unclassified_opcodes); by = x -> -x[2])], ", "))
 println()
@@ -112,11 +112,11 @@ if opts["slots"] !== nothing && mix.hot_loop !== nothing
     peak = opts["peak"]
     if peak === nothing
         mix.native || error("--peak is required for a cross-compiled target (the current device's FP64 rate is not the target's)")
-        peak = measure_peak_fp64_flops(backend)
+        peak = measure_peak_flops(backend)
     end
     fl = fp64_issue_floor(mix; n_slots = opts["slots"], peak_fp64_flops = peak, kernel_time_s = opts["kernel-s"])
     println("\nFP64-issue floor: ", fl.fp64_per_slot, " FP64 instructions per hot-loop pass × ", opts["slots"], " slots ÷ (",
         round(peak / 1e12; digits = 3), " TFLOP/s ÷ 2) = ", round(fl.floor_s * 1e3; digits = 2), " ms per launch",
-        fl.kernel_time_s === nothing ? "" : " = $(round(100 * fl.fp64_issue_fraction; digits = 1)) % of the $(fl.kernel_time_s) s launch")
+        ismissing(fl.kernel_time_s) ? "" : " = $(round(100 * fl.fp64_issue_fraction; digits = 1)) % of the $(fl.kernel_time_s) s launch")
     println("  (", fl.assumptions, ")")
 end

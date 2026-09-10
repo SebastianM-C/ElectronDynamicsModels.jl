@@ -566,7 +566,7 @@ version = "0.1.0+0"
 
 [[deps.CountedFloats]]
 deps = ["DiffRules"]
-git-tree-sha1 = "066efc6f8c156a5dfa1dd59813717b147be9ab2b"
+git-tree-sha1 = "902c0fe640a8f5b3f486591796ced48e3487d2ca"
 repo-rev = "main"
 repo-url = "https://github.com/SebastianM-C/CountedFloats.jl"
 uuid = "35af598a-2c3c-4187-aa56-4608726a46bb"
@@ -1144,12 +1144,12 @@ version = "2.5.1"
     NVPTX_LLVM_Backend_jll = "ef6e0fe3-e6ef-59c0-bde6-4989574699e0"
 
 [[deps.GPUDiagnostics]]
-deps = ["Adapt", "KernelAbstractions", "LinearAlgebra"]
-git-tree-sha1 = "738b09e4ad16d2ead74bd1f16749287940c8010a"
+deps = ["Adapt", "KernelAbstractions", "LinearAlgebra", "Statistics", "Tables"]
+git-tree-sha1 = "0b4816962c5c2078e19ecfa9bbd20914ec493f2b"
 repo-rev = "main"
 repo-url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"
 uuid = "5ccc9b3c-1187-41e2-9266-b19f02873332"
-version = "0.1.0"
+version = "0.2.0"
 weakdeps = ["AMDGPU", "CUDA", "GPUCompiler", "LLVM"]
 
     [deps.GPUDiagnostics.extensions]

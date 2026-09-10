@@ -79,6 +79,6 @@ end
 end
 
 @testset "measured FP64 peak reachable through the package (probe tested in GPUDiagnostics.jl)" begin
-    h = gpu_peak_fp64_flops(CPU())
+    h = measure_peak_flops(CPU(); n_threads = 4096, trials = 2, target_seconds = 0.02)
     @test isfinite(h) && h > 1.0e8
 end

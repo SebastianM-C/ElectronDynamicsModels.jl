@@ -372,6 +372,8 @@ extra = Dict{String, Any}(
     "units" => units_section(ω, λ, w₀),   # display-unit declarations (RunManifests.units_section)
 )
 gpu === nothing || (extra["gpu"] = gpu)
+host_sec = host_manifest_section(gpu_backend)
+host_sec === nothing || (extra["host"] = host_sec)
 window_sec === nothing || (extra["window"] = window_sec)
 flops_sec === nothing || (extra["flops"] = flops_sec)
 manifestfile = write_solver_manifest(
