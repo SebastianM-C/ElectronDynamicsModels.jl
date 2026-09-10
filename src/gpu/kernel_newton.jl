@@ -275,6 +275,14 @@ per-slot error does not accumulate along the march, so accuracy is set by the
 convergence of the last Newton step alone.
 
 `sync_per_electron` as in the `GPUKernelRK4` method.
+
+`buffers` / `finish` drive electron BATCHING: `finish = false` returns the live
+[`FieldAccumulator`](@ref) instead of the downloaded cube, and passing it back as `buffers`
+accumulates the next batch of electrons into the same device buffers, so the host only ever
+holds one batch of trajectory splines. The download happens once, on the call with
+`finish = true` (or through [`finish_field`](@ref)); on one device the batched sum is
+bit-identical to the single call.
+
 `timer = LaunchTimer()` records a device-event pair per launch (see [`LaunchTimer`](@ref)). `coef_reuse = Val(true)` holds each slot's spline-interval coefficients in registers across the per-slot evaluations (bit-identical; trades ~4D live registers for the coefficient loads, see [`IntervalCoefs`](@ref)).
 """
 function accumulate_potential(
@@ -433,6 +441,8 @@ function accumulate_field(
         mode::Val = Val(:split),
         sync_per_electron::Bool = true,
         sink = nothing,
+        buffers = nothing,
+        finish::Bool = true,
         timer = nothing,
     )
     n_iters ≥ 1 || throw(ArgumentError(
@@ -444,15 +454,10 @@ function accumulate_field(
     N_samples = length(screen.x⁰_samples)
     c = screen.c
 
-    E1_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
-    B1_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
-    if mode == Val(:split)
-        E2_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
-        B2_buf = Adapt.adapt(backend, zeros(Nx, Ny, 3, N_samples))
-    else
-        E2_buf = E1_buf
-        B2_buf = B1_buf
-    end
+    # Accumulation buffers: a fresh set per call by default, or the caller's persistent
+    # `FieldAccumulator` (electron batching — the buffers then outlive this call).
+    acc = _field_buffers(buffers, screen, backend, mode)
+    E1_buf, B1_buf, E2_buf, B2_buf = acc.E1, acc.B1, acc.E2, acc.B2
 
     x⁰_first = first(screen.x⁰_samples)
     # light-front coordinate reformulation
@@ -487,7 +492,17 @@ function accumulate_field(
         finalize(gpu_traj.a_itp.c2)
     end
 
-    # Download (or hand to `sink`) while the device buffers are still alive — see
-    # _finish_fields / _collect_fields / _add_fields! in accumulate.jl.
+    # `finish = false` hands the live buffers back for the next batch of electrons; otherwise
+    # download (or hand to `sink`) while they are still alive — see _finish_fields /
+    # _collect_fields / _add_fields! in accumulate.jl.
+    acc.n_electrons += length(trajs)
+    if !finish
+        # Hand the live buffers back — but drain this call's launches first. A later batch may be
+        # accumulated from a DIFFERENT task (the sharded driver spawns one per device per batch),
+        # and a different task is a different stream: two streams read-modify-writing the same
+        # accumulator would lose updates. One sync per batch, against thousands of launches.
+        KernelAbstractions.synchronize(backend)
+        return acc
+    end
     return _finish_fields(sink, E1_buf, B1_buf, E2_buf, B2_buf, mode)
 end

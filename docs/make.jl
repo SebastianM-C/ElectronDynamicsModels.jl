@@ -20,6 +20,7 @@ makedocs(;
         "Home" => "index.md",
         "Experimental" => "experimental.md",
         "The device spline" => "gpu_spline.md",
+        "Electron batching" => "electron_batches.md",
     ],
 )
 
