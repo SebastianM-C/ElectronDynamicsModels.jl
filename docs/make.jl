@@ -1,10 +1,14 @@
 using ElectronDynamicsModels
 using Documenter
+using Documenter.Remotes: GitHub
 
 DocMeta.setdocmeta!(ElectronDynamicsModels, :DocTestSetup, :(using ElectronDynamicsModels); recursive=true)
 
 makedocs(;
     modules=[ElectronDynamicsModels],
+    # index.md autodocs GPUDiagnostics too; it is a git-URL dependency (not a checkout), so
+    # Documenter cannot infer its remote for source links.
+    remotes=Dict(pkgdir(ElectronDynamicsModels.GPUDiagnostics) => (GitHub("SebastianM-C", "GPUDiagnostics.jl"), "main")),
     authors="Sebastian Micluța-Câmpeanu <sebastian.mc95@proton.me> and contributors",
     sitename="ElectronDynamicsModels.jl",
     format=Documenter.HTML(;
