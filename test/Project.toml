@@ -26,8 +26,8 @@ SymbolicIndexingInterface = "2efcf032-c050-4f8e-a9bb-153293bab1f5"
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
 [sources]
-CountedFloats = {path = "../lib/CountedFloats"}
-GPUDiagnostics = {path = "../lib/GPUDiagnostics"}
+CountedFloats = {url = "https://github.com/SebastianM-C/CountedFloats.jl"}
+GPUDiagnostics = {url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"}
 ElectronDynamicsModels = {path = ".."}
 
 [compat]

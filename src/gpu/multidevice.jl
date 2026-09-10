@@ -3,7 +3,7 @@
 # into that device's private buffers, and summing the D partials is EXACT — not an approximation.
 # This parallelizes the otherwise-serial electron loop (the H200 is only ~0.59 occupied per launch,
 # so a single device underuses it; D devices give a ~D× electron-loop speedup). Built on the vendor
-# API: `gpu_device_count`/`gpu_device!` (lib/GPUDiagnostics) pin each shard's task to a GPU.
+# API: `gpu_device_count`/`gpu_device!` (GPUDiagnostics.jl) pin each shard's task to a GPU.
 #
 # The reduce. `reduce = :device` (default) sums the partials ON THE DEVICES: the first task to
 # finish keeps its buffers resident as the accumulator, every later task folds its own buffers

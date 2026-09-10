@@ -566,7 +566,9 @@ version = "0.1.0+0"
 
 [[deps.CountedFloats]]
 deps = ["DiffRules"]
-path = "../lib/CountedFloats"
+git-tree-sha1 = "066efc6f8c156a5dfa1dd59813717b147be9ab2b"
+repo-rev = "main"
+repo-url = "https://github.com/SebastianM-C/CountedFloats.jl"
 uuid = "35af598a-2c3c-4187-aa56-4608726a46bb"
 version = "0.1.0"
 
@@ -1143,7 +1145,9 @@ version = "2.5.1"
 
 [[deps.GPUDiagnostics]]
 deps = ["Adapt", "KernelAbstractions", "LinearAlgebra"]
-path = "../lib/GPUDiagnostics"
+git-tree-sha1 = "738b09e4ad16d2ead74bd1f16749287940c8010a"
+repo-rev = "main"
+repo-url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"
 uuid = "5ccc9b3c-1187-41e2-9266-b19f02873332"
 version = "0.1.0"
 weakdeps = ["AMDGPU", "CUDA", "GPUCompiler", "LLVM"]

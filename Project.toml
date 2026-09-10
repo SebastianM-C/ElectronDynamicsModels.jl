@@ -31,8 +31,8 @@ Unitful = "1986cc42-f94f-5a68-af5c-568840ba703d"
 UnitfulAtomic = "a7773ee8-282e-5fa2-be4e-bd808c38a91a"
 
 [sources]
-CountedFloats = {path = "lib/CountedFloats"}
-GPUDiagnostics = {path = "lib/GPUDiagnostics"}
+CountedFloats = {url = "https://github.com/SebastianM-C/CountedFloats.jl"}
+GPUDiagnostics = {url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"}
 
 [weakdeps]
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"

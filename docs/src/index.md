@@ -13,10 +13,10 @@ Documentation for [ElectronDynamicsModels](https://github.com/SebastianM-C/Elect
 Modules = [ElectronDynamicsModels]
 ```
 
-## GPU diagnostics (lib/GPUDiagnostics)
+## GPU diagnostics (GPUDiagnostics.jl)
 
 Vendor-neutral runtime diagnostics for the KernelAbstractions kernels, shipped as the
-`lib/GPUDiagnostics` sub-package and re-exported by `ElectronDynamicsModels`: the device API
+[GPUDiagnostics.jl](https://github.com/SebastianM-C/GPUDiagnostics.jl) package (formerly the `lib/GPUDiagnostics` sub-package) and re-exported by `ElectronDynamicsModels`: the device API
 (`gpu_device_count`, `gpu_device!`, `gpu_name`, …), device-event kernel timing (`gpu_event`,
 `LaunchTimer`, `launch_times`), telemetry (`gpu_sample` for one snapshot; the out-of-process
 sampler `with_gpu_sampler` whose Julia child takes that sample per device per tick — power /

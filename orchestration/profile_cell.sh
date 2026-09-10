@@ -2,7 +2,7 @@
 # profile_cell.sh — run ONE solver cell under rocprofv3 hardware counters (AMD, ROCm ≥ 6.2) and
 # merge the counters into the cell's run manifest as [gpu].rocprof_* keys. The GPM sampler does
 # this in-process on NVIDIA; AMD has no in-process counter API, so the whole solver process is
-# wrapped by the profiler (lib/GPUDiagnostics `rocprof_command`, under `timeout -k` because a
+# wrapped by the profiler (GPUDiagnostics.jl `rocprof_command`, under `timeout -k` because a
 # counter set the hardware refuses aborts rocprofv3 with signal 6 and leaves the child hung) and
 # the CSV it writes is parsed afterwards (`rocprof_counters` → scripts/rocprof_merge.jl).
 #

@@ -13,6 +13,6 @@ PDFIO = "4d0d745f-9d9a-592e-8d18-1ad8a0f42b92"
 Typst_jll = "eb4b1da6-20f6-5c66-9826-fdb8ad410d0e"
 
 [sources]
-CountedFloats = {path = "../lib/CountedFloats"}
-GPUDiagnostics = {path = "../lib/GPUDiagnostics"}
+CountedFloats = {url = "https://github.com/SebastianM-C/CountedFloats.jl"}
+GPUDiagnostics = {url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"}
 ElectronDynamicsModels = {path = ".."}
