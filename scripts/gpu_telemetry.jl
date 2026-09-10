@@ -22,6 +22,9 @@ using GPUDiagnostics
 # vendor extension) so the caller just omits [gpu].
 const GPU_BASE_COLUMNS = ("power_W" => "power", "compute_util" => "compute_util", "mem_util" => "memory_util",
     "vram_used_B" => "vram_used")
+# The other base columns of every sample (clocks, temperatures, power limit, throttle bitmask —
+# GPUDiagnostics ≥ 0.2) land as `sampler_<column>_<stat>`; anything else is a GPM counter.
+const GPU_SAMPLER_COLUMNS = ("sm_clock_MHz", "mem_clock_MHz", "temperature_C", "hotspot_C", "power_limit_W", "throttle_reasons")
 function gpu_manifest_section(backend, backend_name::AbstractString, n_threads::Integer,
         device_count::Integer, telem)
     try
@@ -53,8 +56,14 @@ function gpu_manifest_section(backend, backend_name::AbstractString, n_threads::
             for (k, v) in st
                 k in ("samples", "busy_samples") && continue
                 any(startswith(k, col * "_") for (col, _) in GPU_BASE_COLUMNS) && continue
-                gpu["gpm_" * k] = v
+                if k == "power_capped_fraction" || any(startswith(k, col * "_") for col in GPU_SAMPLER_COLUMNS)
+                    gpu["sampler_" * k] = v
+                else
+                    gpu["gpm_" * k] = v
+                end
             end
+            haskey(gpu, "sampler_power_capped_fraction") && gpu["sampler_power_capped_fraction"] > 0 &&
+                @warn "power-capped for $(round(100 * gpu["sampler_power_capped_fraction"]; digits = 1)) % of the compute-busy samples" sm_clock_busy_median_MHz = get(st, "sm_clock_MHz_busy_median", missing) power_limit_W = get(st, "power_limit_W_mean", missing)
             if haskey(st, "sm_occupancy_busy_mean")
                 @info "GPM counters (field window, compute-busy rows)" busy_samples = st["busy_samples"] sm_occupancy = round(st["sm_occupancy_busy_mean"]; digits = 3) fp64_util = round(get(st, "fp64_util_busy_mean", NaN); digits = 3) dram_bw_util = round(get(st, "dram_bw_util_busy_mean", NaN); digits = 3) sm_util = round(get(st, "sm_util_busy_mean", NaN); digits = 3)
             end
@@ -83,16 +92,9 @@ function record_kernel_timing!(timing::AbstractDict, gpu, timer; tracefile = not
         isempty(lt) && return nothing
         devs = sort!(collect(keys(lt)))
         per = [lt[d] for d in devs]
-        med(v) = (s = sort(v); n = length(s); isodd(n) ? s[(n + 1) ÷ 2] : (s[n ÷ 2] + s[n ÷ 2 + 1]) / 2)
         timing["kernel"] = maximum(sum, per)
-        if gpu !== nothing
-            gpu["kernel_devices"] = devs
-            gpu["kernel_s"] = map(sum, per)
-            gpu["kernel_launches"] = map(length, per)
-            gpu["kernel_first_s"] = map(first, per)
-            gpu["kernel_median_s"] = map(med, per)
-            gpu["kernel_max_s"] = map(maximum, per)
-        end
+        # kernel_devices / _s / _launches / _first_s / _median_s / _max_s, one vector per statistic
+        gpu === nothing || merge!(gpu, diagnostics_dict(timer; prefix = "kernel_"))
         if tracefile !== nothing
             open(tracefile, "w") do io
                 println(io, "# device\tlaunch\tkernel_s")
@@ -147,21 +149,9 @@ function record_kernel_resources!(gpu, backend; pattern = FIELD_KERNEL_PATTERN, 
         gpu["kernel_name"] = r.name
         gpu["kernel_driver"] = m === nothing ? "" : String(m.match)
         gpu["kernel_compiled_matches"] = length(cks)
-        # KernelResources: a count the runtime cannot report is `missing` and its key is omitted
-        # (never a sentinel), same for the whole occupancy block; the key layout is unchanged.
-        for k in (:block_size, :registers, :local_mem_bytes, :shared_mem_bytes, :const_mem_bytes, :max_threads_per_block)
-            v = getfield(r, k)
-            ismissing(v) || (gpu["kernel_" * String(k)] = Int(v))
-        end
-        if !ismissing(r.occupancy)
-            for k in (:active_blocks_per_sm, :active_warps_per_sm, :max_warps_per_sm, :warp_size, :max_threads_per_sm, :shared_mem_per_sm)
-                gpu["kernel_" * String(k)] = Int(getfield(r.occupancy, k))
-            end
-            gpu["kernel_occupancy"] = r.occupancy.fraction
-        end
-        for (k, v) in r.isa
-            gpu["kernel_isa_" * k] = v
-        end
+        # kernel_registers / _local_mem_bytes / … / _occupancy / _isa_*: a count the runtime cannot
+        # report is omitted (never a sentinel), as is the whole occupancy block without a calculator.
+        merge!(gpu, diagnostics_dict(r; prefix = "kernel_"))
         @info "kernel resources (compile time)" kernel = gpu["kernel_driver"] report = sprint(show, MIME"text/plain"(), r)
         record_kernel_mix!(gpu, backend, first(cks))
         return r
@@ -176,28 +166,29 @@ function record_kernel_mix!(gpu, backend, ck)
     gpu === nothing && return nothing
     try
         mix = kernel_instruction_mix(backend, ck)
-        gpu["kernel_mix_target"] = mix.target
-        gpu["kernel_mix_total"] = mix.total
-        gpu["kernel_mix_fp64"] = mix.fp64
-        for c in MIX_CLASSES
-            gpu["kernel_mix_" * String(c)] = mix.counts[c]
-        end
-        gpu["kernel_mix_coverage"] = Float64(mix.coverage)
+        # kernel_mix_<class> / _total / _fp64 / _coverage / _hot_loop_* (the historical keys plus the
+        # rest of the mix) and, separately prefixed, the typed LLVM-IR counts kernel_ir_<class>.
+        merge!(gpu, diagnostics_dict(mix; prefix = "kernel_mix_"))
+        mix.ir === nothing || merge!(gpu, diagnostics_dict(mix.ir; prefix = "kernel_ir_"))
         hot = mix.hot_loop
-        if hot !== nothing
-            gpu["kernel_mix_hot_loop_total"] = hot.total
-            gpu["kernel_mix_hot_loop_fp64"] = sum(hot.counts[c] for c in GPUDiagnostics.FP64_CLASSES)
-            gpu["kernel_mix_hot_loop_confidence"] = String(mix.hot_loop_confidence)
-        end
-        if mix.ir !== nothing   # typed LLVM-IR counts of the same job (before backend contraction)
-            for c in (:fp64_fma, :fp64_add, :fp64_mul, :fp64_div, :fp64_sqrt, :fp64_contract)
-                gpu["kernel_ir_" * String(c)] = mix.ir.counts[c]
-            end
-        end
         @info "kernel instruction mix (static)" target = mix.target total = mix.total coverage = round(mix.coverage; digits = 4) fp64 = mix.fp64 fp64_fma = mix.counts.fp64_fma fp64_add = mix.counts.fp64_add fp64_mul = mix.counts.fp64_mul fp64_packed = mix.counts.fp64_packed waits = mix.counts.wait hot_loop_total = hot === nothing ? missing : hot.total hot_loop_fp64 = hot === nothing ? missing : gpu["kernel_mix_hot_loop_fp64"] confidence = mix.hot_loop_confidence
         return mix
     catch err
         @warn "kernel instruction mix unavailable — omitting [gpu].kernel_mix_*" exception = (err, catch_backtrace())
+        return nothing
+    end
+end
+
+# → the manifest's [host] table: what the run happened on (Julia / BLAS threads against the host
+# cores AND the cgroup CPU quota, memory limits, OS kernel, driver / runtime / vendor package
+# versions), with any oversubscription finding under `warnings`. Same contract: `nothing` ⇒ omitted.
+function host_manifest_section(backend)
+    try
+        h = host_snapshot(backend)
+        isempty(h.warnings) || @warn "host environment" warnings = h.warnings
+        return diagnostics_dict(h)
+    catch err
+        @warn "host snapshot unavailable — omitting [host] from the manifest" exception = err
         return nothing
     end
 end
@@ -307,7 +298,7 @@ function flops_manifest_section(backend, alg, mode::Symbol, solver_kw, N, Nx, Ny
         end
         if isfinite(peak) && peak > 0
             f["peak_fp64_flops"] = peak
-            f["peak_fp64_method"] = backend isa ElectronDynamicsModels.KernelAbstractions.CPU ? "blas-peakflops" : "fma-chain-measured"
+            f["peak_fp64_method"] = "fma-chain-measured"   # the same probe on every backend, the CPU included
             f["peak_fraction_field"] = rate / peak
         end
         return f
