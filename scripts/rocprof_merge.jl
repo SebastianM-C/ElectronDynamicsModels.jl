@@ -1,5 +1,5 @@
 # rocprof_merge.jl — merge a rocprofv3 counter collection into a run manifest's [gpu] table as
-# rocprof_* keys (lib/GPUDiagnostics `rocprof_manifest_section`; orchestration/profile_cell.sh
+# rocprof_* keys (GPUDiagnostics.jl `rocprof_manifest_section`; orchestration/profile_cell.sh
 # runs this after the profiled cell returns). Prints the summary either way.
 #
 #   julia --project=scripts scripts/rocprof_merge.jl <rocprof dir> <name> [--manifest=<toml>]

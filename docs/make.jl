@@ -11,7 +11,7 @@ makedocs(;
         canonical="https://SebastianM-C.github.io/ElectronDynamicsModels.jl",
         edit_link="main",
         assets=String[],
-        # index.md autodocs the whole package (+ lib/GPUDiagnostics); it passed 200 KiB with the
+        # index.md autodocs the whole package (+ GPUDiagnostics.jl); it passed 200 KiB with the
         # rocprofv3 docstrings — Documenter's default hard limit.
         size_threshold=400 * 2^10,
         size_threshold_warn=250 * 2^10,

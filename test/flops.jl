@@ -78,7 +78,7 @@ end
     @test occursin("CountedFloats", pN2.convention)
 end
 
-@testset "measured FP64 peak reachable through the package (probe tested in lib/GPUDiagnostics)" begin
+@testset "measured FP64 peak reachable through the package (probe tested in GPUDiagnostics.jl)" begin
     h = gpu_peak_fp64_flops(CPU())
     @test isfinite(h) && h > 1.0e8
 end

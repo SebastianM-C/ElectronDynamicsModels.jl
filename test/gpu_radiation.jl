@@ -506,7 +506,7 @@ rel_l2(a, b) = norm(a .- b) / norm(b)
     end
 
     @testset "LaunchTimer: one event pair per launch, results untouched" begin
-        # Device-event kernel timing (lib/GPUDiagnostics). On the CPU backend the events are host
+        # Device-event kernel timing (GPUDiagnostics.jl). On the CPU backend the events are host
         # clocks (kernels are synchronous), so the plumbing — one pair per electron, keyed by
         # device, shared safely across the sharded driver's tasks — is testable without a GPU.
         # (@testset scopes are local: rebuild the 3-electron setup of the sharded test above.)

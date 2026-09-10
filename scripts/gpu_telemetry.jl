@@ -1,6 +1,6 @@
 # GPU telemetry for the solver manifests' [gpu] section — shared by thomson_scattering.jl,
 # lpwa.jl, inverse_thomson_scattering.jl and occupancy_bench.jl. The instruments live in
-# lib/GPUDiagnostics (device snapshot, out-of-process sampler `with_gpu_sampler` incl. GPM
+# GPUDiagnostics.jl (device snapshot, out-of-process sampler `with_gpu_sampler` incl. GPM
 # counters, device-event `LaunchTimer`, measured FP64 peak); this file reduces them into manifest
 # sections. Everything
 # is wrapped so a telemetry hiccup NEVER breaks a run — it just omits the section.
@@ -68,7 +68,7 @@ end
 
 # ── Device-event kernel timing → [timing].kernel + [gpu].kernel_* + the kerneltimes TSV ──────────
 #
-# `LaunchTimer` (lib/GPUDiagnostics) records a device-event pair per kernel launch. It is the only
+# `LaunchTimer` (GPUDiagnostics.jl) records a device-event pair per kernel launch. It is the only
 # kernel clock that works with the production `sync_per_electron = false`: [timing].field is the
 # whole phase (first-launch JIT, per-electron spline conversion + upload, the drain, the sampler's
 # stop wait, and the slowest shard), while [timing].kernel is the BUSIEST device's summed kernel
@@ -112,7 +112,7 @@ end
 #    _occupancy … (+ kernel_isa_* extras) ─────────────────────────────────────────────────────────
 #
 # After the field phase the production kernel sits in the vendor's compiled-kernel cache;
-# `compiled_kernels` + `kernel_resources` (lib/GPUDiagnostics) read it back from there — the exact
+# `compiled_kernels` + `kernel_resources` (GPUDiagnostics.jl) read it back from there — the exact
 # code that ran, not a re-creation of it, and no kernel change — and report what the compiler gave
 # it (registers per thread, spill/stack bytes, the shared/LDS bytes the descriptor reserves) with
 # the theoretical occupancy the runtime derives at the launched block size (the kernel's static

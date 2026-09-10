@@ -25,7 +25,7 @@ import KernelAbstractions
 import KernelAbstractions as KA
 using KernelAbstractions: Backend, @kernel, @index, @Const
 using CountedFloats: CountedFloats, Counted, Counts, @count
-using GPUDiagnostics   # vendor GPU API, device-event LaunchTimer, sampler, FP64 peak (lib/GPUDiagnostics)
+using GPUDiagnostics   # vendor GPU API, device-event LaunchTimer, sampler, FP64 peak (GPUDiagnostics.jl)
 
 @muladd m_dot(x, y) = x[1] * y[1] - x[2] * y[2] - x[3] * y[3] - x[4] * y[4]
 
@@ -56,7 +56,7 @@ export ReferenceFrame, Worldline,
     lienard_wiechert_F, lienard_wiechert_F_split, extract_EB, faraday, stress_energy,
     GPUCubicSpline, GPUKernelRK4, GPUKernelTsit5, GPUKernelNewton, recommended_n_substeps,
     retarded_time_problem,
-    # re-exported from GPUDiagnostics (lib/GPUDiagnostics) — the vendor GPU API + LaunchTimer
+    # re-exported from GPUDiagnostics (GPUDiagnostics.jl) — the vendor GPU API + LaunchTimer
     gpu_device_count, gpu_device, gpu_device!, gpu_name, gpu_power, gpu_utilization,
     gpu_memory_info, gpu_sample, gpu_sm_count, gpu_max_threads_per_sm,
     gpu_arch, gpu_peak_fp64_flops, measure_peak_fp64_flops, thread_fill_occupancy,
