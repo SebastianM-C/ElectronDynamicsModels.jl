@@ -477,8 +477,9 @@ BATCH_STATS[].n_batches > 1 && (timing["trajectories_overlapped"] = BATCH_STATS[
 # 3D screen) slot in with no schema change. NOT in [timing] — a device count is not a duration.
 sharding = Dict{String, Any}("electrons" => ndev)
 # GPU telemetry → [gpu] (static device snapshot + power/util/VRAM stats over the field window).
+# The launch is one thread per (pixel, sample chunk), so that is the thread count it records.
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
-gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
+gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny * SAMPLE_CHUNKS, ndev, gpu_telem)
 record_kernel_timing!(timing, gpu, launch_timer; tracefile = kerneltimesfile)
 # The per-launch series is a run product like the gputrace: declared so the dashboard stages it
 # from [outputs] instead of globbing beside the manifest (absent ⇒ the timer recorded nothing).

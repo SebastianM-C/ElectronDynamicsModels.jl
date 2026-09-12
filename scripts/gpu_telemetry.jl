@@ -8,8 +8,11 @@
 using GPUDiagnostics
 
 # Static device snapshot + reduced sampler stats → the manifest's [gpu] table (a plain Dict
-# that RunManifests writes verbatim as a top-level section). `n_threads` = the pixel-parallel
-# launch size (Nx·Ny) for thread-fill occupancy. Stats reduce over ALL devices' rows
+# that RunManifests writes verbatim as a top-level section). `n_threads` = the field kernel's
+# launched index space per device, Nx·Ny·sample_chunks (one thread per pixel and chunk), recorded
+# as `launch_threads` and reduced to `thread_fill_occupancy` = launch_threads / (SMs × threads
+# per SM): the launch against the device's whole resident capacity, an upper bound on any
+# occupancy and > 1 whenever the grid exceeds one full wave. Stats reduce over ALL devices' rows
 # (device_count records the fan-out; the per-device time series lives in the gputrace TSV) via
 # `gpu_telemetry_stats`; NaN entries (counters a device doesn't expose) are skipped per column.
 # The base columns keep their historical keys (`power_mean/_peak`, `compute_util_mean/_peak`,
@@ -35,6 +38,7 @@ function gpu_manifest_section(backend, backend_name::AbstractString, n_threads::
             "sm_count" => Int(gpu_sm_count(backend)),
             "max_threads_per_sm" => Int(gpu_max_threads_per_sm(backend)),
             "memory_total" => Int(gpu_memory_info(backend).total),
+            "launch_threads" => Int(n_threads),
             "thread_fill_occupancy" => Float64(thread_fill_occupancy(backend, n_threads)),
         )
         if telem.ticks > 0
