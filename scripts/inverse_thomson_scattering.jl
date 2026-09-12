@@ -780,6 +780,9 @@ sharding = Dict{String, Any}("electrons" => ndev)
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
 gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny, ndev, gpu_telem)
 record_kernel_timing!(timing, gpu, launch_timer; tracefile = kerneltimesfile)
+# The per-launch series is a run product like the gputrace: declared so the dashboard stages it
+# from [outputs] instead of globbing beside the manifest (absent ⇒ the timer recorded nothing).
+isfile(kerneltimesfile) && (outputs["kernel_times"] = basename(kerneltimesfile))
 # Compile-time resource report of the field kernel that ran → [gpu].kernel_registers/_shared_mem_bytes/
 # _occupancy/… (read back from the vendor's compiled-kernel cache; see gpu_telemetry.jl).
 record_kernel_resources!(gpu, gpu_backend)

@@ -632,7 +632,8 @@ Canonical `run_<run_id>.toml` writer for a PRIMARY solver run (one that produces
 
   [provenance] — pass `run_provenance(...)`         [config]  — replay-input knobs
   [laser]      — beam params (dashboard PARAM_SPEC)  [setup]   — Z/Rmax + integration window
-  [outputs]    — `datafile` + `plots` (+ any extras the script records)
+  [outputs]    — `datafile` + `plots` + every sidecar the run wrote (`log`, `gpu_trace`,
+                 `kernel_times`, `harmonic_maps`, …): consumers resolve files from here, never by glob
 
 `extra` maps any further top-level section name to its dict, written verbatim (e.g. lpwa's
 lpwa-only `"model"` bookkeeping). Errors if `config` lacks a `REQUIRED_CONFIG_KEYS` entry,

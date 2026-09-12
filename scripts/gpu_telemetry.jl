@@ -84,8 +84,9 @@ end
 # seconds — the denominator for achieved FLOP/s and the clean multi-device scaling metric
 # (scaling_report.jl prefers it over the ≥ 99 %-utilization gputrace proxy). Per-device sums,
 # launch counts, first-launch (JIT) and median/max per-launch seconds go to [gpu]; the full
-# per-launch series to `kerneltimes_<tag>.tsv` (device, launch, seconds). Same contract as the
-# other helpers: a failure logs and leaves the manifest without the fields.
+# per-launch series to `kerneltimes_<tag>.tsv` (device, launch, seconds), which the caller
+# declares as `[outputs].kernel_times` once written. Same contract as the other helpers: a
+# failure logs and leaves the manifest without the fields.
 function record_kernel_timing!(timing::AbstractDict, gpu, timer; tracefile = nothing)
     try
         lt = launch_times(timer)
