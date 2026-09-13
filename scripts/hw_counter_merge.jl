@@ -1,16 +1,19 @@
-# rocprof_merge.jl — merge a rocprofv3 counter collection into a run manifest's [gpu] table as
-# rocprof_* keys (GPUDiagnostics.jl `rocprof_manifest_section`; orchestration/profile_cell.sh
+# hw_counter_merge.jl — merge a hardware-counter collection into a run manifest's [gpu] table as
+# hw_* keys (GPUDiagnostics.jl `diagnostics_dict(hc; prefix = "hw_")`; orchestration/profile_cell.sh
 # runs this after the profiled cell returns). Prints the summary either way.
 #
-#   julia --project=scripts scripts/rocprof_merge.jl <rocprof dir> <name> [--manifest=<toml>]
+#   julia --project=scripts scripts/hw_counter_merge.jl <collection dir> <name> [--manifest=<toml>]
 #         [--kernel=<regex>] [--slots=<n>] [--n-cu=<n>] [--n-xcd=<n>] [--no-write]
 #
 # <dir>/<name>_counter_collection.csv (+ _kernel_trace / _agent_info) is the rocprofv3 output;
 # the manifest defaults to <dir>/run_<name>.toml (EDM_OUTDIR=<dir> EDM_RUN_TAG=<name>). What the
 # per-slot metrics need — the slots of ONE dispatch — comes from the manifest unless --slots is
 # given: [flops].slots_executed over the run's kernel launches ([gpu].kernel_launches summed over
-# devices; the profiled process sees one device). n_cu defaults to the agent info's CU count, then
-# [gpu].sm_count; n_xcd to the agent info (8 on the MI300X). Keys already present are replaced.
+# devices; the profiled process sees one device). The device properties every per-cycle rate needs
+# (n_cu / n_xcd = 304 and 8 on the MI300X) come from the collection's agent info; --n-cu / --n-xcd
+# override them per device id, and without agent info n_cu falls back to [gpu].sm_count. The hw_*
+# keys already in [gpu] are dropped before the merge, so a re-run replaces them; legacy rocprof_*
+# keys of pre-0.3 manifests stay (schema 2 renamed the family, it does not migrate old reports).
 using GPUDiagnostics
 using TOML
 
@@ -25,7 +28,7 @@ function parse_args(args)
             push!(pos, a)
         end
     end
-    length(pos) == 2 || (println(stderr, "usage: rocprof_merge.jl <rocprof dir> <name> [--manifest=…] [--kernel=…] [--slots=…] [--n-cu=…] [--n-xcd=…] [--no-write]"); exit(64))
+    length(pos) == 2 || (println(stderr, "usage: hw_counter_merge.jl <collection dir> <name> [--manifest=…] [--kernel=…] [--slots=…] [--n-cu=…] [--n-xcd=…] [--no-write]"); exit(64))
     return pos[1], pos[2], opt
 end
 
@@ -46,24 +49,38 @@ if slots === nothing && m !== nothing
         @warn "slots per dispatch unknown ([flops].slots_executed / [gpu].kernel_launches missing) — per-slot metrics skipped; pass --slots"
     end
 end
-n_cu = intopt("n-cu")
-n_xcd = intopt("n-xcd")
 kernel = Regex(get(opt, "kernel", "forindices"))
 
-rc = rocprof_counters(dir; name, kernel, slots, n_cu, n_xcd)
-if rc.device.n_cu == 0 && haskey(gpu, "sm_count")   # no agent info: the manifest's device snapshot
-    rc = rocprof_counters(dir; name, kernel, slots, n_cu = Int(gpu["sm_count"]), n_xcd)
+hc = hw_counters(dir; name, kernel, slots)
+d = first(hc.dispatches)
+over = Dict{String, Any}()
+for (flag, key) in (("n-cu", "n_cu"), ("n-xcd", "n_xcd"))
+    n = intopt(flag)
+    n === nothing || (over[key] = n)
 end
-println(rc)
-section = Dict{String, Any}("rocprof_" * k => v for (k, v) in rocprof_summary(rc))
+if !haskey(over, "n_cu") && ismissing(get(d.device, "n_cu", missing)) && haskey(gpu, "sm_count")
+    over["n_cu"] = Int(gpu["sm_count"])   # no agent info: the manifest's device snapshot
+end
+if !isempty(over)
+    # device_overrides is keyed by the dispatch's own device id, so a first parse has to supply it
+    if ismissing(d.device_id)
+        @warn "the collection reports no device id — $(join(sort!(collect(keys(over))), ", ")) not applied"
+    else
+        hc = hw_counters(dir; name, kernel, slots, device_overrides = Dict(d.device_id => over))
+    end
+end
+
+println(hc)
+section = diagnostics_dict(hc; prefix = "hw_")
 for k in sort!(collect(keys(section)))
     v = section[k]
-    println(rpad(k, 44), v isa AbstractFloat ? round(v; sigdigits = 5) : v)
+    println(rpad(k, 52), v isa AbstractFloat ? round(v; sigdigits = 5) : v)
 end
 
 if m !== nothing && !haskey(opt, "no-write")
+    filter!(kv -> !startswith(first(kv), "hw_"), gpu)
     merge!(gpu, section)
     m["gpu"] = gpu
     open(io -> TOML.print(io, m; sorted = true), manifest, "w")
-    println("merged $(length(section)) rocprof_* keys into [gpu] of $manifest")
+    println("merged $(length(section)) keys into [gpu] of $manifest")
 end
