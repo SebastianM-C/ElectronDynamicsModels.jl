@@ -1145,11 +1145,11 @@ version = "2.5.1"
 
 [[deps.GPUDiagnostics]]
 deps = ["Adapt", "KernelAbstractions", "LinearAlgebra", "Statistics", "Tables"]
-git-tree-sha1 = "0b4816962c5c2078e19ecfa9bbd20914ec493f2b"
+git-tree-sha1 = "d0ed040468d04d5ebc63442f50be2e9b294b6d9f"
 repo-rev = "main"
 repo-url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"
 uuid = "5ccc9b3c-1187-41e2-9266-b19f02873332"
-version = "0.2.0"
+version = "0.3.0"
 weakdeps = ["AMDGPU", "CUDA", "GPUCompiler", "LLVM"]
 
     [deps.GPUDiagnostics.extensions]
