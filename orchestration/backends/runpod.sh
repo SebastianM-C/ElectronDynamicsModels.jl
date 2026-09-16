@@ -393,9 +393,11 @@ launch_lane() {
         log "$stem already RUNNING on the pod — monitoring it (no relaunch)"
     else
         log "launching lane $stem (→ runs/${LANE_CAMP[$i]}) via the local backend ($BACKEND), detached…"
+        # DIAG_CAMPAIGN (per-card campaign name of the diag_validate recipes) is forwarded: the pod
+        # re-sources the recipe, so a driver-side override must travel with the launch.
         # Pre-create the shared campaign dir + cells.tsv header so concurrent lanes cannot race on
         # run_cell's "[ -f cells.tsv ] || header" (a doubled header would become a bogus row).
-        ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs/${LANE_CAMP[$i]} && { [ -f runs/${LANE_CAMP[$i]}/cells.tsv ] || printf 'label\\tuuid\\tscript\\tbackend\\toverrides\\n' > runs/${LANE_CAMP[$i]}/cells.tsv; } && rm -f runs/$stem.out runs/$stem.pid && { nohup bash \$HOME/edm-orch/backends/local.sh \$HOME/edm-orch/campaigns/$cname > runs/$stem.out 2>&1 < /dev/null & echo \$! > runs/$stem.pid; }"
+        ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs/${LANE_CAMP[$i]} && { [ -f runs/${LANE_CAMP[$i]}/cells.tsv ] || printf 'label\\tuuid\\tscript\\tbackend\\toverrides\\n' > runs/${LANE_CAMP[$i]}/cells.tsv; } && rm -f runs/$stem.out runs/$stem.pid && { DIAG_CAMPAIGN='${DIAG_CAMPAIGN:-}' nohup bash \$HOME/edm-orch/backends/local.sh \$HOME/edm-orch/campaigns/$cname > runs/$stem.out 2>&1 < /dev/null & echo \$! > runs/$stem.pid; }"
     fi
 }
 

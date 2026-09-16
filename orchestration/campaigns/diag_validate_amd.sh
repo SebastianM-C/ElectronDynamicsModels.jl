@@ -6,4 +6,6 @@
 # records. Counters collect in the default performance state on Instinct parts; the fp64 set's
 # instruction counts are clock-independent anyway.
 . "$(dirname "${BASH_SOURCE[0]}")/diag_validate_common.sh"
-CAMPAIGN=diag_validate_amd
+# DIAG_CAMPAIGN names the campaign per card (diag_validate_h100sxm, diag_validate_b300, …) so
+# output dirs and published campaign names stay separate; the recipe is the same.
+CAMPAIGN="${DIAG_CAMPAIGN:-diag_validate_amd}"
