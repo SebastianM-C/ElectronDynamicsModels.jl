@@ -1,7 +1,7 @@
 # orchestration/
 
 Portable campaign framework: a campaign is pure data (`campaigns/*.sh`), `run_cell.sh` is the
-shared core, `backends/` decides where cells run (local GPU / SLURM / Hot Aisle / RunPod).
+shared core, `backends/` decides where cells run (local GPU / SLURM / Hot Aisle / RunPod / Verda).
 Machine infra lives in the gitignored `config.env`; secrets stay under `~/.config`.
 
 ## Multi-GPU lanes (RunPod)
