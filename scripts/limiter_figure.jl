@@ -175,13 +175,19 @@ is_occupancy(r) = sweep(r) == "diag_chunks_occupancy" ||
     (startswith(r.label, "occupancy") && getpath(r.m, "gpu", "hw_counter_status"; default = "") != "")
 is_single(r, set) = r.label == set || (r.label == "" && occursin(set, join(something(getpath(r.m, "gpu", "hw_counters"; default = String[]), String[]), " ")))
 
+# A probe (or GEMM reference) measured inside a counter cell ran under the profiler — ncu replays
+# every dispatch once per pass, rocprofv3 adds its own overhead — and is not a peak. The card
+# header therefore takes them from cells without hardware counters only.
+profiled(r) = getpath(r.m, "gpu", "hw_counter_status"; default = nothing) !== nothing ||
+    getpath(r.m, "gpu", "hw_counters"; default = nothing) !== nothing
 function card_header(runs)
     r0 = first(runs)
     fl(r, k) = num(r.m, "flops", k)
-    probe = [fl(r, "peak_probe_flops") for r in runs if !isnan(fl(r, "peak_probe_flops"))]
-    probe_clock = [fl(r, "peak_probe_clock_MHz") for r in runs if !isnan(fl(r, "peak_probe_clock_MHz"))]
-    probe_capped = [fl(r, "peak_probe_power_capped_fraction") for r in runs if !isnan(fl(r, "peak_probe_power_capped_fraction"))]
-    gemm = [fl(r, "peak_gemm_fp64_flops") for r in runs if !isnan(fl(r, "peak_gemm_fp64_flops"))]
+    clean = [r for r in runs if !profiled(r)]
+    probe = [fl(r, "peak_probe_flops") for r in clean if !isnan(fl(r, "peak_probe_flops"))]
+    probe_clock = [fl(r, "peak_probe_clock_MHz") for r in clean if !isnan(fl(r, "peak_probe_clock_MHz"))]
+    probe_capped = [fl(r, "peak_probe_power_capped_fraction") for r in clean if !isnan(fl(r, "peak_probe_power_capped_fraction"))]
+    gemm = [fl(r, "peak_gemm_fp64_flops") for r in clean if !isnan(fl(r, "peak_gemm_fp64_flops"))]
     fp64 = [counter_metrics(r).fp64_flop_per_slot for r in runs if is_single(r, "fp64")]
     fp64 = filter(!isnan, fp64)
     (; device = device(r0), vendor = String(vendor(r0)),
@@ -193,7 +199,7 @@ function card_header(runs)
         peak_gemm_flops = isempty(gemm) ? NaN : median(gemm),
         algorithmic_flop_per_slot = fl(r0, "flop_per_slot"),
         counted_fp64_flop_per_slot = isempty(fp64) ? NaN : median(fp64),
-        n_runs = length(runs))
+        n_runs = length(runs), n_probe_runs = length(probe))
 end
 
 slugify(s) = lowercase(replace(replace(s, r"NVIDIA |AMD |Instinct |GeForce |Radeon |PRO " => ""), r"[^A-Za-z0-9]+" => "_"))

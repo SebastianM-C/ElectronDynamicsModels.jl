@@ -45,7 +45,9 @@ manifests(dir) = [(uuid = f[5:end-5], m = TOML.parsefile(joinpath(dir, f))) for 
 
 # swept probe peaks per device name
 swept = Dict{String, Vector{Float64}}()
+# only from cells without hardware counters: a probe inside an EDM_PROFILE cell ran under the profiler
 for d in peakdirs, r in manifests(d)
+    (getpath(r.m, "gpu", "hw_counter_status") !== nothing || getpath(r.m, "gpu", "hw_counters") !== nothing) && continue
     p = num(r.m, "flops", "peak_probe_flops"); isnan(p) && continue
     push!(get!(swept, String(getpath(r.m, "gpu", "device")), Float64[]), p)
 end
