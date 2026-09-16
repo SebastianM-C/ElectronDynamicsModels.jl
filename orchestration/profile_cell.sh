@@ -70,7 +70,7 @@ echo "[profile] $tag under $tool ($set_or_counters) → $out  (timeout ${PROFILE
     collector, executable = ARGS[5] == "NsightCompute" ? (NsightCompute(), ARGS[6]) : (RocprofV3(), nothing)
     vendor = collector isa NsightCompute ? :nvidia : :amd
     aliases = Dict(:sq_issue => :issue, :sq_waves => :occupancy, :l1_pipe => :memory)  # 0.2 set names
-    sym = Symbol(lstrip(strip(spec), ':'))
+    sym = Symbol(replace(strip(spec), r"^:" => ""))   # no single quotes: this code sits inside a bash single-quoted string
     sym = get(aliases, sym, sym)
     sel = haskey(COUNTER_SETS[vendor], sym) ? (; set = sym) : (; metrics = String.(split(spec)))
     # ncu: the GPU work runs in the julia process ncu launches, but the sampler child and the
