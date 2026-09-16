@@ -42,6 +42,11 @@ ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; REPO="$(cd "$ORCH/.." && p
 : "${SCRIPT:=scripts/inverse_thomson_scattering.jl}"
 : "${PROFILE_TIMEOUT:=600}"
 : "${PROFILE_KERNEL:=forindices}"
+# The launcher arrives either as the bash array JL (sourced callers) or, from run_cell.sh
+# for an EDM_PROFILE cell, as the space-joined string JL_CMD in the environment (an array
+# cannot be exported): split the string, or the whole launcher line is looked up as one
+# command (exit 127).
+[ -n "${JL_CMD:-}" ] && read -r -a JL <<< "$JL_CMD"
 [ -n "${JL[*]:-}" ] || JL=(julia --startup=no -t auto)
 set_or_counters=$1; out=$2; tag=$3; shift 3
 mkdir -p "$out"
@@ -65,13 +70,20 @@ echo "[profile] $tag under $tool ($set_or_counters) → $out  (timeout ${PROFILE
     collector, executable = ARGS[5] == "NsightCompute" ? (NsightCompute(), ARGS[6]) : (RocprofV3(), nothing)
     vendor = collector isa NsightCompute ? :nvidia : :amd
     aliases = Dict(:sq_issue => :issue, :sq_waves => :occupancy, :l1_pipe => :memory)  # 0.2 set names
-    sym = Symbol(lstrip(strip(spec), ':'))
+    sym = Symbol(replace(strip(spec), r"^:" => ""))   # no single quotes: this code sits inside a bash single-quoted string
     sym = get(aliases, sym, sym)
     sel = haskey(COUNTER_SETS[vendor], sym) ? (; set = sym) : (; metrics = String.(split(spec)))
-    # ncu: the GPU work runs in the julia process ncu launches, but the sampler child and the
-    # precompile workers are subprocesses too — :application keeps them out of the replay.
+    # The workload arrives as `env K=V … julia …`: fold the assignments into the Cmd
+    # environment (addenv inherits the rest) so the profiled process IS the julia process:
+    # ncu profiles only the process it launches unless told to follow children, and rocprofv3
+    # follows them anyway. :application keeps the sampler child and precompile workers out.
+    # (No single quotes anywhere in this snippet: it sits inside a bash single-quoted string.)
+    words = String.(ARGS[7:end])
+    words[1] == "env" && popfirst!(words)
+    nenv = findfirst(w -> !occursin(r"^[A-Za-z_][A-Za-z0-9_]*=", w), words) - 1
+    workload = addenv(Cmd(words[(nenv + 1):end]), words[1:nenv])
     extra = collector isa NsightCompute ? (; executable, target_processes = :application) : (;)
-    cmd = hw_counter_command(collector, Cmd(String.(ARGS[7:end])); dir, name, timeout_s, sel..., extra...)
+    cmd = hw_counter_command(collector, workload; dir, name, timeout_s, sel..., extra...)
     println("[profile] ", cmd); flush(stdout)
     run(cmd)' \
     "$set_or_counters" "$out" "$tag" "$PROFILE_TIMEOUT" "$collector" "$tool_path" \
