@@ -49,6 +49,10 @@ txt="$camp/device_$uuid.txt"
                 timeout 20 amd-smi static --vbios --board 2>&1 | head -20
             fi ;;
         cuda)
+            # venue: VM vs container decides whether Nsight counters are even possible (a container
+            # without CAP_SYS_ADMIN refuses them); idle VRAM before the cell exposes a leaked tenant
+            echo "virt: $(systemd-detect-virt 2>/dev/null || echo unknown)"
+            echo "vram_used_mib: $(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits 2>/dev/null | paste -sd, || echo unknown)"
             echo "RmProfilingAdminOnly: $(grep -o 'RmProfilingAdminOnly: [0-9]' /proc/driver/nvidia/params 2>/dev/null || echo unknown)"
             echo "ncu: $(command -v ncu 2>/dev/null || ls /opt/nvidia/nsight-compute/*/ncu 2>/dev/null | tail -1 || echo none)"
             if command -v nvidia-smi >/dev/null; then
