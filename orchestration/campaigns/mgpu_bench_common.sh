@@ -23,6 +23,12 @@ KEEP_CUBE=1          # cubes archived by the R2 drainer (the N=16000 maps are th
 BASE=(
   EDM_NX=601 EDM_FIELD_MODE=total
   EDM_N=2000 EDM_NSUBSTEPS=1 EDM_RELTOL=1e-13
+  # The article's kernel and launch shape (xvendor_rerun / mgpu_bench_rerun, 2026-09-09): Newton
+  # retarded-time kernel, n = 2, no coefficient reuse, five sample chunks. These lived only on the
+  # unmerged rerun commit f10a99d; without them the recipes fall back to the script defaults
+  # (rk4, C = 1, 973 vs 737 FLOP/slot) — the first Blackwell pass on 2026-09-16 did exactly that.
+  EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_COEF_REUSE=0 EDM_SAMPLE_CHUNKS=5
+  EDM_SKIP_POSTPROCESS=1 EDM_REDUCE=device EDM_REDUCE_WORKERS=4
   EDM_A0=0.3
   EDM_INTERP_SAVEAT=16
   EDM_INITIAL_PHASE=-1.5707963267948966
