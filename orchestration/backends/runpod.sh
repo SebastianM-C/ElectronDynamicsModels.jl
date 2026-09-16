@@ -275,6 +275,12 @@ else mkdir -p ~/EDM/runs; fi
 mkdir -p ~/edm-orch
 printf 'LOCAL_BACKEND=%s\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=JULIA_DEPOT_PATH=%s\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=runpod\nEDM_REPO=%s\nJULIA_CHANNEL=%s\n' \
     "$BK" "$JULIA_DEPOT_PATH" "$HOME/EDM" "$JULIA_CHANNEL" > ~/edm-orch/config.env
+# Nsight Compute ships under /opt/nvidia on the runpod/pytorch images but is not on PATH; the
+# counter cells (EDM_PROFILE) need GPUDIAGNOSTICS_COUNTER_TOOL, and local.sh sources config.env
+# once at lane start, so it must be there before the campaign launches (2026-09-16: the H200's
+# nine counter cells exited 69 because the path was appended a minute too late).
+NCU=$(ls -d /opt/nvidia/nsight-compute/*/ncu 2>/dev/null | tail -1)
+[ -n "$NCU" ] && echo "export GPUDIAGNOSTICS_COUNTER_TOOL=$NCU" >> ~/edm-orch/config.env
 REPO_DIR=~/EDM; . ~/EDM/orchestration/depot_cache.sh   # julia-actions/cache semantics over the rsync store
 depot_cache_restore   # → DC_RESTORED = exact | prefix (instantiate tops it up) | miss (fresh build)
 ok=0; for i in 1 2 3; do

@@ -22,6 +22,7 @@
 # field process has exited. Cloud pods (251 GB) are unaffected.
 . "$(dirname "${BASH_SOURCE[0]}")/mgpu_bench_common.sh"
 KEEP_CUBE=0
+REDUCE_OVERLAP=0   # field-only: no background post-processing of the cubes on the pod (its config defaults to 1)
 # Later assignments win inside a cell's override list (the mgpu_bench_h100 pattern).
 STRONG="$STRONG EDM_SWEEP=xvendor_strong"
 WEAK="$WEAK EDM_N=2000 EDM_SWEEP=xvendor_weak"
