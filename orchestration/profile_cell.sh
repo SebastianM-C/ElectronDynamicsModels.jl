@@ -23,7 +23,9 @@
 #   EDM_*     the cell's environment, exactly as run_cell.sh would receive it (the backend env
 #             such as ROCR_VISIBLE_DEVICES / EDM_GPU_BACKEND=rocm goes here too)
 #
-# Env: SCRIPT (default scripts/inverse_thomson_scattering.jl), JL (julia launcher array, default
+# Env: GPUDIAGNOSTICS_COUNTER_DEVICE (rocprofv3: qualify every counter with :device=N — needed
+#      when the runtime also enumerates a GPU the tool cannot profile, e.g. an iGPU),
+#      SCRIPT (default scripts/inverse_thomson_scattering.jl), JL (julia launcher array, default
 #      `julia --startup=no -t auto`), PROFILE_TIMEOUT (s, default 600 — the whole cell, JIT
 #      included), PROFILE_KERNEL (regex selecting the profiled kernel in the CSV, default
 #      forindices = the KernelAbstractions field kernel). Exit status is the merge's; the
@@ -73,6 +75,15 @@ echo "[profile] $tag under $tool ($set_or_counters) → $out  (timeout ${PROFILE
     sym = Symbol(replace(strip(spec), r"^:" => ""))   # no single quotes: this code sits inside a bash single-quoted string
     sym = get(aliases, sym, sym)
     sel = haskey(COUNTER_SETS[vendor], sym) ? (; set = sym) : (; metrics = String.(split(spec)))
+    # rocprofv3 enumerates every GPU the runtime sees; on a host with a second, unsupported
+    # part (an integrated GPU beside a workstation card) an unqualified counter set aborts the
+    # tool (unordered_map::at). GPUDIAGNOSTICS_COUNTER_DEVICE=N qualifies every name with
+    # :device=N, the same knob the GPUDiagnostics hardware suite uses.
+    qual = get(ENV, "GPUDIAGNOSTICS_COUNTER_DEVICE", "")
+    if collector isa RocprofV3 && !isempty(qual)
+        ms = haskey(sel, :set) ? COUNTER_SETS[:amd][sel.set].metrics : sel.metrics
+        sel = (; metrics = [occursin(":device=", m) ? m : m * ":device=" * qual for m in ms])
+    end
     # The workload arrives as `env K=V … julia …`: fold the assignments into the Cmd
     # environment (addenv inherits the rest) so the profiled process IS the julia process:
     # ncu profiles only the process it launches unless told to follow children, and rocprofv3
