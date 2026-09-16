@@ -200,7 +200,8 @@ grab_pod() {
                 esac
                 resp=""
             }
-            pid="$(echo "$resp" | jq -r '.id // empty' 2>/dev/null)"
+            pid="$(echo "$resp" | jq -r '.id // empty' 2>/dev/null || true)"
+            [[ "$pid" =~ ^[A-Za-z0-9]+$ ]] || pid=""   # never let a misparsed body become a ledger "vm"
             # Camping can run unattended for hours and billing starts HERE, before warm —
             # ping as soon as a pod is secured, not only at campaign launch.
             [ -n "$pid" ] && { POD="$pid"
@@ -512,7 +513,13 @@ run_campaign() {   # run <campaign.sh>... — several files = concurrent lanes o
     fi
     push_orchestration
     notify hourglass_flowing_sand default "EDM runpod started" "$LANES on $POD ($BACKEND @${DC:-any} $CLOUD, ${GPUS}× GPU)"
-    ledger "$POD" campaign_start "campaign=$CAMPAIGN lanes=$LANES dir=$OUT"
+    # One row per campaign dir (not the joined a+b name) with dir=$OUT/<camp>: cost_report's
+    # dir= attribution needs the campaign dir, and a crashed campaign only ever gets this row.
+    local camp lanes
+    for camp in $(printf '%s\n' "${LANE_CAMP[@]}" | sort -u); do
+        lanes=""; for i in "${!LANE_CAMP[@]}"; do [ "${LANE_CAMP[$i]}" = "$camp" ] && lanes="$lanes,${LANE_STEM[$i]}"; done
+        ledger "$POD" campaign_start "campaign=$camp lanes=${lanes#,} dir=$OUT/$camp"
+    done
     local i; for i in "${!LANE_STEM[@]}"; do launch_lane "$i"; done
     start_drainer || notify warning high "EDM drainer NOT started" "$LANES on $POD: cubes stay on the pod only; teardown gate will hold them"
     monitor_and_download
