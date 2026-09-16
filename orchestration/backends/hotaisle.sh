@@ -215,7 +215,7 @@ run_campaign() {
     # juliaup's PATH lives in .bashrc/.profile, which a non-interactive ssh shell never sources — export
     # it here or every julia invocation dies rc=127. The { …; } grouping keeps the pidfile write INSIDE
     # the cd (a bare `A && B & C` backgrounds A&&B and runs C in the ssh cwd = $HOME).
-    ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && { nohup bash \$HOME/edm-orch/backends/local.sh \$HOME/edm-orch/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
+    ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs && { DIAG_CAMPAIGN='${DIAG_CAMPAIGN:-}' nohup bash \$HOME/edm-orch/backends/local.sh \$HOME/edm-orch/campaigns/$cname > runs/${CAMPAIGN}.out 2>&1 < /dev/null & echo \$! > runs/${CAMPAIGN}.pid; }"
     start_drainer || notify warning high "EDM drainer NOT started" "$CAMPAIGN on $NAME: cubes stay on the VM only; teardown gate will hold them"
     log "polling for completion (DONE marker, or driver-death = crash so we don't poll forever while billing)…"
     until ssh_vm "grep -q '\\] ${CAMPAIGN} DONE' EDM/runs/${CAMPAIGN}.out 2>/dev/null"; do

@@ -6,4 +6,6 @@
 # counter collection (RmProfilingAdminOnly = 0 — the snapshot records it; when refused the
 # counter cells fail with ERR_NVGPUCTRPERM in their log and the power cells still stand).
 . "$(dirname "${BASH_SOURCE[0]}")/diag_validate_common.sh"
-CAMPAIGN=diag_validate_nvidia
+# DIAG_CAMPAIGN names the campaign per card (diag_validate_h100sxm, diag_validate_b300, …) so
+# output dirs and published campaign names stay separate; the recipe is the same.
+CAMPAIGN="${DIAG_CAMPAIGN:-diag_validate_nvidia}"
