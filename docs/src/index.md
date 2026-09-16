@@ -22,8 +22,13 @@ layer — is the separate package [GPUDiagnostics.jl](https://github.com/Sebasti
 documented at [SebastianM-C.github.io/GPUDiagnostics.jl](https://sebastianm-c.github.io/GPUDiagnostics.jl/).
 ElectronDynamicsModels re-exports the entry points it uses; `scripts/gpu_telemetry.jl` reduces
 their results into the run manifests' `[gpu]`, `[host]`, `[flops]` and `[timing]` sections, and
-`orchestration/profile_cell.sh` + `scripts/hw_counter_merge.jl` run a solver cell under a rocprofv3
-counter set and merge the result as `hw_*` keys in the GPUDiagnostics schema 2 layout.
+`orchestration/profile_cell.sh` + `scripts/hw_counter_merge.jl` run a solver cell under a
+hardware-counter set (rocprofv3 on ROCm, Nsight Compute on CUDA), merge the result as `hw_*` keys
+in the GPUDiagnostics schema 2 layout and register the collector's files in `[outputs]`; a campaign
+cell carrying `EDM_PROFILE=<set>` goes through that path (`orchestration/run_cell.sh`). The
+`[flops]` section records the swept FMA-chain peak with the geometry that attained it and the
+clock and power sampled during the probe (`peak_probe_*`), plus the FP64 GEMM rate as an upper
+reference, so a percent-of-peak figure carries its own denominator's provenance.
 `scripts/instruction_mix.jl` prints the production field kernel's instruction mix, natively or
 cross-compiled for a GPU that is not present.
 

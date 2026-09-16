@@ -81,6 +81,18 @@ if m !== nothing && !haskey(opt, "no-write")
     filter!(kv -> !startswith(first(kv), "hw_"), gpu)
     merge!(gpu, section)
     m["gpu"] = gpu
+    # The collector's files are run products like the gputrace: every file [outputs] names is
+    # what the dashboard ships beside the manifest, so the raw counters travel with the run and
+    # a reader can re-parse them instead of trusting the reduced hw_* keys. Registered only when
+    # present (an ncu run has no agent info; a failed run may have only the log).
+    outs = get!(m, "outputs", Dict{String, Any}())
+    for (key, file) in (("hw_counter_collection", "$(name)_counter_collection.csv"),
+            ("hw_counter_collection", "$(name)_ncu.csv"),      # the NVIDIA collector's CSV
+            ("hw_kernel_trace", "$(name)_kernel_trace.csv"), ("hw_agent_info", "$(name)_agent_info.csv"),
+            ("hw_ncu_report", "$(name).ncu-rep"), ("hw_log", "rocprof_$(name).log"), ("hw_log", "ncu_$(name).log"))
+        isfile(joinpath(dir, file)) && (outs[key] = file)
+    end
     open(io -> TOML.print(io, m; sorted = true), manifest, "w")
-    println("merged $(length(section)) keys into [gpu] of $manifest")
+    println("merged $(length(section)) keys into [gpu] of $manifest; outputs: ",
+        join((k for k in keys(outs) if startswith(k, "hw_")), ", "))
 end
