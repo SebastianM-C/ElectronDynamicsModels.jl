@@ -258,6 +258,15 @@ mkdir -p ~/EDM/runs
 mkdir -p ~/edm-orch
 printf 'LOCAL_BACKEND=%s\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=JULIA_DEPOT_PATH=%s\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=verda\nEDM_REPO=%s\nJULIA_CHANNEL=%s\n' \
     "$BK" "$JULIA_DEPOT_PATH" "$HOME/EDM" "$JULIA_CHANNEL" > ~/edm-orch/config.env
+# Nsight Compute for the counter cells (EDM_PROFILE): Verda VMs permit counter collection, so
+# install it when the image lacks it (the CUDA apt repo is configured on the cuda images) and
+# put GPUDIAGNOSTICS_COUNTER_TOOL in config.env BEFORE the lane starts (local.sh sources it once).
+NCU=$(command -v ncu 2>/dev/null || ls -d /opt/nvidia/nsight-compute/*/ncu 2>/dev/null | tail -1)
+if [ -z "$NCU" ] && [ "$BK" = cuda ] && apt-cache policy nsight-compute 2>/dev/null | grep -q Candidate; then
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nsight-compute >/dev/null 2>&1 || echo "[warm] nsight-compute install failed (counter cells will skip)"
+    NCU=$(ls -d /opt/nvidia/nsight-compute/*/ncu 2>/dev/null | tail -1)
+fi
+[ -n "$NCU" ] && echo "export GPUDIAGNOSTICS_COUNTER_TOOL=$NCU" >> ~/edm-orch/config.env && echo "[warm] ncu: $NCU"
 REPO_DIR=~/EDM; . ~/EDM/orchestration/depot_cache.sh   # julia-actions/cache semantics over the rsync store
 depot_cache_restore   # → DC_RESTORED = exact | prefix (instantiate tops it up) | miss (fresh build)
 ok=0; for i in 1 2 3; do
