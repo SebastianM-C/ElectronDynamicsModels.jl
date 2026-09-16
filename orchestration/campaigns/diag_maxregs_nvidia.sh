@@ -22,15 +22,13 @@ BASE+=(EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_SKIP_POSTPROCESS=1 EDM_GPU_SA
 POWER="$STRONG EDM_N=2000 EDM_SWEEP=diag_maxregs_power"
 OCC="$STRONG EDM_N=32 EDM_SWEEP=diag_maxregs_occupancy EDM_PROFILE=occupancy"
 FP64="$STRONG EDM_N=32 EDM_SWEEP=diag_maxregs_fp64 EDM_PROFILE=fp64"
-CELLS=(
-  "power_ctrl|$POWER"
-  "occupancy_ctrl|$OCC"
-  "fp64_ctrl|$FP64"
-)
+# DIAG_MAXREGS_POWER_ONLY=1: just the four sampler cells — for a box where counter collection
+# is refused (RmProfilingAdminOnly=1, e.g. a shared workstation); the counter half then runs
+# on a VM that permits it. Launch time + GPM occupancy + registers/spills still answer the
+# "does the cap pay" question; the counters explain why.
+CELLS=("power_ctrl|$POWER")
+[ "${DIAG_MAXREGS_POWER_ONLY:-0}" = 1 ] || CELLS+=("occupancy_ctrl|$OCC" "fp64_ctrl|$FP64")
 for R in 96 80 64; do
-  CELLS+=(
-    "power_r$R|$POWER EDM_MAXREGS=$R"
-    "occupancy_r$R|$OCC EDM_MAXREGS=$R"
-    "fp64_r$R|$FP64 EDM_MAXREGS=$R"
-  )
+  CELLS+=("power_r$R|$POWER EDM_MAXREGS=$R")
+  [ "${DIAG_MAXREGS_POWER_ONLY:-0}" = 1 ] || CELLS+=("occupancy_r$R|$OCC EDM_MAXREGS=$R" "fp64_r$R|$FP64 EDM_MAXREGS=$R")
 done
