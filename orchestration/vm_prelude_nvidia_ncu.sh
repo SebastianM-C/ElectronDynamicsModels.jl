@@ -46,7 +46,14 @@ candidates() {   # every ncu on the box, newest install dirs first
     command -v ncu 2>/dev/null
     ls -d /usr/local/cuda*/bin/ncu 2>/dev/null | sort -rV
 }
-pick() { local c; for c in $(candidates | awk '!seen[$0]++'); do log "probing $c ($("$c" --version 2>/dev/null | grep -o 'Version [0-9.]*' | head -1))"; probe "$c" && { echo "$c"; return 0; }; done; return 1; }
+pick() {   # stdout = the chosen path ONLY (callers capture it); progress goes to stderr + the txt
+    local c
+    for c in $(candidates | awk '!seen[$0]++'); do
+        log "probing $c ($("$c" --version 2>/dev/null | grep -o 'Version [0-9.]*' | head -1))" >&2
+        if probe "$c"; then log "  → collects" >&2; echo "$c"; return 0; else log "  → no" >&2; fi
+    done
+    return 1
+}
 
 if ncu=$(pick); then
     log "ncu already usable: $ncu ($("$ncu" --version 2>/dev/null | grep -o 'Version [0-9.]*' | head -1))"
@@ -74,6 +81,7 @@ else
         exit 3
     fi
 fi
+[ -x "$ncu" ] || { log "FAILED: chosen ncu is not executable: '$ncu'"; exit 3; }
 ln -sfn "$ncu" /usr/local/bin/ncu
 log "PATH ncu → $(readlink -f /usr/local/bin/ncu)"
 # Belt and braces: profile_cell.sh runs under `env $LOCAL_PREENV`, so name the tool there too
