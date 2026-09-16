@@ -68,7 +68,10 @@ catch err
         end
     end
     @warn "no counter collection to merge" name err = sprint(showerror, err) collector_notes = notes
-    if m !== nothing && !haskey(opt, "no-write")
+    # No manifest means the solver itself did not finish under the collector (a refused set
+    # aborts rocprofv3 and takes the child with it): that is a failed cell, not a tolerated one.
+    m === nothing && (println(stderr, "hw_counter_merge: no manifest and no collection — the profiled run did not complete"); exit(1))
+    if !haskey(opt, "no-write")
         gpu["hw_counter_status"] = "none"
         isempty(notes) || (gpu["hw_counter_notes"] = unique(notes))
         m["gpu"] = gpu
