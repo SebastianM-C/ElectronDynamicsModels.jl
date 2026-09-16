@@ -58,6 +58,9 @@ SPOT="${VERDA_SPOT:-0}"; [[ "$SPOT" =~ ^[01]$ ]] || { echo "VERDA_SPOT must be 0
 REPO_URL="${VERDA_REPO_URL:?set VERDA_REPO_URL in config.env}"; BRANCH="${VERDA_BRANCH:-main}"
 DEPOT_CACHE="${DEPOT_CACHE:-}"; DEPOT_CACHE_KEY="${DEPOT_CACHE_KEY:-$HOME/.config/runpod/depot_key}"   # shared cache (see depot_cache.sh)
 STATE="${VERDA_STATE:-$HOME/.config/verda/campaign_vm}"; OUT="${VERDA_OUT:-$HOME/campaign_out}"
+# The STATE write happens the instant a VM bills (before anything can fail): its directory must
+# already exist, or a fresh driver box orphans the first VM it ever provisions (2026-09-16).
+mkdir -p "$(dirname "$STATE")"
 POLL="${VERDA_POLL_SEC:-120}"; MAXTRIES="${VERDA_MAX_TRIES:-240}"
 PUBKEY="$(cat "${VERDA_SSH_PUBKEY:-$HOME/.config/verda/ssh_pubkey}" 2>/dev/null || ssh-add -L 2>/dev/null | head -1)"
 CM="$HOME/.ssh/cm-verda-$(basename "$STATE").sock"   # per-STATE: concurrent drivers must not remux onto one socket
