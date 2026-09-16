@@ -27,6 +27,15 @@
 # config.env: VERDA_TYPES (ladder override), VERDA_LOCATIONS, VERDA_IMAGE, VERDA_OS_VOLUME_GB,
 # VERDA_SPOT, VERDA_REPO_URL/BRANCH, VERDA_SSH_PUBKEY (+ optional VERDA_SSH_KEY for headless
 # drivers), DEPOT_CACHE/DEPOT_CACHE_KEY. Secrets external: ~/.verda/credentials; ntfy via NTFY_ENV.
+#
+# VM hooks (env or config.env; paths relative to orchestration/, which push_orchestration ships):
+#   VERDA_VM_PRELUDE=<script>   run as root on the VM after warm, BEFORE any lane launches, with the
+#                               campaign dir as $1 (e.g. vm_prelude_nvidia_ncu.sh: an ncu that knows
+#                               the chip). Non-zero exit: VERDA_PRELUDE_FAIL=keep (default) launches
+#                               anyway, =teardown deletes the VM (stops billing) and exits 6.
+#   VERDA_VM_POSTLUDE=<script>  run after every lane is DONE, before the download, same $1 (e.g.
+#                               vm_postlude_gpudiag_suite.sh). Its status is reported, never fatal.
+# Both log to <campaign dir>/<hook>.log on the VM, so the logs ride home with the products.
 set -Eeuo pipefail
 ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/.."; ORCH="$(cd "$ORCH" && pwd)"
 # Caller-env overrides must survive config.env (sourced via run_cell.sh) — capture before, prefer after.
@@ -49,6 +58,9 @@ SPOT="${VERDA_SPOT:-0}"; [[ "$SPOT" =~ ^[01]$ ]] || { echo "VERDA_SPOT must be 0
 REPO_URL="${VERDA_REPO_URL:?set VERDA_REPO_URL in config.env}"; BRANCH="${VERDA_BRANCH:-main}"
 DEPOT_CACHE="${DEPOT_CACHE:-}"; DEPOT_CACHE_KEY="${DEPOT_CACHE_KEY:-$HOME/.config/runpod/depot_key}"   # shared cache (see depot_cache.sh)
 STATE="${VERDA_STATE:-$HOME/.config/verda/campaign_vm}"; OUT="${VERDA_OUT:-$HOME/campaign_out}"
+# The STATE write happens the instant a VM bills (before anything can fail): its directory must
+# already exist, or a fresh driver box orphans the first VM it ever provisions (2026-09-16).
+mkdir -p "$(dirname "$STATE")"
 POLL="${VERDA_POLL_SEC:-120}"; MAXTRIES="${VERDA_MAX_TRIES:-240}"
 PUBKEY="$(cat "${VERDA_SSH_PUBKEY:-$HOME/.config/verda/ssh_pubkey}" 2>/dev/null || ssh-add -L 2>/dev/null | head -1)"
 CM="$HOME/.ssh/cm-verda-$(basename "$STATE").sock"   # per-STATE: concurrent drivers must not remux onto one socket
@@ -407,6 +419,7 @@ monitor_and_download() {   # poll every lane for DONE (crash = 3 consecutive dea
         sleep 60
         for i in "${!LANE_STEM[@]}"; do [ "${fin[$i]}" = 1 ] || lane_tail "$i"; done
     done
+    vm_hook POSTLUDE || notify warning high "EDM verda postlude FAILED" "$LANES on $VM: $VERDA_VM_POSTLUDE exited non-zero — products still downloaded; see runs/<camp>/$(basename "${VERDA_VM_POSTLUDE:-x}" .sh).log"
     local camp keep j
     for camp in $(printf '%s\n' "${LANE_CAMP[@]}" | sort -u); do
         keep=0; for j in "${!LANE_CAMP[@]}"; do [ "${LANE_CAMP[$j]}" = "$camp" ] && [ "${LANE_KEEP[$j]}" = 1 ] && keep=1; done
@@ -419,6 +432,23 @@ monitor_and_download() {   # poll every lane for DONE (crash = 3 consecutive dea
     fi
     log "products → $OUT/{$CAMPAIGN} ; VM $VM KEPT (state $STATE). More: $0 run <campaign>... Finish: $0 teardown"
     return "$anybad"
+}
+
+# vm_hook <PRELUDE|POSTLUDE> — run the configured hook script on the VM for every campaign dir of
+# this run (lanes usually share one). Output → EDM/runs/<camp>/<hook stem>.log (downloaded with the
+# campaign). Returns the hook's status; the callers decide what a failure means.
+vm_hook() {
+    local which=$1 var="VERDA_VM_$1" script rc=0 camp stem
+    script="${!var:-}"; [ -n "$script" ] || return 0
+    [ -f "$ORCH/$script" ] || { log "[ERROR] $var=$script not found under orchestration/"; return 64; }
+    stem=$(basename "$script" .sh)
+    for camp in $(printf '%s\n' "${LANE_CAMP[@]}" | sort -u); do
+        log "$which $script → runs/$camp/$stem.log"
+        ssh_vm "export PATH=\"\$HOME/.juliaup/bin:\$PATH\"; cd EDM && mkdir -p runs/$camp && bash \$HOME/edm-orch/$script runs/$camp > runs/$camp/$stem.log 2>&1; rc=\$?; tail -n 5 runs/$camp/$stem.log; exit \$rc" \
+            | sed "s/^/[vm $stem] /" ; rc=${PIPESTATUS[0]}
+        [ "$rc" -eq 0 ] && log "$which $stem OK" || log "$which $stem FAILED (rc=$rc)"
+    done
+    return "$rc"
 }
 
 run_campaign() {   # run <campaign.sh>... — several files = concurrent lanes on one VM
@@ -447,6 +477,14 @@ run_campaign() {   # run <campaign.sh>... — several files = concurrent lanes o
         trap - ERR    # VM up + warm; a campaign hiccup below must NOT auto-destroy it
     fi
     push_orchestration
+    if ! vm_hook PRELUDE; then
+        if [ "${VERDA_PRELUDE_FAIL:-keep}" = teardown ]; then
+            notify rotating_light urgent "EDM verda PRELUDE FAILED" "$LANES on $VM: $VERDA_VM_PRELUDE failed — tearing down (VERDA_PRELUDE_FAIL=teardown), nothing launched."
+            ledger "$VM" campaign_crash "campaign=$CAMPAIGN prelude $VERDA_VM_PRELUDE failed; teardown"
+            teardown; exit 6
+        fi
+        notify warning high "EDM verda prelude FAILED" "$LANES on $VM: $VERDA_VM_PRELUDE failed — launching anyway (VERDA_PRELUDE_FAIL=keep); see runs/<camp>/$(basename "$VERDA_VM_PRELUDE" .sh).log"
+    fi
     notify hourglass_flowing_sand default "EDM verda started" "$LANES on $VM ($TYPE @ $LOC, $BACKEND, spot=$SPOT)"
     # One row per campaign dir with dir=$OUT/<camp> (same as runpod.sh): dir= attribution
     # needs the campaign dir, and a crashed campaign only ever gets this row.
