@@ -171,7 +171,9 @@ provision() {
                 case "$code" in
                     2*) VM=$(echo "$body" | jq -r 'if type=="string" then . else (.id // .instance_id // empty) end' 2>/dev/null) || VM=""
                         [ -n "$VM" ] || VM=$(echo "$body" | tr -d '"[:space:]')
-                        [ -n "$VM" ] || { log "create $t@$l: 2xx but no instance id in '$body'"; continue; } ;;
+                        # instance ids are UUIDs — anything else is a body we misparsed, never a ledger "vm"
+                        [[ "$VM" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
+                            || { log "create $t@$l: 2xx but no instance id in '$(echo "$body" | head -c 120)'"; VM=""; continue; } ;;
                     503) continue ;;
                     *)  log "create $t@$l rejected: HTTP $code $(echo "$body" | head -c 200)"; continue ;;
                 esac
@@ -446,7 +448,13 @@ run_campaign() {   # run <campaign.sh>... — several files = concurrent lanes o
     fi
     push_orchestration
     notify hourglass_flowing_sand default "EDM verda started" "$LANES on $VM ($TYPE @ $LOC, $BACKEND, spot=$SPOT)"
-    ledger "$VM" campaign_start "campaign=$CAMPAIGN lanes=$LANES dir=$OUT"
+    # One row per campaign dir with dir=$OUT/<camp> (same as runpod.sh): dir= attribution
+    # needs the campaign dir, and a crashed campaign only ever gets this row.
+    local camp lanes
+    for camp in $(printf '%s\n' "${LANE_CAMP[@]}" | sort -u); do
+        lanes=""; for i in "${!LANE_CAMP[@]}"; do [ "${LANE_CAMP[$i]}" = "$camp" ] && lanes="$lanes,${LANE_STEM[$i]}"; done
+        ledger "$VM" campaign_start "campaign=$camp lanes=${lanes#,} dir=$OUT/$camp"
+    done
     local i; for i in "${!LANE_STEM[@]}"; do launch_lane "$i"; done
     start_drainer || notify warning high "EDM drainer NOT started" "$LANES on $VM: cubes stay on the VM only; teardown gate will hold them"
     monitor_and_download

@@ -94,7 +94,11 @@ provision() {
     vm=$(curl -sS -o - -w '\n%{http_code}' -X POST -H "Authorization: Token $TOK" -H "Content-Type: application/json" \
         --data-binary "{\"gpus\":[{\"model\":\"MI300X\",\"count\":$GPUS}]}" "$API/virtual_machines/") || vm=$'\n000'
     code=${vm##*$'\n'}; vm=${vm%$'\n'*}
-    NAME=$(echo "$vm" | jq -r '.name // empty' 2>/dev/null); IP=$(echo "$vm" | jq -r '.ssh_access.ip_address // empty' 2>/dev/null); PROV_TS=$(date +%s)
+    # `|| true`: a non-JSON body makes jq exit 5 inside the $(…); with an ERR trap armed
+    # (set -E) that ran log+teardown INSIDE the substitution and their text became $NAME
+    # (bogus "[… FAILED (rc=5) …]" ledger vm, 2026-09-16). Then validate the shape.
+    NAME=$(echo "$vm" | jq -r '.name // empty' 2>/dev/null || true); IP=$(echo "$vm" | jq -r '.ssh_access.ip_address // empty' 2>/dev/null || true); PROV_TS=$(date +%s)
+    [[ "$NAME" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || NAME=""
     if [ "${code#2}" = "$code" ] || [ -z "$NAME" ] || [ -z "$IP" ]; then
         log "[ERROR] provision failed: HTTP $code, response: $(echo "$vm" | head -c 300)"
         NAME=""; IP=""
