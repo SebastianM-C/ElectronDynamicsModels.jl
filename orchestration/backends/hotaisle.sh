@@ -119,12 +119,20 @@ set -e
 [ -x "$HOME/.juliaup/bin/julia" ] || curl -fsSL https://install.julialang.org | sh -s -- --yes
 export PATH="$HOME/.juliaup/bin:$PATH"   # no JULIA_PKG_SERVER: the VM uses Julia's public default (registries also ride the depot cache)
 rm -rf EDM && git clone --quiet --branch "$BRANCH" "$REPO_URL" EDM
+# Pin Julia to the version the tracked scripts manifest was resolved on (Manifest-v<ver>.toml).
+# juliaup's `release` channel moved to 1.13 on 2026-09-16: a fresh VM then resolved a NEW manifest
+# (1.13 ignores Manifest-v1.12.toml), missed every depot archive (keyed by Julia version) and
+# precompiled under compiled/v1.13. The channel also goes into the VM's config.env so local.sh
+# launches cells with the same `julia +<channel>`.
+JULIA_CHANNEL=$(ls EDM/scripts/Manifest-v*.toml 2>/dev/null | sed -E 's/.*Manifest-v([0-9]+\.[0-9]+)\.toml/\1/' | head -1)
+JULIA_CHANNEL="${JULIA_CHANNEL:-release}"
+juliaup add "$JULIA_CHANNEL" >/dev/null 2>&1 || true; juliaup default "$JULIA_CHANNEL"
 # VM-local config.env in ~/edm-orch — orchestration lives OUTSIDE the repo (driver-pushed)
 # so the clone stays pristine and cloud runs stop tripping the repo-dirty advisory;
 # EDM_REPO points run_cell back at the clone. rocm local backend, no ntfy on the VM, and
 # REDUCE_OVERLAP=1 so each cell's reduction overlaps the next cell's GPU compute (paid-time win).
 mkdir -p "$HOME/edm-orch"
-printf 'LOCAL_BACKEND=rocm\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=hotaisle\nEDM_REPO=%s\n' "$HOME/EDM" > "$HOME/edm-orch/config.env"
+printf 'LOCAL_BACKEND=rocm\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=hotaisle\nEDM_REPO=%s\nJULIA_CHANNEL=%s\n' "$HOME/EDM" "$JULIA_CHANNEL" > "$HOME/edm-orch/config.env"
 BK=rocm REPO_DIR="$HOME/EDM"; . EDM/orchestration/depot_cache.sh   # julia-actions/cache semantics (default ~/.julia depot)
 depot_cache_restore   # → DC_RESTORED = exact | prefix (instantiate tops it up) | miss (fresh build)
 ok=0; for i in 1 2 3; do
