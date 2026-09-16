@@ -51,7 +51,37 @@ if slots === nothing && m !== nothing
 end
 kernel = Regex(get(opt, "kernel", "forindices"))
 
-hc = hw_counters(dir; name, kernel, slots)
+# A refused or empty collection (no permission, nothing profiled) is a result, not a crash: the
+# cell's physics ran and its manifest stands. Record what the collector said and register its
+# files, then exit cleanly so the campaign counts the cell as done.
+hc = try
+    hw_counters(dir; name, kernel, slots)
+catch err
+    err isa ArgumentError || rethrow()
+    notes = String[]
+    for f in ("$(name)_ncu.csv", "$(name)_counter_collection.csv", "rocprof_$(name).log", "ncu_$(name).log")
+        isfile(joinpath(dir, f)) || continue
+        for l in eachline(joinpath(dir, f))
+            (occursin("==WARNING==", l) || occursin("==ERROR==", l) || occursin("ERR_", l) || occursin(r"(?i)not permitted", l)) &&
+                push!(notes, strip(l))
+            length(notes) ≥ 6 && break
+        end
+    end
+    @warn "no counter collection to merge" name err = sprint(showerror, err) collector_notes = notes
+    if m !== nothing && !haskey(opt, "no-write")
+        gpu["hw_counter_status"] = "none"
+        isempty(notes) || (gpu["hw_counter_notes"] = unique(notes))
+        m["gpu"] = gpu
+        outs = get!(m, "outputs", Dict{String, Any}())
+        for (key, file) in (("hw_counter_collection", "$(name)_ncu.csv"), ("hw_counter_collection", "$(name)_counter_collection.csv"),
+                ("hw_log", "rocprof_$(name).log"), ("hw_log", "ncu_$(name).log"))
+            isfile(joinpath(dir, file)) && (outs[key] = file)
+        end
+        open(io -> TOML.print(io, m; sorted = true), manifest, "w")
+        println("recorded hw_counter_status = none in [gpu] of $manifest")
+    end
+    exit(0)
+end
 d = first(hc.dispatches)
 over = Dict{String, Any}()
 for (flag, key) in (("n-cu", "n_cu"), ("n-xcd", "n_xcd"))
@@ -80,6 +110,7 @@ end
 if m !== nothing && !haskey(opt, "no-write")
     filter!(kv -> !startswith(first(kv), "hw_"), gpu)
     merge!(gpu, section)
+    gpu["hw_counter_status"] = "ok"
     m["gpu"] = gpu
     # The collector's files are run products like the gputrace: every file [outputs] names is
     # what the dashboard ships beside the manifest, so the raw counters travel with the run and

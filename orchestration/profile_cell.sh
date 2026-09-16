@@ -73,10 +73,17 @@ echo "[profile] $tag under $tool ($set_or_counters) → $out  (timeout ${PROFILE
     sym = Symbol(replace(strip(spec), r"^:" => ""))   # no single quotes: this code sits inside a bash single-quoted string
     sym = get(aliases, sym, sym)
     sel = haskey(COUNTER_SETS[vendor], sym) ? (; set = sym) : (; metrics = String.(split(spec)))
-    # ncu: the GPU work runs in the julia process ncu launches, but the sampler child and the
-    # precompile workers are subprocesses too — :application keeps them out of the replay.
+    # The workload arrives as `env K=V … julia …`: fold the assignments into the Cmd
+    # environment (addenv inherits the rest) so the profiled process IS the julia process:
+    # ncu profiles only the process it launches unless told to follow children, and rocprofv3
+    # follows them anyway. :application keeps the sampler child and precompile workers out.
+    # (No single quotes anywhere in this snippet: it sits inside a bash single-quoted string.)
+    words = String.(ARGS[7:end])
+    words[1] == "env" && popfirst!(words)
+    nenv = findfirst(w -> !occursin(r"^[A-Za-z_][A-Za-z0-9_]*=", w), words) - 1
+    workload = addenv(Cmd(words[(nenv + 1):end]), words[1:nenv])
     extra = collector isa NsightCompute ? (; executable, target_processes = :application) : (;)
-    cmd = hw_counter_command(collector, Cmd(String.(ARGS[7:end])); dir, name, timeout_s, sel..., extra...)
+    cmd = hw_counter_command(collector, workload; dir, name, timeout_s, sel..., extra...)
     println("[profile] ", cmd); flush(stdout)
     run(cmd)' \
     "$set_or_counters" "$out" "$tag" "$PROFILE_TIMEOUT" "$collector" "$tool_path" \
