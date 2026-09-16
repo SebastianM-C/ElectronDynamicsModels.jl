@@ -171,11 +171,30 @@ run_cell() {
     # In overlap mode the field runs WITHOUT inline postprocess; _reduce_cell does it backgrounded.
     local skip=""; [ "${REDUCE_OVERLAP:-0}" = 1 ] && skip="EDM_SKIP_POSTPROCESS=1"
     echo "[$(date -u +%FT%TZ)] cell $label  [$(basename "$SCRIPT") ${BACKEND:-?}]  keep=${KEEP_CUBE:-0} overlap=${REDUCE_OVERLAP:-0}  $uuid :: ${*:-<baseline>}"
+    # A cell whose overrides carry EDM_PROFILE=<set> runs under the vendor's hardware-counter
+    # collector (profile_cell.sh: rocprofv3 on ROCm, Nsight Compute on CUDA) and gets the reduced
+    # hw_* keys merged into its manifest and the collector's files registered in [outputs], so a
+    # counter pass is an ordinary campaign cell — a uuid, a cells.tsv row, published with the rest.
+    # The variable is consumed here, not passed to the solver. Profiled durations are not timings:
+    # keep such cells small (N = 32 is enough — per-slot counts are deterministic).
+    local profile="" arg rest=()
+    for arg in "$@"; do
+        case "$arg" in EDM_PROFILE=*) profile="${arg#EDM_PROFILE=}" ;; *) rest+=("$arg") ;; esac
+    done
+    set -- ${rest[@]+"${rest[@]}"}
     # shellcheck disable=SC2086
-    ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} ${BASE[@]+"${BASE[@]}"} $skip \
-          ${SWEEP_NAME:+EDM_SWEEP="$SWEEP_NAME"} \
-          EDM_GPU_BACKEND="$BACKEND" EDM_CLOUD_PROVIDER="$PROVIDER" EDM_OUTDIR="$CAMP" EDM_RUN_TAG="$uuid" EDM_KEEP_CUBE="${KEEP_CUBE:-0}" "$@" \
-          "${JL[@]}" --project=scripts "$SCRIPT" ) > "$log" 2>&1
+    if [ -n "$profile" ]; then
+        ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} \
+              SCRIPT="$SCRIPT" JL="${JL[*]}" PROFILE_TIMEOUT="${PROFILE_TIMEOUT:-1800}" \
+              bash orchestration/profile_cell.sh "$profile" "$CAMP" "$uuid" \
+              ${BASE[@]+"${BASE[@]}"} $skip ${SWEEP_NAME:+EDM_SWEEP="$SWEEP_NAME"} \
+              EDM_GPU_BACKEND="$BACKEND" EDM_CLOUD_PROVIDER="$PROVIDER" EDM_KEEP_CUBE="${KEEP_CUBE:-0}" "$@" ) > "$log" 2>&1
+    else
+        ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} ${BASE[@]+"${BASE[@]}"} $skip \
+              ${SWEEP_NAME:+EDM_SWEEP="$SWEEP_NAME"} \
+              EDM_GPU_BACKEND="$BACKEND" EDM_CLOUD_PROVIDER="$PROVIDER" EDM_OUTDIR="$CAMP" EDM_RUN_TAG="$uuid" EDM_KEEP_CUBE="${KEEP_CUBE:-0}" "$@" \
+              "${JL[@]}" --project=scripts "$SCRIPT" ) > "$log" 2>&1
+    fi
     local rc=$?
     if [ "$rc" -eq 0 ]; then
         CELLS_OK=$(( ${CELLS_OK:-0} + 1 ))

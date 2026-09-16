@@ -295,20 +295,61 @@ function flops_manifest_section(backend, alg, mode::Symbol, solver_kw, N, Nx, Ny
             nothing
         end
         arch === nothing || (f["gpu_arch"] = String(arch))
-        peak = try
-            Float64(measure_peak_flops(backend))
+        # The denominator: the FMA-chain peak, swept over chains × launch size (GPUDiagnostics ≥ 0.4),
+        # measured on the device that ran the field under its own short sampler window so the
+        # manifest says at WHICH clock and power the peak was attained — on a power-managed part
+        # (MI300X) the probe reads the power-limited peak, which is the right denominator for a
+        # kernel under the same cap, but only if the clock beside it says so. The GEMM rate is the
+        # matrix-unit ceiling, recorded as an upper reference, never as the peak.
+        probe = try
+            _measure_peak_probe(backend)
         catch err
             @warn "FP64 peak measurement failed — omitting peak_fp64_flops / peak_fraction_field" exception = (err, catch_backtrace())
-            NaN
+            nothing
         end
-        if isfinite(peak) && peak > 0
-            f["peak_fp64_flops"] = peak
-            f["peak_fp64_method"] = "fma-chain-measured"   # the same probe on every backend, the CPU included
-            f["peak_fraction_field"] = rate / peak
+        if probe !== nothing && isfinite(probe.flops) && probe.flops > 0
+            f["peak_fp64_flops"] = probe.flops
+            f["peak_fp64_method"] = "fma-chain-measured-swept"   # the same probe on every backend, the CPU included
+            f["peak_fraction_field"] = rate / probe.flops
+            merge!(f, probe.record)
         end
         return f
     catch err
         @warn "FLOP accounting unavailable — omitting [flops] from the manifest" exception = err
         return nothing
     end
+end
+
+
+# The peak probe with its context: `peak_flops_probe` (the sweep + winning geometry → `peak_probe_*`
+# keys via diagnostics_dict), sampled at 0.1 s on the device it runs on so the busy-window clock
+# and power land beside it (`peak_probe_clock_MHz`, `peak_probe_power_W`, `peak_probe_power_limit_W`,
+# `peak_probe_power_capped_fraction`), and the FP64 GEMM rate (`peak_gemm_fp64_flops`). The sampler
+# is best-effort: without telemetry (no vendor extension) the probe still runs and only the clock
+# keys are absent. Returns (; flops, record).
+function _measure_peak_probe(backend)
+    dev = try gpu_device(backend) catch; 1 end
+    probe, telem = with_gpu_sampler(backend, 0.1; devices = [dev]) do
+        peak_flops_probe(backend)
+    end
+    rec = diagnostics_dict(probe; prefix = "peak_probe_")
+    delete!(rec, "gpudiagnostics_schema")   # [gpu] carries the schema stamp for the manifest
+    if telem !== nothing && telem.ticks > 0
+        st = gpu_telemetry_stats(telem)
+        for (key, col) in (("peak_probe_clock_MHz", "sm_clock_MHz_busy_median"),
+                ("peak_probe_power_W", "power_W_busy_mean"), ("peak_probe_power_limit_W", "power_limit_W_mean"),
+                ("peak_probe_power_capped_fraction", "power_capped_fraction"))
+            v = get(st, col, missing)
+            v === missing || !isfinite(v) || (rec[key] = Float64(v))
+        end
+        rec["peak_probe_busy_samples"] = st["busy_samples"]
+    end
+    gemm = try
+        measure_gemm_flops(backend)
+    catch err
+        @warn "GEMM reference failed — omitting peak_gemm_fp64_flops" exception = err
+        NaN
+    end
+    isfinite(gemm) && gemm > 0 && (rec["peak_gemm_fp64_flops"] = gemm)
+    return (; flops = probe.flops, record = rec)
 end
