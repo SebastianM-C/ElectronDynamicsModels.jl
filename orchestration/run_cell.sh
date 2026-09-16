@@ -185,7 +185,7 @@ run_cell() {
     # shellcheck disable=SC2086
     if [ -n "$profile" ]; then
         ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} \
-              SCRIPT="$SCRIPT" JL="${JL[*]}" PROFILE_TIMEOUT="${PROFILE_TIMEOUT:-1800}" \
+              SCRIPT="$SCRIPT" JL_CMD="${JL[*]}" PROFILE_TIMEOUT="${PROFILE_TIMEOUT:-1800}" \
               bash orchestration/profile_cell.sh "$profile" "$CAMP" "$uuid" \
               ${BASE[@]+"${BASE[@]}"} $skip ${SWEEP_NAME:+EDM_SWEEP="$SWEEP_NAME"} \
               EDM_GPU_BACKEND="$BACKEND" EDM_CLOUD_PROVIDER="$PROVIDER" EDM_KEEP_CUBE="${KEEP_CUBE:-0}" "$@" ) > "$log" 2>&1
