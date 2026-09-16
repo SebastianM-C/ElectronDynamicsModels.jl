@@ -258,14 +258,22 @@ export JULIA_DEPOT_PATH="/root/julia-depot-$BK"   # pod-local NVMe — NEVER the
 [ -x "$HOME/.juliaup/bin/julia" ] || curl -fsSL https://install.julialang.org | sh -s -- --yes
 export PATH="$HOME/.juliaup/bin:$PATH"   # no JULIA_PKG_SERVER: fresh pod uses Julia's public default (don't leak the driver's internal one)
 rm -rf ~/EDM && git clone --quiet --branch "$BRANCH" "$REPO_URL" ~/EDM   # fresh clone = always current
+# Pin Julia to the version the tracked scripts manifest was resolved on (Manifest-v<ver>.toml).
+# juliaup's `release` channel moved to 1.13 on 2026-09-16: a fresh VM then resolved a NEW manifest
+# (1.13 ignores Manifest-v1.12.toml), missed every depot archive (keyed by Julia version) and
+# precompiled under compiled/v1.13. The channel also goes into the VM's config.env so local.sh
+# launches cells with the same `julia +<channel>`.
+JULIA_CHANNEL=$(ls EDM/scripts/Manifest-v*.toml 2>/dev/null | sed -E 's/.*Manifest-v([0-9]+\.[0-9]+)\.toml/\1/' | head -1)
+JULIA_CHANNEL="${JULIA_CHANNEL:-release}"
+juliaup add "$JULIA_CHANNEL" >/dev/null 2>&1 || true; juliaup default "$JULIA_CHANNEL"
 if [ -n "$HAS_VOL" ]; then mkdir -p /workspace/runs && ln -sfn /workspace/runs ~/EDM/runs   # cubes persist on the volume
 else mkdir -p ~/EDM/runs; fi
 # Orchestration lives OUTSIDE the repo (~/edm-orch, driver-pushed) so the clone stays
 # pristine and cloud runs stop tripping the repo-dirty advisory; EDM_REPO points run_cell
 # back at the clone (config.env's documented override).
 mkdir -p ~/edm-orch
-printf 'LOCAL_BACKEND=%s\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=JULIA_DEPOT_PATH=%s\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=runpod\nEDM_REPO=%s\n' \
-    "$BK" "$JULIA_DEPOT_PATH" "$HOME/EDM" > ~/edm-orch/config.env
+printf 'LOCAL_BACKEND=%s\nLOCAL_JL_THREADS=auto\nLOCAL_PREENV=JULIA_DEPOT_PATH=%s\nREDUCE_OVERLAP=1\nLOCAL_CLOUD_PROVIDER=runpod\nEDM_REPO=%s\nJULIA_CHANNEL=%s\n' \
+    "$BK" "$JULIA_DEPOT_PATH" "$HOME/EDM" "$JULIA_CHANNEL" > ~/edm-orch/config.env
 REPO_DIR=~/EDM; . ~/EDM/orchestration/depot_cache.sh   # julia-actions/cache semantics over the rsync store
 depot_cache_restore   # → DC_RESTORED = exact | prefix (instantiate tops it up) | miss (fresh build)
 ok=0; for i in 1 2 3; do
