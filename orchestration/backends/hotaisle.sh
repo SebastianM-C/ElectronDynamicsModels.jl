@@ -15,6 +15,8 @@
 #   hotaisle.sh teardown                 # cost-safe delete (waits the reservation minimum)
 #
 # config.env: HOTAISLE_TEAM, HOTAISLE_GPUS, HOTAISLE_REPO_URL, HOTAISLE_BRANCH (, HOTAISLE_API).
+# HOTAISLE_WAIT_MIN=<minutes> (default 0) polls the offerings until a VM of the requested size is
+# listed, then provisions — capacity comes in short windows; HOTAISLE_POLL_S (default 120) is the cadence.
 # Secrets stay external: API token at ~/.config/hotaisle/token; ntfy creds (driving-side) via NTFY_ENV.
 # BILLING: 1 GPU = per-minute (1-min minimum); 2/4 carry 60/120-min minimums. Teardown waits out the
 # minimum, then a non-force DELETE. The API DELETE is reliable (validated repeatedly 2026-07):
@@ -46,10 +48,27 @@ api()       { curl -fsS -X "$1" -H "Authorization: Token $TOK" "${@:3}" "$API$2"
 ssh_vm()    { /usr/bin/ssh $SSHOPTS hotaisle@"$IP" "$@"; }
 log()       { echo "[$(date -u +%FT%TZ)] $*"; }
 balance()   { api GET /balance/ | jq -r '.available_balance/100'; }
-min_resv()  { api GET /virtual_machines/available/ | jq -r --argjson g "$GPUS" \
+# The offerings list. With nothing on offer the endpoint returns a bare `null` (not `[]`), which
+# `jq '.[]'` cannot iterate — normalised here so every reader sees a list.
+offerings() { api GET /virtual_machines/available/ 2>/dev/null | jq 'if . == null then [] else . end' 2>/dev/null || echo '[]'; }
+offered()   { offerings | jq -r --argjson g "$GPUS" '[.[]|select(.Specs.gpus[0].model=="MI300X" and .Specs.gpus[0].count==$g)]|length'; }
+min_resv()  { offerings | jq -r --argjson g "$GPUS" \
               '[.[]|select(.Specs.gpus[0].model=="MI300X" and .Specs.gpus[0].count==$g)|.MinimumReservationMinutes][0]//1'; }
-price()     { api GET /virtual_machines/available/ | jq -r --argjson g "$GPUS" \
+price()     { offerings | jq -r --argjson g "$GPUS" \
               '[.[]|select(.Specs.gpus[0].model=="MI300X" and .Specs.gpus[0].count==$g)|.OnDemandPrice*$g][0]//empty'; }
+# Capacity is intermittent (windows of minutes, minutes to hours apart): with HOTAISLE_WAIT_MIN > 0
+# the driver polls the offerings every HOTAISLE_POLL_S seconds for up to that many minutes and
+# provisions the moment a ${GPUS}×MI300X is listed; 0 (default) checks once and fails fast.
+WAIT_MIN="${HOTAISLE_WAIT_MIN:-0}"; POLL_S="${HOTAISLE_POLL_S:-120}"
+wait_capacity() {
+    local deadline=$(( $(date +%s) + WAIT_MIN * 60 )) n misses=0
+    while :; do
+        n=$(offered); [ "${n:-0}" -gt 0 ] && { [ "$misses" -gt 0 ] && log "capacity: ${GPUS}×MI300X offered after $misses misses"; return 0; }
+        [ "$(date +%s)" -ge "$deadline" ] && { log "no ${GPUS}×MI300X on offer (offerings: $(offerings | jq -c '[.[]|.Specs.gpus[0]|"\(.count)×\(.model)"]'))"; return 1; }
+        [ "$misses" -eq 0 ] && log "no ${GPUS}×MI300X on offer — polling every ${POLL_S}s for up to ${WAIT_MIN} min"
+        misses=$((misses + 1)); sleep "$POLL_S"
+    done
+}
 
 # Persistent cost ledger (shared with runpod.sh; reported by the private results-dashboard
 # repo's scripts/cost_report.sh — only the appends live here, 2026-07-22).
@@ -65,11 +84,22 @@ ledger()    {   # ledger <vm> <event> <detail> [rate_cents_h] [balance_usd]
 }
 
 provision() {
+    wait_capacity || return 1
     local bal rate; bal=$(balance 2>/dev/null) || bal=""; rate=$(price 2>/dev/null) || rate=""
     log "provisioning ${GPUS}×MI300X (balance \$${bal:-?}, list ${rate:-?}¢/h)…"
-    local vm; vm=$(api POST /virtual_machines/ -H "Content-Type: application/json" \
-        --data-binary "{\"gpus\":[{\"model\":\"MI300X\",\"count\":$GPUS}]}")
-    NAME=$(echo "$vm"|jq -r .name); IP=$(echo "$vm"|jq -r .ssh_access.ip_address); PROV_TS=$(date +%s)
+    # Not `api` (curl -f): capture the body AND the status, so a 404 ("available VM matching
+    # requested specs not found" — the offering vanished between the check and the POST) or a
+    # 2xx with no name/address is a hard, explained failure here, not a hang in wait_ssh.
+    local vm code
+    vm=$(curl -sS -o - -w '\n%{http_code}' -X POST -H "Authorization: Token $TOK" -H "Content-Type: application/json" \
+        --data-binary "{\"gpus\":[{\"model\":\"MI300X\",\"count\":$GPUS}]}" "$API/virtual_machines/") || vm=$'\n000'
+    code=${vm##*$'\n'}; vm=${vm%$'\n'*}
+    NAME=$(echo "$vm" | jq -r '.name // empty' 2>/dev/null); IP=$(echo "$vm" | jq -r '.ssh_access.ip_address // empty' 2>/dev/null); PROV_TS=$(date +%s)
+    if [ "${code#2}" = "$code" ] || [ -z "$NAME" ] || [ -z "$IP" ]; then
+        log "[ERROR] provision failed: HTTP $code, response: $(echo "$vm" | head -c 300)"
+        NAME=""; IP=""
+        return 1
+    fi
     log "provisioned $NAME ($IP)"
     ledger "$NAME" provision "gpus=$GPUS" "$rate" "$bal"
 }
@@ -202,8 +232,12 @@ run_campaign() {
             && julia --startup=no --project=scripts -e 'using Pkg; Pkg.instantiate()' > /dev/null 2>&1 \
             && git log --oneline -1" | sed 's/^/[vm-clone] /'
     else
+        # A failed provision leaves nothing to tear down (no VM, no STATE); the trap covers the
+        # steps after a VM exists. `|| exit` rather than relying on the ERR trap: under set -E the
+        # trap also fires inside command substitutions, where its `exit` ends only the subshell.
+        provision || { log "FAILED: no VM provisioned"; notify rotating_light high "EDM hotaisle FAILED" "$CAMPAIGN: no VM provisioned (capacity / API)"; exit 5; }
         trap 'rc=$?; log "FAILED (rc=$rc) before VM was handed off"; notify rotating_light urgent "EDM hotaisle FAILED" "$CAMPAIGN setup errored (rc=$rc); tearing down"; teardown; exit $rc' ERR
-        provision; wait_ssh; warm
+        wait_ssh; warm
         echo "$NAME $IP $PROV_TS $(min_resv)" > "$STATE"
         trap - ERR    # VM is up + warm; a campaign/download hiccup below must NOT auto-destroy it
     fi
