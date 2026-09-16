@@ -72,4 +72,11 @@ else
 fi
 ln -sfn "$ncu" /usr/local/bin/ncu
 log "PATH ncu → $(readlink -f /usr/local/bin/ncu)"
+# Belt and braces: profile_cell.sh runs under `env $LOCAL_PREENV`, so name the tool there too
+# (the generated config.env does not carry it — that cost a counter sweep on an H200 pod).
+cfg="$HOME/edm-orch/config.env"
+if [ -f "$cfg" ] && ! grep -q GPUDIAGNOSTICS_COUNTER_TOOL "$cfg"; then
+    sed -i "s|^LOCAL_PREENV=\(.*\)$|LOCAL_PREENV=\1 GPUDIAGNOSTICS_COUNTER_TOOL=/usr/local/bin/ncu|" "$cfg"
+    log "config.env LOCAL_PREENV += GPUDIAGNOSTICS_COUNTER_TOOL=/usr/local/bin/ncu"
+fi
 exit 0
