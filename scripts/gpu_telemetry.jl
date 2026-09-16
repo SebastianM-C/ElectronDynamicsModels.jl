@@ -329,20 +329,29 @@ end
 # keys are absent. Returns (; flops, record).
 function _measure_peak_probe(backend)
     dev = try gpu_device(backend) catch; 1 end
+    # The sampler child takes a few seconds to deliver its first row, and the vendor utilisation
+    # counter has a ~1 s granularity, so the probe must outlast both: 0.5 s launches make the
+    # sweep + trials about 8 s of device time, enough for several busy rows on every card.
     probe, telem = with_gpu_sampler(backend, 0.1; devices = [dev]) do
-        peak_flops_probe(backend)
+        peak_flops_probe(backend; target_seconds = 0.5)
     end
     rec = diagnostics_dict(probe; prefix = "peak_probe_")
     delete!(rec, "gpudiagnostics_schema")   # [gpu] carries the schema stamp for the manifest
     if telem !== nothing && telem.ticks > 0
         st = gpu_telemetry_stats(telem)
-        for (key, col) in (("peak_probe_clock_MHz", "sm_clock_MHz_busy_median"),
-                ("peak_probe_power_W", "power_W_busy_mean"), ("peak_probe_power_limit_W", "power_limit_W_mean"),
+        # Busy-window statistics when the window caught the probe (≥ 3 rows), else the peak over
+        # every row — a clock read at the probe's tail is still the clock the probe ran at.
+        busy = st["busy_samples"] ≥ 3
+        for (key, col) in (("peak_probe_clock_MHz", busy ? "sm_clock_MHz_busy_median" : "sm_clock_MHz_peak"),
+                ("peak_probe_power_W", busy ? "power_W_busy_mean" : "power_W_peak"),
+                ("peak_probe_power_limit_W", "power_limit_W_mean"),
                 ("peak_probe_power_capped_fraction", "power_capped_fraction"))
             v = get(st, col, missing)
             v === missing || !isfinite(v) || (rec[key] = Float64(v))
         end
         rec["peak_probe_busy_samples"] = st["busy_samples"]
+        rec["peak_probe_samples"] = telem.ticks
+        rec["peak_probe_clock_source"] = busy ? "busy_median" : "peak"
     end
     gemm = try
         measure_gemm_flops(backend)

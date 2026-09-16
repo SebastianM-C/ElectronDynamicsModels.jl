@@ -42,6 +42,10 @@ ORCH="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"; REPO="$(cd "$ORCH/.." && p
 : "${SCRIPT:=scripts/inverse_thomson_scattering.jl}"
 : "${PROFILE_TIMEOUT:=600}"
 : "${PROFILE_KERNEL:=forindices}"
+# JL arrives either as a bash array (sourced callers) or as ONE space-joined string in the
+# environment (run_cell.sh exports JL="${JL[*]}" for an EDM_PROFILE cell): split the latter,
+# or the whole launcher line is looked up as a single command (exit 127).
+if [ -n "${JL[*]:-}" ] && [ "${#JL[@]}" -eq 1 ] && [[ "${JL[0]}" == *" "* ]]; then read -r -a JL <<< "${JL[0]}"; fi
 [ -n "${JL[*]:-}" ] || JL=(julia --startup=no -t auto)
 set_or_counters=$1; out=$2; tag=$3; shift 3
 mkdir -p "$out"
