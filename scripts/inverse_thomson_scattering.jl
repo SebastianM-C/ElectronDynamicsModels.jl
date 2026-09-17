@@ -76,6 +76,12 @@ if GPU_BACKEND == "cuda"
     # ~1.7 KB local-memory frame per thread (2.5× slower per launch on an RTX 5090, 2026-09-08);
     # AMDGPU.jl inlines unconditionally. Results move at the last-bit level only.
     const gpu_backend = CUDA.CUDABackend(; always_inline = true)
+    # EDM_MAXREGS=<n>: register-cap A/B (GPUDiagnostics #4) — redefines the KA launch to pass
+    # maxregs; production launches are untouched when the variable is absent.
+    if haskey(ENV, "EDM_MAXREGS")
+        const KA = CUDA.CUDACore.CUDAKernels.KA   # CUDA.jl 6.3's own `import KernelAbstractions as KA`
+        include(joinpath(@__DIR__, "maxregs_override.jl"))
+    end
 elseif GPU_BACKEND == "rocm"
     using AMDGPU
     const gpu_backend = AMDGPU.ROCBackend()
@@ -787,6 +793,8 @@ isfile(kerneltimesfile) && (outputs["kernel_times"] = basename(kerneltimesfile))
 # Compile-time resource report of the field kernel that ran → [gpu].kernel_registers/_shared_mem_bytes/
 # _occupancy/… (read back from the vendor's compiled-kernel cache; see gpu_telemetry.jl).
 record_kernel_resources!(gpu, gpu_backend)
+# the register cap the kernel was compiled under (EDM_MAXREGS A/B); absent = the compiler's own choice
+haskey(ENV, "EDM_MAXREGS") && gpu !== nothing && (gpu["kernel_maxregs"] = parse(Int, ENV["EDM_MAXREGS"]))
 # Window coverage → [window]; algorithmic FLOP accounting → [flops] (both host-side; omitted on error).
 window_sec = window_manifest_section(window_cov)
 flops_sec = flops_manifest_section(gpu_backend, accum_alg, FIELD_MODE, accum_kw, N, Nx, Ny, N_samples,
