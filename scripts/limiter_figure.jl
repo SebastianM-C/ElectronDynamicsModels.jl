@@ -164,6 +164,8 @@ function counter_metrics(r::Run)
         fp64_fma_per_slot = d("insts_per_slot_fp64_fma"),
         fp64_mul_per_slot = d("insts_per_slot_fp64_mul"),
         fp64_add_per_slot = d("insts_per_slot_fp64_add"),
+        # fp64 pipe: ncu's sm__pipe_fp64_cycles_active as a fraction of its sustained peak (NVIDIA fp64 preset)
+        fp64_pipe_fraction = d("nvidia_fp64_pipe_peak_fraction"),
         # issue / l2 sets
         insts_per_slot = isnan(d("nvidia_insts_per_slot")) ? d("amd_insts_per_slot") : d("nvidia_insts_per_slot"),
         l2_hit_rate = isnan(d("nvidia_l2_sector_hit_rate")) ? d("amd_l2_hit_rate") : d("nvidia_l2_sector_hit_rate"))
@@ -190,6 +192,8 @@ function card_header(runs)
     gemm = [fl(r, "peak_gemm_fp64_flops") for r in clean if !isnan(fl(r, "peak_gemm_fp64_flops"))]
     fp64 = [counter_metrics(r).fp64_flop_per_slot for r in runs if is_single(r, "fp64")]
     fp64 = filter(!isnan, fp64)
+    pipe = filter(!isnan, [counter_metrics(r).fp64_pipe_fraction for r in runs if is_single(r, "fp64")])
+    insts = filter(!isnan, [counter_metrics(r).insts_per_slot for r in runs if is_single(r, "issue")])
     (; device = device(r0), vendor = String(vendor(r0)),
         provider = String(something(getpath(r0.m, "provenance", "cloud_provider"; default = nothing), "local")),
         commit = String(something(getpath(r0.m, "provenance", "repo_commit"; default = nothing), "")),
@@ -199,6 +203,8 @@ function card_header(runs)
         peak_gemm_flops = isempty(gemm) ? NaN : median(gemm),
         algorithmic_flop_per_slot = fl(r0, "flop_per_slot"),
         counted_fp64_flop_per_slot = isempty(fp64) ? NaN : median(fp64),
+        fp64_pipe_fraction = isempty(pipe) ? NaN : median(pipe),
+        insts_per_slot = isempty(insts) ? NaN : median(insts),
         n_runs = length(runs), n_probe_runs = length(probe))
 end
 
