@@ -1143,12 +1143,12 @@ version = "2.5.1"
     NVPTX_LLVM_Backend_jll = "ef6e0fe3-e6ef-59c0-bde6-4989574699e0"
 
 [[deps.GPUDiagnostics]]
-deps = ["Adapt", "KernelAbstractions", "LinearAlgebra", "Statistics", "Tables"]
-git-tree-sha1 = "6568966f24fe129a5c995c31fb47ae832a3b8be8"
-repo-rev = "main"
+deps = ["Adapt", "KernelAbstractions", "LinearAlgebra", "Statistics", "TOML", "Tables"]
+git-tree-sha1 = "430a2ff402578ae3c2b683dd4067f324f5813d1c"
+repo-rev = "v0.4.2"
 repo-url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"
 uuid = "5ccc9b3c-1187-41e2-9266-b19f02873332"
-version = "0.4.1"
+version = "0.4.2"
 weakdeps = ["AMDGPU", "CUDA", "GPUCompiler", "LLVM"]
 
     [deps.GPUDiagnostics.extensions]
