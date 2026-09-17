@@ -187,6 +187,8 @@ function card_header(runs)
     fl(r, k) = num(r.m, "flops", k)
     clean = [r for r in runs if !profiled(r)]
     probe = [fl(r, "peak_probe_flops") for r in clean if !isnan(fl(r, "peak_probe_flops"))]
+    sweeps = [getpath(r.m, "flops", "peak_probe_sweep_flops"; default = nothing) for r in clean]
+    sweep_min = [minimum(Float64.(v)) for v in sweeps if v isa AbstractVector && !isempty(v)]
     probe_clock = [fl(r, "peak_probe_clock_MHz") for r in clean if !isnan(fl(r, "peak_probe_clock_MHz"))]
     probe_capped = [fl(r, "peak_probe_power_capped_fraction") for r in clean if !isnan(fl(r, "peak_probe_power_capped_fraction"))]
     gemm = [fl(r, "peak_gemm_fp64_flops") for r in clean if !isnan(fl(r, "peak_gemm_fp64_flops"))]
@@ -198,6 +200,7 @@ function card_header(runs)
         provider = String(something(getpath(r0.m, "provenance", "cloud_provider"; default = nothing), "local")),
         commit = String(something(getpath(r0.m, "provenance", "repo_commit"; default = nothing), "")),
         peak_probe_flops = isempty(probe) ? NaN : median(probe),
+        peak_probe_sweep_min_flops = isempty(sweep_min) ? NaN : median(sweep_min),   # the worst probe geometry (a fixed one could land here)
         peak_probe_clock_MHz = isempty(probe_clock) ? NaN : median(probe_clock),
         peak_probe_capped_fraction = isempty(probe_capped) ? NaN : median(probe_capped),
         peak_gemm_flops = isempty(gemm) ? NaN : median(gemm),
