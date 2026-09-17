@@ -67,6 +67,7 @@ for d in args, r in manifests(d)
         "timestamp" => String(something(getpath(r.m, "provenance", "timestamp_utc"), getpath(r.m, "provenance", "timestamp"), "")),
         "N" => Int(num(r.m, "config", "N")), "Nx" => Int(num(r.m, "config", "Nx")),
         "field_s" => num(r.m, "timing", "field"), "kernel_s" => vecfirst(r.m, "gpu", "kernel_s"),
+        "launch_ms" => 1e3 * vecfirst(r.m, "gpu", "kernel_median_s"),   # median device time per launch (one electron over the screen)
         "flop_rate" => num(r.m, "flops", "flop_rate_field"), "flop_per_slot" => num(r.m, "flops", "flop_per_slot"),
         "peak_run" => num(r.m, "flops", "peak_fp64_flops"), "peak_run_method" => String(something(getpath(r.m, "flops", "peak_fp64_method"), "")),
         "kernel" => alg, "newton_iters" => getpath(r.m, "config", "newton_iters"), "sample_chunks" => getpath(r.m, "config", "sample_chunks"),
