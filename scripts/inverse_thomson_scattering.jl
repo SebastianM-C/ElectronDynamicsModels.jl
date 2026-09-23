@@ -416,10 +416,18 @@ end
 # the list length and EDM_N is ignored. Points must lie within Rmax: the :narrow window budget
 # (corner_spread / bunch_early) assumes every emitter does. EDM_LAYOUT names the layout for the
 # dashboard (its sweep axis; defaults to the raw list). Both are recorded only when set, so
-# sunflower manifests are unchanged.
+# sunflower manifests are unchanged. EDM_POSITIONS=square[:n] instead generates a square lattice
+# at the density of an n-point sunflower (n defaults to EDM_N) — spacing d = Rmax·√(π/n), sites at
+# ((i+½)d, (j+½)d) inside Rmax, ≈ n points — the regular grating whose ghost images the sunflower
+# smears into a ring. It is recorded as "square:<n>" so a replay rebuilds the same lattice.
 const POSITIONS_SPEC = strip(get(ENV, "EDM_POSITIONS", ""))
 const LAYOUT = strip(get(ENV, "EDM_LAYOUT", POSITIONS_SPEC))
+function square_lattice(n)
+    d = Rmax * sqrt(π / n); k = ceil(Int, Rmax / d) + 1
+    [[(i + 0.5) * d, (j + 0.5) * d] for i in -k:k for j in -k:k if hypot((i + 0.5) * d, (j + 0.5) * d) <= Rmax]
+end
 function parse_positions(spec)
+    startswith(spec, "square") && return square_lattice(spec == "square" ? NELEC : parse(Int, split(spec, ':')[2]))
     pts = map(split(spec, ';'; keepempty = false)) do p
         xy = [parse(Float64, strip(s)) for s in split(p, ',')]
         length(xy) == 2 || error("EDM_POSITIONS: expected `x,y` pairs separated by `;`, got \"$p\"")
@@ -434,7 +442,7 @@ function parse_positions(spec)
 end
 R₀ = isempty(POSITIONS_SPEC) ? Rmax * sunflower(NELEC, 2) : parse_positions(POSITIONS_SPEC)
 N = length(R₀)
-isempty(POSITIONS_SPEC) || @info "explicit electron layout (EDM_POSITIONS)" layout = LAYOUT N positions_w0 = [r ./ w₀ for r in R₀]
+isempty(POSITIONS_SPEC) || @info "explicit electron layout (EDM_POSITIONS)" layout = LAYOUT N positions_w0 = (N <= 64 ? [r ./ w₀ for r in R₀] : "$(N) points")
 # Optional phased-array prebunching (EDM_BUNCH_NB > 0): per-electron longitudinal start offset
 #     Δz = (1+β)/2 · [ ρ²/2Z  +  ℓ·θ/2π · λ/n_b ]  −  Δz_chirp.
 # ρ² term: array-focuses the backscatter at the on-axis pixel (cancels the transverse path
@@ -756,7 +764,7 @@ config["sample_chunks"] = SAMPLE_CHUNKS
 # ≈ batch × spline size + one cube copy instead of N × spline size; see scripts/electron_batches.jl.
 config["electron_batch"] = ELECTRON_BATCH
 # Explicit layout (EDM_POSITIONS): the raw list for replay, the name as the dashboard axis.
-isempty(POSITIONS_SPEC) || (config["positions"] = String(POSITIONS_SPEC); config["layout"] = String(LAYOUT))
+isempty(POSITIONS_SPEC) || (config["positions"] = POSITIONS_SPEC == "square" ? "square:$(NELEC)" : String(POSITIONS_SPEC); config["layout"] = String(LAYOUT))
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
