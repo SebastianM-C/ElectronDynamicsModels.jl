@@ -46,6 +46,8 @@ Base.@kwdef struct ThomsonScatteringSpec
     bunch_chirp::Union{Nothing, Float64} = nothing
     screen_zsign::Union{Nothing, Int} = nothing         # 1 (+Z, backscatter side) | -1 (−Z, transmission side)
     apodization::Union{Nothing, String} = nothing       # hann | none — the harmonic-map reduction taper
+    positions::Union{Nothing, String} = nothing         # explicit layout "x1,y1;x2,y2;…" (w₀), replaces the sunflower
+    layout::Union{Nothing, String} = nothing            # display name of an explicit layout (the dashboard axis)
     extra::Dict{String, Any} = Dict{String, Any}()
 end
 
@@ -67,6 +69,7 @@ const _SPEC_ENV = (
     (:harmonics, "EDM_HARMONICS"), (:bunch_nb, "EDM_BUNCH_NB"),
     (:bunch_l, "EDM_BUNCH_L"), (:bunch_chirp, "EDM_BUNCH_CHIRP"),
     (:screen_zsign, "EDM_SCREEN_ZSIGN"), (:apodization, "EDM_APODIZATION"),
+    (:positions, "EDM_POSITIONS"), (:layout, "EDM_LAYOUT"),
 )
 
 const _ALG_TO_ENV = Dict("GPUKernelRK4" => "rk4", "GPUKernelNewton" => "newton")

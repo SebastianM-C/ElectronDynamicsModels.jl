@@ -409,8 +409,32 @@ end
 # Ensemble solve. Each electron gets the sunflower transverse offset (r) at its −z start plane
 # and the same boosted 4-velocity; the shared timing makes them all reach z=0 (their transverse
 # offset, at the waist) at t=0.
-N = NELEC
-R₀ = Rmax * sunflower(N, 2)
+#
+# EDM_POSITIONS replaces the sunflower with an explicit layout, "x1,y1;x2,y2;…" in w₀ units at
+# the waist — for few-electron image-formation studies, where the sunflower is a poor layout (it
+# puts round(2√N) of its N electrons on the rim, where the LG drive is ~4 % of peak). N is then
+# the list length and EDM_N is ignored. Points must lie within Rmax: the :narrow window budget
+# (corner_spread / bunch_early) assumes every emitter does. EDM_LAYOUT names the layout for the
+# dashboard (its sweep axis; defaults to the raw list). Both are recorded only when set, so
+# sunflower manifests are unchanged.
+const POSITIONS_SPEC = strip(get(ENV, "EDM_POSITIONS", ""))
+const LAYOUT = strip(get(ENV, "EDM_LAYOUT", POSITIONS_SPEC))
+function parse_positions(spec)
+    pts = map(split(spec, ';'; keepempty = false)) do p
+        xy = [parse(Float64, strip(s)) for s in split(p, ',')]
+        length(xy) == 2 || error("EDM_POSITIONS: expected `x,y` pairs separated by `;`, got \"$p\"")
+        xy .* w₀
+    end
+    isempty(pts) && error("EDM_POSITIONS is set but lists no points")
+    for r in pts
+        hypot(r...) <= Rmax * (1 + 1.0e-12) ||
+            error("EDM_POSITIONS: point $(r ./ w₀) w₀ lies outside Rmax = $(Rmax / w₀) w₀")
+    end
+    return pts
+end
+R₀ = isempty(POSITIONS_SPEC) ? Rmax * sunflower(NELEC, 2) : parse_positions(POSITIONS_SPEC)
+N = length(R₀)
+isempty(POSITIONS_SPEC) || @info "explicit electron layout (EDM_POSITIONS)" layout = LAYOUT N positions_w0 = [r ./ w₀ for r in R₀]
 # Optional phased-array prebunching (EDM_BUNCH_NB > 0): per-electron longitudinal start offset
 #     Δz = (1+β)/2 · [ ρ²/2Z  +  ℓ·θ/2π · λ/n_b ]  −  Δz_chirp.
 # ρ² term: array-focuses the backscatter at the on-axis pixel (cancels the transverse path
@@ -731,6 +755,8 @@ config["sample_chunks"] = SAMPLE_CHUNKS
 # Electrons per solve→accumulate→discard batch (0 = the single-pass path). Bounds the host peak at
 # ≈ batch × spline size + one cube copy instead of N × spline size; see scripts/electron_batches.jl.
 config["electron_batch"] = ELECTRON_BATCH
+# Explicit layout (EDM_POSITIONS): the raw list for replay, the name as the dashboard axis.
+isempty(POSITIONS_SPEC) || (config["positions"] = String(POSITIONS_SPEC); config["layout"] = String(LAYOUT))
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),

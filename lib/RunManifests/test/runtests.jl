@@ -48,7 +48,7 @@ end
     # replay with the script defaults — a legacy run must never grow new env out of thin air).
     cfg2 = merge(config, Dict{String, Any}(
         "gamma" => 50.0, "tspan_tau" => 1.6, "window_lead" => 0.15, "window_tail" => 0.15,
-        "bunch_nb" => 398, "bunch_l" => -2))
+        "bunch_nb" => 398, "bunch_l" => -2, "positions" => "0.5,0;-0.5,0", "layout" => "pair_d1"))
     path2 = write_solver_manifest(
         dir; run_id = "rt2", provenance = prov, config = cfg2,
         laser = Dict(), setup = Dict(), outputs = Dict("plots" => String[]),
@@ -57,8 +57,9 @@ end
     @test env2["EDM_GAMMA"] == "50.0" && env2["EDM_TSPAN_TAU"] == "1.6"
     @test env2["EDM_WINDOW_LEAD"] == "0.15" && env2["EDM_WINDOW_TAIL"] == "0.15"
     @test env2["EDM_BUNCH_NB"] == "398" && env2["EDM_BUNCH_L"] == "-2"
+    @test env2["EDM_POSITIONS"] == "0.5,0;-0.5,0" && env2["EDM_LAYOUT"] == "pair_d1"
     @test !haskey(spec.env, "EDM_TSPAN_TAU") && !haskey(spec.env, "EDM_WINDOW_LEAD") &&
-          !haskey(spec.env, "EDM_BUNCH_NB")
+          !haskey(spec.env, "EDM_BUNCH_NB") && !haskey(spec.env, "EDM_POSITIONS")
 
     # Enforcement: dropping any single required key makes the writer refuse to write.
     for k in REQUIRED_CONFIG_KEYS
