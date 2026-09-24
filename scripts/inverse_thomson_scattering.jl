@@ -240,7 +240,14 @@ end
 
 # ── Screen geometry + observer window — sized HERE, before the (expensive) ensemble solve,
 # so the coverage/memory guards below fail fast instead of after hours of integration. ──
-const Z = 2.0e5λ
+# EDM_Z: the screen distance in units of λ (default 2×10⁵). The disk's Fresnel number is
+# N_F = Rmax²·n₀/(λZ), so moving the screen crosses from the near-field image (N_F ≫ 1) to the
+# far-field transform (N_F ≪ 1) at fixed γ — and it samples the radiated field at several z.
+# Every use below treats Z as a distance (window start, corner spread, trajectory span), so the
+# window re-derives itself; far screens need proportionally wider EDM_SCREEN_HW (the transform
+# grows as λZ/(n₀Rmax)). Recorded as [config].screen_z_lambda only when set ([setup].Z always).
+const Z_LAMBDA = parse(Float64, get(ENV, "EDM_Z", "2.0e5"))
+const Z = Z_LAMBDA * λ
 const samples_per_period = SPP
 const δt = 2π / ω / samples_per_period
 const screen_hw = SCREEN_HW * w₀
@@ -409,8 +416,40 @@ end
 # Ensemble solve. Each electron gets the sunflower transverse offset (r) at its −z start plane
 # and the same boosted 4-velocity; the shared timing makes them all reach z=0 (their transverse
 # offset, at the waist) at t=0.
-N = NELEC
-R₀ = Rmax * sunflower(N, 2)
+#
+# EDM_POSITIONS replaces the sunflower with an explicit layout, "x1,y1;x2,y2;…" in w₀ units at
+# the waist — for few-electron image-formation studies, where the sunflower is a poor layout (it
+# puts round(2√N) of its N electrons on the rim, where the LG drive is ~4 % of peak). N is then
+# the list length and EDM_N is ignored. Points must lie within Rmax: the :narrow window budget
+# (corner_spread / bunch_early) assumes every emitter does. EDM_LAYOUT names the layout for the
+# dashboard (its sweep axis; defaults to the raw list). Both are recorded only when set, so
+# sunflower manifests are unchanged. EDM_POSITIONS=square[:n] instead generates a square lattice
+# at the density of an n-point sunflower (n defaults to EDM_N) — spacing d = Rmax·√(π/n), sites at
+# ((i+½)d, (j+½)d) inside Rmax, ≈ n points — the regular grating whose ghost images the sunflower
+# smears into a ring. It is recorded as "square:<n>" so a replay rebuilds the same lattice.
+const POSITIONS_SPEC = strip(get(ENV, "EDM_POSITIONS", ""))
+const LAYOUT = strip(get(ENV, "EDM_LAYOUT", POSITIONS_SPEC))
+function square_lattice(n)
+    d = Rmax * sqrt(π / n); k = ceil(Int, Rmax / d) + 1
+    [[(i + 0.5) * d, (j + 0.5) * d] for i in -k:k for j in -k:k if hypot((i + 0.5) * d, (j + 0.5) * d) <= Rmax]
+end
+function parse_positions(spec)
+    startswith(spec, "square") && return square_lattice(spec == "square" ? NELEC : parse(Int, split(spec, ':')[2]))
+    pts = map(split(spec, ';'; keepempty = false)) do p
+        xy = [parse(Float64, strip(s)) for s in split(p, ',')]
+        length(xy) == 2 || error("EDM_POSITIONS: expected `x,y` pairs separated by `;`, got \"$p\"")
+        xy .* w₀
+    end
+    isempty(pts) && error("EDM_POSITIONS is set but lists no points")
+    for r in pts
+        hypot(r...) <= Rmax * (1 + 1.0e-12) ||
+            error("EDM_POSITIONS: point $(r ./ w₀) w₀ lies outside Rmax = $(Rmax / w₀) w₀")
+    end
+    return pts
+end
+R₀ = isempty(POSITIONS_SPEC) ? Rmax * sunflower(NELEC, 2) : parse_positions(POSITIONS_SPEC)
+N = length(R₀)
+isempty(POSITIONS_SPEC) || @info "explicit electron layout (EDM_POSITIONS)" layout = LAYOUT N positions_w0 = (N <= 64 ? [r ./ w₀ for r in R₀] : "$(N) points")
 # Optional phased-array prebunching (EDM_BUNCH_NB > 0): per-electron longitudinal start offset
 #     Δz = (1+β)/2 · [ ρ²/2Z  +  ℓ·θ/2π · λ/n_b ]  −  Δz_chirp.
 # ρ² term: array-focuses the backscatter at the on-axis pixel (cancels the transverse path
@@ -731,6 +770,9 @@ config["sample_chunks"] = SAMPLE_CHUNKS
 # Electrons per solve→accumulate→discard batch (0 = the single-pass path). Bounds the host peak at
 # ≈ batch × spline size + one cube copy instead of N × spline size; see scripts/electron_batches.jl.
 config["electron_batch"] = ELECTRON_BATCH
+# Explicit layout (EDM_POSITIONS): the raw list for replay, the name as the dashboard axis.
+haskey(ENV, "EDM_Z") && (config["screen_z_lambda"] = Z_LAMBDA)
+isempty(POSITIONS_SPEC) || (config["positions"] = POSITIONS_SPEC == "square" ? "square:$(NELEC)" : String(POSITIONS_SPEC); config["layout"] = String(LAYOUT))
 
 outputs = Dict{String, Any}(
     "datafile" => basename(datafile),
