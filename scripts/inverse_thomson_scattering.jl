@@ -240,7 +240,14 @@ end
 
 # ── Screen geometry + observer window — sized HERE, before the (expensive) ensemble solve,
 # so the coverage/memory guards below fail fast instead of after hours of integration. ──
-const Z = 2.0e5λ
+# EDM_Z: the screen distance in units of λ (default 2×10⁵). The disk's Fresnel number is
+# N_F = Rmax²·n₀/(λZ), so moving the screen crosses from the near-field image (N_F ≫ 1) to the
+# far-field transform (N_F ≪ 1) at fixed γ — and it samples the radiated field at several z.
+# Every use below treats Z as a distance (window start, corner spread, trajectory span), so the
+# window re-derives itself; far screens need proportionally wider EDM_SCREEN_HW (the transform
+# grows as λZ/(n₀Rmax)). Recorded as [config].screen_z_lambda only when set ([setup].Z always).
+const Z_LAMBDA = parse(Float64, get(ENV, "EDM_Z", "2.0e5"))
+const Z = Z_LAMBDA * λ
 const samples_per_period = SPP
 const δt = 2π / ω / samples_per_period
 const screen_hw = SCREEN_HW * w₀
@@ -764,6 +771,7 @@ config["sample_chunks"] = SAMPLE_CHUNKS
 # ≈ batch × spline size + one cube copy instead of N × spline size; see scripts/electron_batches.jl.
 config["electron_batch"] = ELECTRON_BATCH
 # Explicit layout (EDM_POSITIONS): the raw list for replay, the name as the dashboard axis.
+haskey(ENV, "EDM_Z") && (config["screen_z_lambda"] = Z_LAMBDA)
 isempty(POSITIONS_SPEC) || (config["positions"] = POSITIONS_SPEC == "square" ? "square:$(NELEC)" : String(POSITIONS_SPEC); config["layout"] = String(LAYOUT))
 
 outputs = Dict{String, Any}(
