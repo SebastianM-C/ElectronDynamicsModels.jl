@@ -32,7 +32,7 @@ UnitfulAtomic = "a7773ee8-282e-5fa2-be4e-bd808c38a91a"
 
 [sources]
 CountedFloats = {url = "https://github.com/SebastianM-C/CountedFloats.jl"}
-GPUDiagnostics = {url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"}
+GPUDiagnostics = {url = "https://github.com/SebastianM-C/GPUDiagnostics.jl", rev = "v0.4.2"}
 
 [weakdeps]
 GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"

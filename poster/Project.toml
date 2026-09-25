@@ -14,5 +14,5 @@ Typst_jll = "eb4b1da6-20f6-5c66-9826-fdb8ad410d0e"
 
 [sources]
 CountedFloats = {url = "https://github.com/SebastianM-C/CountedFloats.jl"}
-GPUDiagnostics = {url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"}
+GPUDiagnostics = {url = "https://github.com/SebastianM-C/GPUDiagnostics.jl", rev = "v0.4.2"}
 ElectronDynamicsModels = {path = ".."}
