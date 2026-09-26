@@ -31,7 +31,7 @@ GPUDiagnostics = {url = "https://github.com/SebastianM-C/GPUDiagnostics.jl"}
 ElectronDynamicsModels = {path = ".."}
 
 [compat]
-AMD = "0.5.0 - 0.5.3"   # AMD 0.5.4 dropped SS_Int (SparseColumnPivotedQR <= 2.1.7 / LinearSolve 5); drop once SCPQR 2.1.8 lands
+AMD = "0.5.0 - 0.5.3"
 Aqua = "0.8"
 CSV = "0.10"
 FFTW = "1"
