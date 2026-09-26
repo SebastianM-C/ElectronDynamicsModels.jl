@@ -50,9 +50,19 @@ function extract(toml)
     out = joinpath(dir, "timeseries_$(run_tag).jls")
     serialize(out, (; run_tag, a0 = las["a0"], spp, N_samples, w0, δt, x0_start = get(setup, "x0_start", nothing),
         screen_hw = hw, pixels))
-    partial = record_reduction!(dir, run_tag, out)
     final = joinpath(dir, "$(run_tag).reduced")
-    isfile(final) && mv(partial, final; force = true)   # post-hoc: re-commit the finalized marker (run_cell's atomic mv)
+    if !isfile(final)
+        # an uncommitted .partial without a final marker ⇒ a deferred reduce is still writing it
+        isfile(final * ".partial") && error("$(run_tag): reduce in flight (.reduced.partial, no .reduced) — rerun after it commits")
+        # sync-postprocess runs write no marker: seed it with the builder's convention set (every
+        # uuid-tagged .jls but the cube) so the marker stays complete once it exists
+        for f in readdir(dir)
+            endswith(f, ".jls") && occursin(run_tag, f) && f ∉ (basename(cube), basename(out)) &&
+                record_reduction!(dir, run_tag, f)
+        end
+    end
+    partial = record_reduction!(dir, run_tag, out)
+    mv(partial, final; force = true)   # commit atomically, as run_cell.sh does
     println("wrote $(basename(out)) — $(length(pixels)) pixels × $N_samples samples")
 end
 
