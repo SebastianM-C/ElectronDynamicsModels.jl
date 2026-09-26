@@ -1,7 +1,8 @@
 # emission_ladder_numeric (branch campaigns/emission-ladder) — the one-go a₀ ladder, numeric side
 # (thomson_scattering.jl), for the emission-boundary figures. Configuration from the dcshelf diagnosis (2026-09-27):
-# EDM e33cc1a, total mode, uniform trajectory knots, rect reduction (EDM_APODIZATION=none, applied by the deferred
-# reducer: REDUCE_OVERLAP=1 AND EDM_APODIZATION=none exported in the driver env — the inline reduction is Hann-only),
+# EDM main (v0.4.3 pin), total mode, uniform trajectory knots, rect reduction: the inline reduction is Hann-only, so
+# REDUCE_OVERLAP=1 defers it to harmonic_products.jl and REDUCE_HOOK hands that reducer EDM_APODIZATION=none +
+# EDM_DIRECT_READ=1 (it reads them from its own env, not BASE) under a per-host lock (one reduce at a time per host);
 # SPP 16 / Ns 6000 (Figs 7–8 use h1 and h2), φ₀ = −π/2. Kernel: RK4 (rest electrons; same kernel as lpwa.jl, which is
 # RK4-only). n_substeps 1 for a₀ ≤ 1; for a₀ ≥ 2 set NS_HIGH from kernel_conv_diag before launch — until then those
 # cells fail at their first parse. Twin: emission_ladder_lpwa.sh. Lane wrappers in emission_ladder/.
@@ -14,6 +15,7 @@ CAMPAIGN=emission_ladder_numeric
 SCRIPT=scripts/thomson_scattering.jl
 KEEP_CUBE=0
 REDUCE_OVERLAP=1
+REDUCE_HOOK='{ flock 9; EDM_APODIZATION=none EDM_DIRECT_READ=1 _reduce_cell "$uuid"; } 9>"/tmp/edm-reduce-$(id -un).lock"'
 SWEEP_AXES=a0
 BASE=(
   EDM_NX=400 EDM_N=10000 EDM_FIELD_MODE=total
