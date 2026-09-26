@@ -53,4 +53,28 @@ write_derived(dir; kind = "shelf", label = ok ? "production checks: pass" : "pro
         "h2_over_h1_E" => h21E, "h2_over_h1_B" => h21B, "window_ok" => string(window_ok),
         "repo_dirty" => string(dirty), "apodization" => apod, "pass" => ok),
     description = "−Eᶻ at the timeseries pixels over the observer window, normalized to the static field N/Z² of the electrons at the screen: flat at 1 from the first to the last sample means the window is fully covered (no Coulomb step, no dropped electrons). Also records the E-vs-B h2/h1 agreement and the run's window, dirty-tree and apodization flags.")
+# Spectral falloff (aliasing headroom): screen-integrated E power in the harmonic bands n = 2…8 relative to n = 1,
+# from the un-windowed powspec cache. Power above the SPP Nyquist folds back identically at every rate, so the
+# direct aliasing measure is how many decades the spectrum has fallen before n_Nyquist = SPP/2 (in units of n₀ω).
+ps = deserialize(joinpath(dir, "powspec_$id.jls"))
+spp = cfg["samples_per_period"]
+nf = ps.freqs ./ (ps.freqs[end] / (spp / 2)) ./ ps.n0      # frequency axis in harmonic orders
+Epow = vec(sum(ps.ps[:, 1:3]; dims = 2))
+band(n) = sum(Epow[abs.(nf .- n) .< 0.5])
+nmax = min(8, floor(Int, spp / 2 / ps.n0))
+rel = [band(n) / band(1) for n in 2:nmax]
+fig2 = Figure(size = (520, 330))
+ax = Axis(fig2[1, 1]; yscale = log10, xlabel = "harmonic order n", ylabel = "P_n / P_1 (E, screen-integrated)",
+    title = @sprintf("spectral falloff to the SPP %d Nyquist edge (n = %g)", spp, spp / 2 / ps.n0))
+scatterlines!(ax, 2:nmax, max.(rel, 1e-30))
+png2 = joinpath(dir, "falloff_$id.png"); save(png2, fig2)
+write_derived(dir; kind = "falloff", label = @sprintf("spectral falloff: P_%d/P_1 = %.1e", nmax, rel[end]), run_id = id,
+    plot = basename(png2), source = "powspec_$id.jls",
+    plot_params = merge(Dict("spp" => spp, "n_nyquist" => spp / 2 / ps.n0),
+        Dict("P$(n)_over_P1" => r for (n, r) in zip(2:nmax, rel))),
+    description = "Screen-integrated E power in the harmonic bands n = 2…8 relative to the fundamental (un-windowed " *
+        "power spectrum). Power above the Nyquist order folds back the same way at every sampling rate, so the " *
+        "number of decades the spectrum has already fallen by n = SPP/2 is the direct aliasing headroom.")
+@printf "%s falloff P_n/P_1 n=2..%d: %s\n" id8 nmax join([@sprintf("%.1e", r) for r in rel], " ")
+
 ok || exit(1)
