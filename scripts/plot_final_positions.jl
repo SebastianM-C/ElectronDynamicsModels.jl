@@ -130,6 +130,15 @@ pct_out = 100 * count(>(RHO_OUT), ρf) / N
 maxΔρ = maximum(abs, Δρ)
 @info "expulsion" pct_out RHO_OUT maximum(ρf) maxΔρ
 
+# Ponderomotive push relative to free streaming (β_z0 = 0 for rest electrons, γβ for inverse):
+# axial displacement Δz_push, residual drift Δβ_z and net energy gain Δγ = γ_f − γ₀ per electron.
+uf = [s[sys.u][end] for s in sol.u]                 # final 4-velocity
+γ0, βz0 = u⁰_t / c, u³_z / u⁰_t
+Δγ = [u[1] / c for u in uf] .- γ0
+Δβz = [u[4] / u[1] for u in uf] .- βz0
+Δz_push = [((xf[4] - x0[4]) - βz0 * (xf[1] - x0[1])) / λ for (xf, x0) in zip(xμf, xμ0)]
+@info "push/drift" maximum(abs, Δz_push) maximum(abs, Δβz) extrema(Δγ)
+
 # Closed-form LG transverse intensity |u_rel|² — p = 2, |m| = 2 only (the production mode;
 # same expression as inverse_thomson_scattering.jl's u_rel2). ARGS IN w₀ UNITS: σ = ρ²/w₀²
 # is just x²+y² here — the plotting grid below is already normalized.
@@ -178,8 +187,23 @@ png2 = joinpath(OUTDIR, "finalpos_$(RUN_TAG).png")
 save(png2, fig2)
 println("saved → $png2")
 
+# ── PNG 3: ponderomotive push, residual drift and net energy gain per electron ──
+fig3 = Figure(size = (1350, 430))
+ax = Axis(fig3[1, 1]; title = "axial push (vs free streaming)", xlabel = "ρ₀ / w₀", ylabel = "Δz_push / λ")
+scatter!(ax, ρ0, Δz_push; markersize = 3)
+ax = Axis(fig3[1, 2]; title = "residual axial drift", xlabel = "ρ₀ / w₀", ylabel = "Δβ_z")
+scatter!(ax, ρ0, Δβz; markersize = 3)
+ax = Axis(fig3[1, 3]; title = "net energy gain over the disk", xlabel = "Δγ = γ_f − γ₀", ylabel = "electrons")
+hist!(ax, Δγ; bins = 60, color = (:steelblue, 0.8))
+Label(fig3[0, :], @sprintf("ponderomotive push & drift — %s  (a₀=%g; max |Δz_push| = %.3g λ, max |Δβ_z| = %.3g, Δγ ∈ [%.3g, %.3g])",
+        idtag, a₀, maximum(abs, Δz_push), maximum(abs, Δβz), extrema(Δγ)...), fontsize = 15, font = :bold)
+png3 = joinpath(OUTDIR, "pushdrift_$(RUN_TAG).png")
+save(png3, fig3)
+println("saved → $png3")
+
 jlsfile = joinpath(OUTDIR, "finalpos_$(RUN_TAG).jls")
 serialize(jlsfile, (; xμ0 = permutedims(reduce(hcat, xμ0)), xμf = permutedims(reduce(hcat, xμf)),
+    uf = permutedims(reduce(hcat, uf)), Δz_push, Δβz, Δγ,
     ρ0, ρf, rho_out = RHO_OUT, pct_out, N, a₀, γ, λ, w₀, Rmax, run_id = RUN_TAG))
 println("serialized → $jlsfile")
 
@@ -204,6 +228,15 @@ for (kind, label, png, pp, desc) in (
             "starting point, and the ρ_f/w₀ histogram with the fraction beyond " *
             "$(RHO_OUT) w₀ — the ponderomotive-expulsion estimate for whether electrons " *
             "leave the interaction region during the pulse."),
+        ("pushdrift", "ponderomotive push, drift, energy gain", basename(png3),
+            Dict{String, Any}("N" => N, "gamma_eps" => γ - 1,
+                "max_abs_dz_push_lambda" => round(maximum(abs, Δz_push); sigdigits = 4),
+                "max_abs_dbeta_z" => round(maximum(abs, Δβz); sigdigits = 4),
+                "dgamma_min" => minimum(Δγ), "dgamma_max" => maximum(Δγ),
+                "dgamma_mean" => sum(Δγ) / N),
+            "Same endpoint re-solve: per electron, the axial displacement relative to free " *
+            "streaming and the residual axial drift Δβ_z against the starting radius, and the " *
+            "histogram of the net energy gain Δγ = γ_f − γ₀ over the disk."),
     )
     sidecar = Dict(
         "schema_version" => 1,
