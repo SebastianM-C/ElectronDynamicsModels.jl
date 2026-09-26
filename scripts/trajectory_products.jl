@@ -1,5 +1,6 @@
-# Trajectory-side products shared between the live solver (inverse_thomson_scattering.jl)
-# and the backfill path (gammatau_backfill.jl): the γ(τ)/γ₀ trace reduction and the as-run
+# Trajectory-side products shared between the live solvers (thomson_scattering.jl,
+# inverse_thomson_scattering.jl) and the backfill path (gammatau_backfill.jl): the γ(τ)/γ₀ trace
+# reduction, its batch accumulator + cache + chip, and the as-run
 # initial-conditions cache + chip. Included, not a module — the includer provides
 # Serialization, CairoMakie, Printf, and RunManifests (write_derived), same contract as
 # harmonic_products.jl.
@@ -36,6 +37,62 @@ function gamma_trace(trajs, τs, c, γ0, τf)
     foreach(wait, tasks)
     return reduce(+, sums) ./ length(trajs),
         reduce((a, b) -> min.(a, b), los), reduce((a, b) -> max.(a, b), his), drain
+end
+
+# The live solvers' batch-by-batch γ(τ) trace (thomson_scattering.jl and inverse_thomson_scattering.jl):
+# a τ grid at `oversample`× the trajectory-knot rate, folded exactly across electron batches (sums and
+# elementwise extrema; the drain vector in electron order), then one cache + chip per run.
+#   acc = gamma_trace_acc(τi, τf, knot_dt, oversample)          # oversample = 0 ⇒ empty grid, trace off
+#   fold_gamma!(acc, gamma_trace(trajs, acc.τs, c, γ0, τf), n)  # per batch
+#   write_gamma_trace(outdir, run_tag, acc, N; γ0, ω, τ_pulse, knots_per_period)
+function gamma_trace_acc(τi, τf, knot_dt, oversample)
+    τs = oversample > 0 ? collect(τi:(knot_dt / oversample):τf) : Float64[]
+    return (; τs, sum = zeros(length(τs)), lo = fill(Inf, length(τs)), hi = fill(-Inf, length(τs)),
+        drain = Float64[], oversample)
+end
+
+function fold_gamma!(acc, γ, n)
+    γm, γn, γx, γd = γ
+    acc.sum .+= γm .* n   # batch means → ensemble mean (÷ N at write time)
+    acc.lo .= min.(acc.lo, γn)
+    acc.hi .= max.(acc.hi, γx)
+    append!(acc.drain, γd)
+    return acc
+end
+
+function write_gamma_trace(outdir, run_tag, acc, N; γ0, ω, τ_pulse, knots_per_period)
+    gt = (; τs = acc.τs, γ0 = Float64(γ0), ω, τ_pulse, γmean = acc.sum ./ N, γmin = acc.lo, γmax = acc.hi,
+        drain = acc.drain, oversample = acc.oversample, knots_per_period = Float64(knots_per_period))
+    gtfile = joinpath(outdir, "gammatau_$(run_tag).jls")
+    serialize(gtfile, gt)
+    write_gamma_trace_chip(outdir, run_tag, gt)
+    return gtfile
+end
+
+# Per-run chip from the cache (re-renders anywhere): γ/γ₀ mean with the min–max band over the disk vs
+# τ, and the histogram of the per-electron net energy change γ_f − γ₀ = −γ₀·drain.
+function write_gamma_trace_chip(outdir, run_tag, gt)
+    Δγ = -gt.γ0 .* gt.drain
+    fig = Figure(size = (1150, 420))
+    ax = Axis(fig[1, 1]; title = "γ(τ)/γ₀ over the disk (mean, min–max band)", xlabel = "τ / τ_pulse", ylabel = "γ / γ₀")
+    x = gt.τs ./ gt.τ_pulse
+    band!(ax, x, gt.γmin ./ gt.γ0, gt.γmax ./ gt.γ0; color = (:steelblue, 0.3))
+    lines!(ax, x, gt.γmean ./ gt.γ0; color = :steelblue, linewidth = 1.5)
+    ax2 = Axis(fig[1, 2]; title = "net energy change per electron", xlabel = "γ_f − γ₀", ylabel = "electrons")
+    hist!(ax2, Δγ; bins = 60, color = (:steelblue, 0.8))
+    Label(fig[0, :], @sprintf("γ(τ) trace — %s  (γ₀ = %.6g; γ_f − γ₀ ∈ [%.3g, %.3g], mean %.3g)",
+        first(run_tag, 8), gt.γ0, extrema(Δγ)..., sum(Δγ) / length(Δγ)); fontsize = 15, font = :bold)
+    png = joinpath(outdir, "gammatau_$(run_tag).png")
+    save(png, fig)
+    write_derived(outdir; kind = "gamma_trace", label = "γ(τ) trace + net energy change", run_id = run_tag,
+        plot = basename(png), source = "gammatau_$(run_tag).jls",
+        plot_params = Dict("gamma0" => gt.γ0, "dgamma_min" => minimum(Δγ), "dgamma_max" => maximum(Δγ),
+            "dgamma_mean" => sum(Δγ) / length(Δγ), "oversample" => gt.oversample,
+            "knots_per_period" => gt.knots_per_period),
+        description = "γ/γ₀ read through the trajectory interpolants the radiation kernel integrates " *
+            "(mean over the disk with the min–max band) against τ, and the histogram of each " *
+            "electron's net energy change γ_f − γ₀ at the end of the physics span.")
+    return png
 end
 
 # As-run initial conditions: cache + chip. The disk and its Δz offsets are deterministic

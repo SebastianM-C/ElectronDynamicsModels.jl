@@ -535,7 +535,7 @@ screen = ObserverScreen(
 const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
 GAMMA_TRACE_OS >= 0 || error("EDM_GAMMA_TRACE_OVERSAMPLE must be ≥ 0, got $GAMMA_TRACE_OS")
 knot_dt = (2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)
-γτ_grid = GAMMA_TRACE_OS > 0 ? collect(τi:(knot_dt / GAMMA_TRACE_OS):τf) : Float64[]
+const GT = gamma_trace_acc(τi, τf, knot_dt, GAMMA_TRACE_OS)   # trajectory_products.jl, shared with thomson_scattering.jl
 
 # One batch: its trajectories plus the host-side products that used to be reduced over the whole
 # ensemble at once. Both reduce exactly across batches (γ: sums and elementwise extrema; window
@@ -548,7 +548,7 @@ function solve_batch_products(rng)
     # Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
     # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
     cov = check_window_coverage(trajs_b, screen)
-    γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, γτ_grid, c, GAMMA, τf) : nothing
+    γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, GT.τs, c, GAMMA, τf) : nothing
     return (; trajs = trajs_b, cov, γ, n = length(rng))
 end
 
@@ -598,19 +598,9 @@ accum_kw = ACCUM_ALG == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = 
 const FIELD_BUFFERS = Ref{Any}(nothing)
 const EMPTY_TRAJS = Ref{Any}(nothing)   # typed empty vector for the sharded finishing call
 const COVS = Any[]
-const Γ_SUM = zeros(length(γτ_grid))
-const Γ_LO = fill(Inf, length(γτ_grid))
-const Γ_HI = fill(-Inf, length(γτ_grid))
-const Γ_DRAIN = Float64[]
 function accumulate_batch(bp, b)
     push!(COVS, bp.cov)
-    if bp.γ !== nothing
-        γm, γn, γx, γd = bp.γ
-        Γ_SUM .+= γm .* bp.n   # batch means → ensemble mean (÷ N below)
-        Γ_LO .= min.(Γ_LO, γn)
-        Γ_HI .= max.(Γ_HI, γx)
-        append!(Γ_DRAIN, γd)
-    end
+    bp.γ === nothing || fold_gamma!(GT, bp.γ, bp.n)
     EMPTY_TRAJS[] = similar(bp.trajs, 0)
     FIELD_BUFFERS[] = if ndev > 1
         b == 1 && @info "sharding electrons across $ndev devices"
@@ -662,11 +652,8 @@ t_kernel = try maximum(sum, values(launch_times(launch_timer))) catch; NaN end
 
 # γ(τ)/γ₀ sidecar: written after the field phase, since the trace is reduced batch by batch.
 if GAMMA_TRACE_OS > 0
-    gtfile = joinpath(OUTDIR, "gammatau_$(RUN_TAG).jls")
-    serialize(gtfile, (; τs = γτ_grid, γ0 = Float64(GAMMA), ω, τ_pulse = τ,
-        γmean = Γ_SUM ./ N, γmin = Γ_LO, γmax = Γ_HI, drain = Γ_DRAIN,
-        oversample = GAMMA_TRACE_OS, knots_per_period = parse(Float64, INTERP_SAVEAT)))
-    @info "γ(τ)/γ₀ trace serialized" n_τ = length(γτ_grid) mean_drain = sum(Γ_DRAIN) / length(Γ_DRAIN)
+    write_gamma_trace(OUTDIR, RUN_TAG, GT, N; γ0 = GAMMA, ω, τ_pulse = τ, knots_per_period = parse(Float64, INTERP_SAVEAT))
+    @info "γ(τ)/γ₀ trace serialized" n_τ = length(GT.τs) mean_drain = sum(GT.drain) / length(GT.drain)
 end
 
 # Serialize the full split field so offline scripts can read this run directly.

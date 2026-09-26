@@ -29,6 +29,7 @@ using UUIDs
 
 include(joinpath(@__DIR__, "manifest.jl"))   # RunManifests: run_provenance, write_solver_manifest
 include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with the recovery path)
+include(joinpath(@__DIR__, "trajectory_products.jl"))   # γ(τ) trace: gamma_trace_acc/fold_gamma!/write_gamma_trace (shared with the inverse script)
 include(joinpath(@__DIR__, "gpu_telemetry.jl"))   # with_gpu_sampler + gpu_manifest_section → the manifest [gpu] section
 include(joinpath(@__DIR__, "electron_batches.jl"))   # EDM_ELECTRON_BATCH: solve → accumulate → discard, batch by batch
 
@@ -234,6 +235,9 @@ const ABSTOL = something(ABSTOL_SPEC, abserr(a₀))
 # (no saveat ⇒ Vern9's adaptive output). The solve always steps adaptively to RELTOL/ABSTOL regardless.
 const SAVEAT_KW = isempty(INTERP_SAVEAT) ? (;) :
     (; saveat = collect(τi_solve:((2π / ω) / parse(Float64, INTERP_SAVEAT)):τf_solve))
+# γ(τ) trace through the trajectory interpolants (γ₀ = 1: rest electrons); EDM_GAMMA_TRACE_OVERSAMPLE=0 disables it.
+const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
+const GT = gamma_trace_acc(τi, τf, (2π / ω) / parse(Float64, isempty(INTERP_SAVEAT) ? "16" : INTERP_SAVEAT), GAMMA_TRACE_OS)
 # Screen (geometry + window sized above, before the solve)
 Nx = NX
 Ny = NX
@@ -268,7 +272,8 @@ function solve_batch_products(rng)
     # Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
     # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
     cov = check_window_coverage(trajs_b, screen)
-    return (; trajs = trajs_b, cov, n = length(rng))
+    γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, GT.τs, c, 1.0, τf) : nothing
+    return (; trajs = trajs_b, cov, γ, n = length(rng))
 end
 
 # Batch 1 is solved BEFORE the field-phase timer starts, so [timing].field keeps measuring the
@@ -312,6 +317,7 @@ const EMPTY_TRAJS = Ref{Any}(nothing)   # typed empty vector for the sharded fin
 const COVS = Any[]
 function accumulate_batch(bp, b)
     push!(COVS, bp.cov)
+    bp.γ === nothing || fold_gamma!(GT, bp.γ, bp.n)
     EMPTY_TRAJS[] = similar(bp.trajs, 0)
     FIELD_BUFFERS[] = if ndev > 1
         b == 1 && @info "sharding electrons across $ndev devices"
@@ -360,6 +366,9 @@ t_trajectories = BATCH_STATS[].solve_s
 window_cov = merge_window_coverage(COVS)
 t_kernel = try maximum(sum, values(launch_times(launch_timer))) catch; NaN end
 @info "field accumulated" t_field t_kernel ndev n_batches = BATCH_STATS[].n_batches t_trajectories trajectories_overlapped = BATCH_STATS[].overlapped_s
+
+GAMMA_TRACE_OS > 0 && write_gamma_trace(OUTDIR, RUN_TAG, GT, N; γ0 = 1.0, ω, τ_pulse = τ,
+    knots_per_period = parse(Float64, isempty(INTERP_SAVEAT) ? "16" : INTERP_SAVEAT))
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default
