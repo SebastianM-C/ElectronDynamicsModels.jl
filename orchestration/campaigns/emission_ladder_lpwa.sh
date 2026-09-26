@@ -31,4 +31,5 @@ CELLS=(
   "a2|EDM_A0=2 EDM_NSUBSTEPS=$NS_HIGH"
   "a5|EDM_A0=5 EDM_NSUBSTEPS=$NS_HIGH"
   "a10|EDM_A0=10 EDM_NSUBSTEPS=$NS_HIGH"
+  "a20|EDM_A0=20 EDM_NSUBSTEPS=$NS_HIGH"   # extent probe: joins the ladder only if window- and alias-clean
 )
