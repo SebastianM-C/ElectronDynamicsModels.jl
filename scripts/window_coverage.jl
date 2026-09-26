@@ -43,6 +43,8 @@ a₀ = Float64(cfg["a0"])
 Nfull = Int(cfg["N"])
 Rmax = Float64(setup["Rmax"])
 τi, τf = Float64(setup["τi"]), Float64(setup["τf"])
+# the span the solver actually integrated (window-end coverage extends it past τf); legacy manifests: τi, τf
+τ_lo, τ_hi = Float64(get(setup, "τi_solve", τi)), Float64(get(setup, "τf_solve", τf))
 Z = Float64(setup["Z"])
 Nx = Int(cfg["Nx"])
 Ny = Int(get(cfg, "Ny", Nx))
@@ -62,7 +64,7 @@ u³_z = inverse ? c * sqrt(γboost^2 - 1) : 0.0
 dtmax_cfg = Float64(get(cfg, "dtmax", Inf))
 dtmax_kw = isfinite(dtmax_cfg) ? (; dtmax = dtmax_cfg) : (;)
 saveat_kw = interp_saveat == "adaptive" ? (;) :
-    (; saveat = collect(τi:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τf))
+    (; saveat = collect(τ_lo:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τ_hi))
 inverse && Int(get(cfg, "bunch_nb", 0)) > 0 &&
     @warn "bunched inverse run (bunch_nb > 0): Δz offsets are NOT reconstructed"
 
@@ -78,7 +80,7 @@ inverse && Int(get(cfg, "bunch_nb", 0)) > 0 &&
 @named elec = ClassicalElectron(; laser)
 sys = mtkcompile(elec)
 prob = ODEProblem{false, SciMLBase.FullSpecialize}(
-    sys, [sys.x => [u⁰_t * τi, 0.0, 0.0, u³_z * τi], sys.u => [u⁰_t, 0.0, 0.0, u³_z]], (τi, τf);
+    sys, [sys.x => [u⁰_t * τ_lo, 0.0, 0.0, u³_z * τ_lo], sys.u => [u⁰_t, 0.0, 0.0, u³_z]], (τ_lo, τ_hi);
     u0_constructor = SVector{8}, fully_determined = true
 )
 
@@ -93,7 +95,7 @@ function sunflower(n, α)
     return points
 end
 R₀ = Rmax * sunflower(Nfull, 2)
-xμ = [[u⁰_t * τi, r..., u³_z * τi] for r in R₀]
+xμ = [[u⁰_t * τ_lo, r..., u³_z * τ_lo] for r in R₀]
 # Electron subset: all (exact) or EDM_N uniformly spaced sunflower indices (the sunflower is
 # radially ordered, so a uniform index subset spans r₀ = 0 … Rmax including the outermost).
 solve_idx = (N_CAP <= 0 || N_CAP >= Nfull) ? collect(1:Nfull) :
