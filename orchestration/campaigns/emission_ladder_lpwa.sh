@@ -5,7 +5,9 @@ CAMPAIGN=emission_ladder_lpwa
 SCRIPT=scripts/lpwa.jl
 KEEP_CUBE=0
 REDUCE_OVERLAP=1
-REDUCE_HOOK='{ flock 9; EDM_APODIZATION=none EDM_DIRECT_READ=1 _reduce_cell "$uuid"; } 9>"/tmp/edm-reduce-$(id -un).lock"'
+LADDER_SIDE=lpwa
+. "$(dirname "${BASH_SOURCE[0]}")/emission_ladder/post_reduce.sh"   # ladder_reduce: rect reduce + checks + diagnostics
+REDUCE_HOOK='ladder_reduce "$uuid"'
 SWEEP_AXES=a0
 NS_HIGH_RECOMMENDED=1
 NS_HIGH=UNSET_run_kernel_conv_diag_first
