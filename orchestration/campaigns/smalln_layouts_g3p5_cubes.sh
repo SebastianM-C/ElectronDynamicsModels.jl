@@ -1,4 +1,4 @@
-# smalln_layouts_g3p5_cubes — supplement to smalln_layouts_g3p5 (same CAMPAIGN dir, same BASE). The *_cube cells
+# smalln_layouts_g3p5_cubes (branch campaigns/smalln-cubes) — supplement to smalln_layouts_g3p5 (same CAMPAIGN dir, same BASE). The *_cube cells
 # rerun one / pair_180 / ring24 ONLY to keep the cube (E_x(t) snapshots + per-pixel power spectra); their own
 # layout labels keep the layout axis one run per label. ring4/5/16 on the inner lobe (r₁ = 0.587 w₀) complete
 # the 3 → 24 ring sequence.
