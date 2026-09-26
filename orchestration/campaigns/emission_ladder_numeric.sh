@@ -5,6 +5,10 @@
 # SPP 16 / Ns 6000 (Figs 7–8 use h1 and h2), φ₀ = −π/2. Kernel: RK4 (rest electrons; same kernel as lpwa.jl, which is
 # RK4-only). n_substeps 1 for a₀ ≤ 1; for a₀ ≥ 2 set NS_HIGH from kernel_conv_diag before launch — until then those
 # cells fail at their first parse. Twin: emission_ladder_lpwa.sh. Lane wrappers in emission_ladder/.
+# kernel_conv_diag (2026-09-27): RK4 ns1 is within 2e-5 (rel. L2, h1/h2 maps, E and B) of the converged maps even at
+# a₀ = 10 (ns4 gains ~1 digit on h1 at ~1.8× field time) ⇒ recommended 1. Launch guard: NS_HIGH stays unparseable
+# until the author approves; then set NS_HIGH=$NS_HIGH_RECOMMENDED.
+NS_HIGH_RECOMMENDED=1
 NS_HIGH=UNSET_run_kernel_conv_diag_first
 CAMPAIGN=emission_ladder_numeric
 SCRIPT=scripts/thomson_scattering.jl
