@@ -38,7 +38,3 @@ ElectronDynamicsModels = {path = ".."}
 RunManifests = {path = "../lib/RunManifests"}
 
 [compat]
-# AMD.jl 0.5.4 dropped `SS_Int`, which SparseColumnPivotedQR <= 2.1.7 (via LinearSolve 5) still
-# reads at LinearSolve precompile time; drop this cap once SparseColumnPivotedQR 2.1.8
-# (SciML/SparseColumnPivotedQR.jl#71) is registered.
-AMD = "0.5.0 - 0.5.3"
