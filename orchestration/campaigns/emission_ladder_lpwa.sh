@@ -3,7 +3,7 @@
 # spline-free (no saveat/reltol/kernel knobs); n_substeps follows the numeric side (1 for a₀ ≤ 1, NS_HIGH above).
 CAMPAIGN=emission_ladder_lpwa
 SCRIPT=scripts/lpwa.jl
-KEEP_CUBE=0
+KEEP_CUBE=1   # cubes kept for post-hoc reduction; drained to R2 (cloud backends; local: LOCAL_DRAIN_R2=1)
 REDUCE_OVERLAP=1
 LADDER_SIDE=lpwa
 . "$(dirname "${BASH_SOURCE[0]}")/emission_ladder/post_reduce.sh"   # ladder_reduce: rect reduce + checks + diagnostics
@@ -24,7 +24,10 @@ CELLS=(
   "a1em2|EDM_A0=1e-2"
   "a5em2|EDM_A0=0.05"
   "a1em1|EDM_A0=0.1"
+  "a13em2|EDM_A0=0.13"
+  "a16em2|EDM_A0=0.16"
   "a2em1|EDM_A0=0.2"
+  "a25em2|EDM_A0=0.25"
   "a3em1|EDM_A0=0.3"
   "a5em1|EDM_A0=0.5"
   "a1|EDM_A0=1"

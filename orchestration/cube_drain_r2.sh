@@ -55,11 +55,14 @@ BUCKET="${R2_BUCKET:-simulation-storage}"
 RC() { "$RCLONE" --s3-no-check-bucket --s3-upload-concurrency "${R2_CONCURRENCY:-16}" --s3-chunk-size "${R2_CHUNK:-128M}" "$@"; }
 log() { echo "[drain-r2 $(date -u +%FT%TZ)] $*"; }
 
-log "watching $HOME/EDM/runs (bucket: $BUCKET)"
+ROOT="${DRAIN_RUNS_ROOT:-$HOME/EDM/runs}"   # cloud VMs: ~/EDM/runs; local backend passes $REPO/runs
+CAMPS=" $* "                                # optional campaign names: drain only these (local runs/ holds other campaigns' kept cubes)
+log "watching $ROOT${*:+ for $*} (bucket: $BUCKET)"
 while :; do
-    for cube in "$HOME"/EDM/runs/*/field_*.jls; do
+    for cube in "$ROOT"/*/field_*.jls; do
         [ -e "$cube" ] || continue
         dir=$(dirname "$cube"); camp=$(basename "$dir"); base=$(basename "$cube")
+        [ "$CAMPS" = "  " ] || [[ "$CAMPS" == *" $camp "* ]] || continue
         uuid=${base%.jls}; uuid=${uuid##*_}
         [ "$camp" = smoke ] && continue
         [ -e "$dir/$uuid.reduced" ] || continue
