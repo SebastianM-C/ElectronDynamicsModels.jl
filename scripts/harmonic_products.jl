@@ -252,12 +252,12 @@ function write_harmonic_products(
     # Drain-path only (EDM_REDUCTION_MARKER set by run_cell _reduce_cell): enumerate the cache in .reduced.
     if get(ENV, "EDM_REDUCTION_MARKER", "0") == "1"
         record_reduction!(outdir, run_tag, hmapsfile)
-        # Solver-side caches — the γ(τ) trace (EDM_GAMMA_TRACE_OVERSAMPLE > 0) and the as-run
-        # IC table — are publish-autonomy caches too: their chips re-render from them and can
+        # Solver-side caches — the γ(τ) trace (EDM_GAMMA_TRACE_OVERSAMPLE > 0), the emission-time
+        # profile (EDM_EMISSION_TIME) and the as-run IC table — are publish-autonomy caches too: their chips re-render from them and can
         # NEVER be rebuilt from the cube (the trajectories are gone after the run). They are
         # written at run time but recorded here at reduce time, because only the drain path
         # stamps the marker. isfile-guarded: rest-electron runs emit neither.
-        for pre in ("gammatau_", "ic_")
+        for pre in ("gammatau_", "emissiontime_", "ic_")
             f = joinpath(outdir, "$(pre)$(run_tag).jls")
             isfile(f) && record_reduction!(outdir, run_tag, f)
         end

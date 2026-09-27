@@ -1,6 +1,6 @@
 # Trajectory-side products shared between the live solvers (thomson_scattering.jl,
 # inverse_thomson_scattering.jl) and the backfill path (gammatau_backfill.jl): the γ(τ)/γ₀ trace
-# reduction, its batch accumulator + cache + chip, and the as-run
+# reduction, its batch accumulator + cache + chip, the lab-time emission profile, and the as-run
 # initial-conditions cache + chip. Included, not a module — the includer provides
 # Serialization, CairoMakie, Printf, and RunManifests (write_derived), same contract as
 # harmonic_products.jl.
@@ -92,6 +92,84 @@ function write_gamma_trace_chip(outdir, run_tag, gt)
         description = "γ/γ₀ read through the trajectory interpolants the radiation kernel integrates " *
             "(mean over the disk with the min–max band) against τ, and the histogram of each " *
             "electron's net energy change γ_f − γ₀ at the end of the physics span.")
+    return png
+end
+
+# Emission-time profile: WHEN the ensemble radiates, in lab time. Each electron is sampled on a proper-time
+# grid through the same interpolants the radiation kernel integrates (4-acceleration from `a_itp`), and its
+# emitted-energy weight per step is binned by lab time t = x⁰/c in laser periods (0 = the pulse peak at the
+# focus). Bins are a Dict so boosted (inverse) runs, whose lab time runs ≫ τ, need no preset range.
+#   acc = emission_time_acc(τi, τf, dτ)                               # dτ ≤ 0 ⇒ off
+#   fold_emission!(acc, emission_time(trajs, acc.τs, c, T))           # per batch
+#   write_emission_time(outdir, run_tag, acc; T, window_periods)
+
+# Lab-frame radiated energy of one proper-time step dτ: the invariant Larmor power ∝ −𝔞μ𝔞^μ times the lab
+# duration dt = γ dτ (u⁰ = γc, metric (+,−,−,−)). dτ is constant on the grid, so it drops out of the
+# normalized profile; max(0, …) absorbs spline round-off where 𝔞 ≈ 0.
+emission_weight(uμ, 𝔞μ, c, dτ) = max(0.0, -ElectronDynamicsModels.m_dot(𝔞μ, 𝔞μ)) * uμ[1] / c
+
+function emission_time(trajs, τs, c, T)
+    nch = max(1, min(Threads.nthreads(), length(trajs)))
+    chunks = collect(Iterators.partition(eachindex(trajs), cld(length(trajs), nch)))
+    dτ = length(τs) > 1 ? τs[2] - τs[1] : 0.0
+    parts = [Dict{Int, Float64}() for _ in chunks]
+    tasks = map(enumerate(chunks)) do (ci, ch)
+        Threads.@spawn begin
+            d = parts[ci]
+            for e in ch, τk in τs
+                xμ, uμ, 𝔞μ = ElectronDynamicsModels.state_with_acceleration(trajs[e], τk)
+                b = floor(Int, xμ[1] / c / T)
+                d[b] = get(d, b, 0.0) + emission_weight(uμ, 𝔞μ, c, dτ)
+            end
+        end
+    end
+    foreach(wait, tasks)
+    return reduce(mergewith!(+), parts)
+end
+
+emission_time_acc(τi, τf, dτ) = (; τs = dτ > 0 ? collect(τi:dτ:τf) : Float64[], bins = Dict{Int, Float64}())
+fold_emission!(acc, d) = (mergewith!(+, acc.bins, d); acc)
+
+function write_emission_time(outdir, run_tag, acc; T, window_periods)
+    ks = sort!(collect(keys(acc.bins)))
+    t = Float64.(ks) .+ 0.5                                   # bin centres, periods
+    w = [acc.bins[k] for k in ks]
+    et = (; t, w, T, window_periods, dτ = length(acc.τs) > 1 ? acc.τs[2] - acc.τs[1] : NaN)
+    file = joinpath(outdir, "emissiontime_$(run_tag).jls")
+    serialize(file, et)
+    write_emission_time_chip(outdir, run_tag, et)
+    return file
+end
+
+# Chip: normalized emission rate and its cumulative fraction vs lab time, with the 50 / 90 / 99 % times.
+function write_emission_time_chip(outdir, run_tag, et)
+    cs = cumsum(et.w) ./ sum(et.w)
+    tp(p) = et.t[findfirst(>=(p), cs)]
+    t50, t90, t99 = tp(0.5), tp(0.9), tp(0.99)
+    lo, hi = tp(1e-4) - 5, tp(0.999) + 5
+    sel = lo .<= et.t .<= hi
+    fig = Figure(size = (1150, 420))
+    ax1 = Axis(fig[1, 1]; title = "emission rate (normalized)", xlabel = "lab time t (periods, 0 = pulse peak at the focus)", ylabel = "fraction per period")
+    lines!(ax1, et.t[sel], et.w[sel] ./ sum(et.w); color = :steelblue, linewidth = 1.5)
+    ax2 = Axis(fig[1, 2]; title = "cumulative emission", xlabel = "lab time t (periods)", ylabel = "fraction radiated", limits = (nothing, (0, 1.02)))
+    lines!(ax2, et.t[sel], cs[sel]; color = :steelblue, linewidth = 2)
+    for (p, tq) in ((50, t50), (90, t90), (99, t99))
+        vlines!(ax2, [tq]; color = (:gray40, 0.8), linewidth = 1, linestyle = :dot)
+        text!(ax2, tq, 0.04; text = " $(p) %", fontsize = 11, color = :gray30)
+    end
+    Label(fig[0, :], @sprintf("emission time — %s  (50 / 90 / 99 %% radiated by t = %.1f / %.1f / %.1f periods)",
+        first(run_tag, 8), t50, t90, t99); fontsize = 15, font = :bold)
+    png = joinpath(outdir, "emissiontime_$(run_tag).png")
+    save(png, fig)
+    write_derived(outdir; kind = "emission_time", label = @sprintf("emission time: 99 %% by t = %.0f periods", t99), run_id = run_tag,
+        plot = basename(png), source = "emissiontime_$(run_tag).jls",
+        plot_params = Dict("t50_periods" => t50, "t90_periods" => t90, "t99_periods" => t99,
+            "window_periods" => et.window_periods, "dtau" => et.dτ),
+        description = "When the electron ensemble radiates: the emitted-energy weight of every electron, sampled " *
+            "through the trajectory interpolants the radiation kernel integrates, binned by LAB time (laser periods, " *
+            "0 = pulse peak at the focus). Left: normalized rate; right: cumulative fraction with the times by " *
+            "which 50 / 90 / 99 % is radiated. Lab time, not observer time: arrival at the screen is compressed " *
+            "by (1 − β·n) for forward-moving electrons.")
     return png
 end
 
