@@ -56,16 +56,11 @@ function ladder_rows(comps)
                 (kl === nothing || kt === nothing) && error("harmonic $n absent at a0=$(l.a0)")
                 FL = l.h.fields_h[kl, comps, :, :]
                 FN = t.h.fields_h[kt, comps, :, :]
-                # Optimal GLOBAL phase alignment before differencing: a constant offset between
-                # the scripts' window/t₀ conventions rotates the whole complex map and would
-                # read as an O(1) "difference" (the June cm_phi0 pairs sit at Δφ≈0 by
-                # construction; the pre-PR#62 2026-07 era carries −7π/16). e^{iθ*} =
-                # ⟨F_N,F_L⟩/|⟨F_N,F_L⟩|; θ* ships in the plot parameters — bookkeeping, not
-                # physics.
-                z = sum(conj.(FN) .* FL)
-                ph = iszero(z) ? one(z) : z / abs(z)
-                push!(dF, l2(FL .* conj(ph) .- FN))
-                push!(dφ, rad2deg(angle(ph)))
+                # RAW difference, no phase alignment (it can hide setup mistakes). The global
+                # offset θ* = arg⟨F_L, F_N⟩ is kept as a diagnostic in the plot parameters only.
+                z = sum(conj.(FL) .* FN)
+                push!(dF, l2(FL .- FN))
+                push!(dφ, rad2deg(angle(z)))
                 push!(aL, l2(FL))
                 push!(aT, l2(FN))
             end
@@ -120,18 +115,19 @@ for (fld, comps) in ((:E, 1:3), (:B, 4:6))
             "|ΔF̃| h2" => [round(r.dF[2]; sigdigits = 3) for r in rows],
             "rel-L2 h1" => [round(r.dF[1] / max(r.aT[1], eps()); sigdigits = 3) for r in rows],
             "rel-L2 h2" => [round(r.dF[2] / max(r.aT[2], eps()); sigdigits = 3) for r in rows],
-            "Δφ h1 [deg]" => [round(r.dφ[1]; sigdigits = 3) for r in rows],
-            "Δφ h2 [deg]" => [round(r.dφ[2]; sigdigits = 3) for r in rows]),
+            "θ* h1 [deg] (not applied)" => [round(r.dφ[1]; sigdigits = 3) for r in rows],
+            "θ* h2 [deg] (not applied)" => [round(r.dφ[2]; sigdigits = 3) for r in rows]),
         description = (full ?
             "RELATIVE complex L2 |ΔF̃|/|F̃_num| per pair, LPWA − numeric per harmonic vs a₀ " *
-            "(log–log), after optimal global phase alignment (the measured convention offset " *
-            "Δφ is in the plot parameters). Circles = the June split-mode Ns=6000 era, " *
+            "(log–log), raw: no phase alignment is applied (the global offset θ* is in the plot " *
+            "parameters as a diagnostic, not applied). Circles = the June split-mode Ns=6000 era, " *
             "squares = the 2026-07 total-mode Ns=12160 era — the pair-internal relative " *
             "metric is the one quantity that stitches across the eras' different DFT " *
             "amplitude conventions." :
             "Complex L2 of the screen-field difference LPWA − numeric per harmonic, against " *
-            "a₀ (log–log; dashed = ∝a₀ guide anchored at the smallest a₀), after optimal " *
-            "global phase alignment per pair (Δφ in the plot parameters). rel-L2 per point " *
+            "a₀ (log–log; dashed = ∝a₀ guide anchored at the smallest a₀), raw: no phase " *
+            "alignment is applied (the global offset θ* per pair is in the plot parameters as a " *
+            "diagnostic, not applied). rel-L2 per point " *
             "is in the plot parameters.") * bnote,
     )
     println("summary → boundary_dF$sfx ($(length(rows)) pairs)")
