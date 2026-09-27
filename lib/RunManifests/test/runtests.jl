@@ -597,3 +597,24 @@ end
     @test bytes["maps.jls"] == 300                           # byte size refreshed (collector byte-compares)
     @test bytes["traces.jls"] == 50                          # untouched entry survived the re-reduce
 end
+
+@testset "append_reduction! — post-reduce products, header kept" begin
+    dir = mktempdir()
+    write(joinpath(dir, "maps.jls"), zeros(UInt8, 100))
+    write(joinpath(dir, "late.jls"), zeros(UInt8, 7))
+    @test append_reduction!(dir, "ar", ["late.jls"]) === nothing          # no final marker: no-op
+    @test !isfile(joinpath(dir, "ar.reduced"))
+    final = joinpath(dir, "ar.reduced")
+    mv(record_reduction!(dir, "ar", "maps.jls"), final)
+    hdr = TOML.parsefile(final)
+    hdr["reduce_commit"] = "cubecommit"                                   # the cube reduction's stamp
+    open(io -> TOML.print(io, hdr; sorted = true), final, "w")
+    @test append_reduction!(dir, "ar", [joinpath(dir, "late.jls")]) == final
+    write(joinpath(dir, "late.jls"), zeros(UInt8, 9))
+    append_reduction!(dir, "ar", ["late.jls"])
+    m = TOML.parsefile(final)
+    @test m["reduce_commit"] == "cubecommit"                              # header untouched
+    bytes = Dict(e["file"] => e["bytes"] for e in m["reduction"])
+    @test length(m["reduction"]) == 2 && bytes["late.jls"] == 9 && bytes["maps.jls"] == 100
+    @test !isfile(final * ".partial") && !isfile(final * ".tmp")
+end
