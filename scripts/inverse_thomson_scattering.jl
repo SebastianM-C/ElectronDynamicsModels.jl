@@ -536,6 +536,9 @@ const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
 GAMMA_TRACE_OS >= 0 || error("EDM_GAMMA_TRACE_OVERSAMPLE must be ≥ 0, got $GAMMA_TRACE_OS")
 knot_dt = (2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)
 const GT = gamma_trace_acc(τi, τf, knot_dt, GAMMA_TRACE_OS)   # trajectory_products.jl, shared with thomson_scattering.jl
+# Emission-time profile (lab time, laser periods) over the solve span at the Doppler-scaled knot step; EDM_EMISSION_TIME=0 disables it.
+const EMISSION_TIME = get(ENV, "EDM_EMISSION_TIME", "1") == "1"
+const ET = emission_time_acc(τi_solve, τf_solve, EMISSION_TIME ? knot_dt : 0.0)
 
 # One batch: its trajectories plus the host-side products that used to be reduced over the whole
 # ensemble at once. Both reduce exactly across batches (γ: sums and elementwise extrema; window
@@ -549,7 +552,8 @@ function solve_batch_products(rng)
     # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
     cov = check_window_coverage(trajs_b, screen)
     γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, GT.τs, c, GAMMA, τf) : nothing
-    return (; trajs = trajs_b, cov, γ, n = length(rng))
+    et = EMISSION_TIME ? emission_time(trajs_b, ET.τs, c, 2π / ω) : nothing
+    return (; trajs = trajs_b, cov, γ, et, n = length(rng))
 end
 
 # Batch 1 is solved BEFORE the field-phase timer starts, so [timing].field keeps measuring the
@@ -601,6 +605,7 @@ const COVS = Any[]
 function accumulate_batch(bp, b)
     push!(COVS, bp.cov)
     bp.γ === nothing || fold_gamma!(GT, bp.γ, bp.n)
+    bp.et === nothing || fold_emission!(ET, bp.et)
     EMPTY_TRAJS[] = similar(bp.trajs, 0)
     FIELD_BUFFERS[] = if ndev > 1
         b == 1 && @info "sharding electrons across $ndev devices"
@@ -655,6 +660,7 @@ if GAMMA_TRACE_OS > 0
     write_gamma_trace(OUTDIR, RUN_TAG, GT, N; γ0 = GAMMA, ω, τ_pulse = τ, knots_per_period = parse(Float64, INTERP_SAVEAT))
     @info "γ(τ)/γ₀ trace serialized" n_τ = length(GT.τs) mean_drain = sum(GT.drain) / length(GT.drain)
 end
+EMISSION_TIME && write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP)
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default

@@ -238,6 +238,9 @@ const SAVEAT_KW = isempty(INTERP_SAVEAT) ? (;) :
 # γ(τ) trace through the trajectory interpolants (γ₀ = 1: rest electrons); EDM_GAMMA_TRACE_OVERSAMPLE=0 disables it.
 const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
 const GT = gamma_trace_acc(τi, τf, (2π / ω) / parse(Float64, isempty(INTERP_SAVEAT) ? "16" : INTERP_SAVEAT), GAMMA_TRACE_OS)
+# Emission-time profile (lab time) over the solve span at 16 steps per period; EDM_EMISSION_TIME=0 disables it.
+const EMISSION_TIME = get(ENV, "EDM_EMISSION_TIME", "1") == "1"
+const ET = emission_time_acc(τi_solve, τf_solve, EMISSION_TIME ? (2π / ω) / 16 : 0.0)
 # Screen (geometry + window sized above, before the solve)
 Nx = NX
 Ny = NX
@@ -273,7 +276,8 @@ function solve_batch_products(rng)
     # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
     cov = check_window_coverage(trajs_b, screen)
     γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, GT.τs, c, 1.0, τf) : nothing
-    return (; trajs = trajs_b, cov, γ, n = length(rng))
+    et = EMISSION_TIME ? emission_time(trajs_b, ET.τs, c, 2π / ω) : nothing
+    return (; trajs = trajs_b, cov, γ, et, n = length(rng))
 end
 
 # Batch 1 is solved BEFORE the field-phase timer starts, so [timing].field keeps measuring the
@@ -318,6 +322,7 @@ const COVS = Any[]
 function accumulate_batch(bp, b)
     push!(COVS, bp.cov)
     bp.γ === nothing || fold_gamma!(GT, bp.γ, bp.n)
+    bp.et === nothing || fold_emission!(ET, bp.et)
     EMPTY_TRAJS[] = similar(bp.trajs, 0)
     FIELD_BUFFERS[] = if ndev > 1
         b == 1 && @info "sharding electrons across $ndev devices"
@@ -369,6 +374,7 @@ t_kernel = try maximum(sum, values(launch_times(launch_timer))) catch; NaN end
 
 GAMMA_TRACE_OS > 0 && write_gamma_trace(OUTDIR, RUN_TAG, GT, N; γ0 = 1.0, ω, τ_pulse = τ,
     knots_per_period = parse(Float64, isempty(INTERP_SAVEAT) ? "16" : INTERP_SAVEAT))
+EMISSION_TIME && write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP)
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default
