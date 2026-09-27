@@ -5,8 +5,10 @@
 #
 # Reconstructs the run from its manifest (thomson AND inverse manifests: `scattering=inverse`
 # switches to the reversed laser k_direction=[0,0,-1] and the boosted u⁰=(γc,0,0,γβc) with the
-# meet-at-origin start z=γβc·τi — mirrors inverse_thomson_scattering.jl) and re-solves ONLY the
-# trajectory endpoints (save_everystep=false): no fields, no splines — minutes on a CPU.
+# meet-at-origin start z=γβc·τi — mirrors inverse_thomson_scattering.jl) and re-solves the
+# trajectories over the run's SOLVE span ([setup] τi_solve…τf_solve, the span the radiation was
+# integrated over), each reduced on the fly to its endpoint and first crossing of ρ = R_disc
+# (T/8 grid): no fields, no splines — minutes on a CPU.
 #
 # Products (chips of the parent run, plot_pixel_traces.jl sidecar pattern):
 #   ic_lg_<tag>.png      the start disk over the closed-form LG intensity |u_rel|² heatmap
@@ -15,11 +17,17 @@
 #                        histogram of ρ_f/w₀ with the fraction beyond EDM_RHO_OUT — the
 #                        ponderomotive-expulsion estimate ("are they pushed out of the
 #                        interaction region?")
-#   finalpos_<tag>.jls   cache: xμ0, xμf, ρ0, ρf (re-render without an EDM solve)
+#   finalpos_<tag>.jls   per-electron cache (sunflower order): xμ0, xμf, uf, ρ0, ρf, γf, Δzf,
+#                        t_cross, edge, … — re-render without an EDM solve; recorded in the
+#                        run's .reduced marker so it publishes
+#
+# Fractions count interior electrons only: the sunflower's outer 2√N points start exactly ON
+# R_disc, so any "ρ_f > R_disc" test flags them from τ = τi.
 #
 # ENV knobs:
-#   EDM_RHO_OUT   expulsion threshold in w₀ units (default 3.25)
-#   EDM_OUTDIR    output dir, default = the manifest's directory
+#   EDM_RHO_OUT          expulsion threshold in w₀ units (default 3.25)
+#   EDM_OUTDIR           output dir, default = the manifest's directory
+#   EDM_PROVENANCE_NOTE  optional note stamped into the sidecars (e.g. for a backfill)
 
 using ElectronDynamicsModels
 using ModelingToolkit
@@ -32,6 +40,7 @@ using Printf
 using CairoMakie
 using Serialization
 using TOML
+using RunManifests: append_reduction!
 
 const c = 137.03599908330932   # speed of light, atomic units (repo convention)
 
@@ -41,6 +50,7 @@ isfile(MFILE) || error("no manifest at $MFILE")
 
 const RHO_OUT = parse(Float64, get(ENV, "EDM_RHO_OUT", "3.25"))
 const OUTDIR = get(ENV, "EDM_OUTDIR", dirname(MFILE))
+const NOTE = get(ENV, "EDM_PROVENANCE_NOTE", nothing)
 
 # ── Reconstruct the run (mirrors plot_pixel_traces.jl / analyze_trajectories.jl) ──
 m = TOML.parsefile(MFILE)
@@ -54,7 +64,7 @@ a₀ = Float64(cfg["a0"])
 φ₀ = Float64(laser_p["phi0"])
 N = Int(cfg["N"])
 Rmax = Float64(setup["Rmax"])
-τi, τf = Float64(setup["τi"]), Float64(setup["τf"])
+τi, τf = Float64(get(setup, "τi_solve", setup["τi"])), Float64(get(setup, "τf_solve", setup["τf"]))
 reltol = Float64(get(cfg, "reltol", 1.0e-12))
 abstol = Float64(cfg["abstol"])
 p_radial = Int(laser_p["p"])
@@ -105,25 +115,52 @@ function prob_func(prob, ctx)
     return remake(prob; u0, p)
 end
 dtmax_kw = isfinite(dtmax) ? (; dtmax) : (;)
+T = 2π / ω
+ts = unique!([collect(range(τi, τf; step = T / 8)); τf])
+ix = [variable_index(sys, sys.x[i]) for i in 1:4]
+iu = [variable_index(sys, sys.u[i]) for i in 1:4]
+edge = [hypot(r...) >= Rmax * (1 - 1e-9) for r in R₀]
+# Per electron: endpoint + first ρ = R_disc crossing (lab periods from the pulse peak at the focus,
+# linear between T/8 samples; NaN if never, and for edge electrons, which start on it).
+function output_func(s, ctx)
+    ρ = [hypot(u[ix[2]], u[ix[3]]) for u in s.u]
+    j = edge[ctx.sim_id] ? nothing : findfirst(>(Rmax), ρ)
+    tc = if j === nothing
+        NaN
+    elseif j == 1
+        s.u[1][ix[1]] / c / T
+    else
+        f = (Rmax - ρ[j - 1]) / (ρ[j] - ρ[j - 1])
+        ((1 - f) * s.u[j - 1][ix[1]] + f * s.u[j][ix[1]]) / c / T
+    end
+    return ((; xf = SVector{4}(s.u[end][ix]), uf = SVector{4}(s.u[end][iu]), tc, ok = SciMLBase.successful_retcode(s)), false)
+end
 t_solve = @elapsed sol = solve(
-    EnsembleProblem(prob; prob_func, safetycopy = false), Vern9(), EnsembleThreads();
-    reltol, abstol, trajectories = N, save_everystep = false, save_start = false, dtmax_kw...
+    EnsembleProblem(prob; prob_func, output_func, safetycopy = false), Vern9(), EnsembleThreads();
+    reltol, abstol, trajectories = N, saveat = ts, dtmax_kw...
 )
-@info "endpoints solved" t_solve N
+@info "trajectories solved" t_solve N span = (τi, τf)
+all(r.ok for r in sol.u) || @warn "$(count(r -> !r.ok, sol.u)) trajectories did not reach τf"
 
-xμf = [s[sys.x][end] for s in sol.u]               # final 4-position (layout-agnostic indexing)
+xμf = [r.xf for r in sol.u]                          # final 4-position
+t_cross = [r.tc for r in sol.u]
 ρ0 = [hypot(r[1], r[2]) for r in R₀] ./ w₀
 ρf = [hypot(x[2], x[3]) for x in xμf] ./ w₀
-pct_out = 100 * count(>(RHO_OUT), ρf) / N
+interior = .!edge
+frac_beyond(ρw) = count(ρf[interior] .> ρw) / count(interior)
+pct_out = 100 * frac_beyond(RHO_OUT)
+frac_out_1, frac_out_2 = frac_beyond(Rmax / w₀), frac_beyond(2Rmax / w₀)
 Δρ = ρf .- ρ0
 maxΔρ = maximum(abs, Δρ)
-@info "expulsion" pct_out RHO_OUT maximum(ρf) maxΔρ
+@info "expulsion" pct_out RHO_OUT frac_out_1 frac_out_2 count(edge) maximum(ρf) maxΔρ
 
 # Ponderomotive push relative to free streaming (β_z0 = 0 for rest electrons, γβ for inverse):
 # axial displacement Δz_push, residual drift Δβ_z and net energy gain Δγ = γ_f − γ₀ per electron.
-uf = [s[sys.u][end] for s in sol.u]                 # final 4-velocity
+uf = [r.uf for r in sol.u]                           # final 4-velocity
 γ0, βz0 = u⁰_t / c, u³_z / u⁰_t
-Δγ = [u[1] / c for u in uf] .- γ0
+γf = [u[1] / c for u in uf]
+Δzf = [(xf[4] - x0[4]) / λ for (xf, x0) in zip(xμf, xμ0)]
+Δγ = γf .- γ0
 Δβz = [u[4] / u[1] for u in uf] .- βz0
 Δz_push = [((xf[4] - x0[4]) - βz0 * (xf[1] - x0[1])) / λ for (xf, x0) in zip(xμf, xμ0)]
 @info "push/drift" maximum(abs, Δz_push) maximum(abs, Δβz) extrema(Δγ)
@@ -162,7 +199,7 @@ crange = maxΔρ > 0 ? (-maxΔρ, maxΔρ) : (-1e-12, 1e-12)
 sc = scatter!(ax1, x0w, y0w; color = Δρ, colormap = :RdBu, colorrange = crange,
     markersize = 5)
 Colorbar(fig2[1, 2], sc; label = "Δρ = (ρ_f − ρ₀) / w₀")
-ax2 = Axis(fig2[1, 3]; title = @sprintf("final radii — %.1f%% beyond %.2f w₀ (max |Δρ| = %.2g w₀)",
+ax2 = Axis(fig2[1, 3]; title = @sprintf("final radii — %.1f%% of the interior beyond %.2f w₀ (max |Δρ| = %.2g w₀)",
         pct_out, RHO_OUT, maxΔρ),
     xlabel = "ρ_final / w₀", ylabel = "electrons")
 hist!(ax2, ρf; bins = 60, color = (:steelblue, 0.8))
@@ -192,9 +229,14 @@ println("saved → $png3")
 
 jlsfile = joinpath(OUTDIR, "finalpos_$(RUN_TAG).jls")
 serialize(jlsfile, (; xμ0 = permutedims(reduce(hcat, xμ0)), xμf = permutedims(reduce(hcat, xμf)),
-    uf = permutedims(reduce(hcat, uf)), Δz_push, Δβz, Δγ,
-    ρ0, ρf, rho_out = RHO_OUT, pct_out, N, a₀, γ, λ, w₀, Rmax, run_id = RUN_TAG))
+    uf = permutedims(reduce(hcat, uf)), Δz_push, Δβz, Δγ, γf, Δzf, t_cross, edge,
+    ρ0, ρf, rho_out = RHO_OUT, pct_out, frac_out_1, frac_out_2, span = (τi, τf), T,
+    N, a₀, γ, λ, w₀, Rmax, run_id = RUN_TAG))
 println("serialized → $jlsfile")
+if OUTDIR == dirname(MFILE)
+    marker = append_reduction!(OUTDIR, RUN_TAG, [jlsfile])
+    println(marker === nothing ? "no .reduced marker — cache not recorded" : "recorded in $(basename(marker))")
+end
 
 # ── Sidecars (harmonic_products derived_*.toml schema → dashboard chips) ──
 repo_commit = try
@@ -212,18 +254,21 @@ for (kind, label, png, pp, desc) in (
             Dict{String, Any}("N" => N, "gamma_eps" => γ - 1, "rho_out_w0" => RHO_OUT,
                 "pct_out" => round(pct_out; sigdigits = 3),
                 "max_rho_f_w0" => round(maximum(ρf); sigdigits = 4),
-                "max_abs_drho_w0" => round(maxΔρ; sigdigits = 3)),
-            "Endpoint-only trajectory re-solve: final transverse radius ρ_f = √(x²+y²) per " *
-            "starting point, and the ρ_f/w₀ histogram with the fraction beyond " *
+                "max_abs_drho_w0" => round(maxΔρ; sigdigits = 3),
+                "frac_out_Rdisc" => frac_out_1, "frac_out_2Rdisc" => frac_out_2,
+                "n_edge" => count(edge), "tau_start" => τi, "tau_end" => τf),
+            "Trajectory re-solve over the run's solve span: final transverse radius ρ_f = √(x²+y²) " *
+            "per starting point, and the ρ_f/w₀ histogram with the fraction beyond " *
             "$(RHO_OUT) w₀ — the ponderomotive-expulsion estimate for whether electrons " *
-            "leave the interaction region during the pulse."),
+            "leave the interaction region. Fractions count the interior electrons: the " *
+            "$(count(edge)) sunflower edge points start exactly on the disc boundary."),
         ("pushdrift", "ponderomotive push, drift, energy gain", basename(png3),
             Dict{String, Any}("N" => N, "gamma_eps" => γ - 1,
                 "max_abs_dz_push_lambda" => round(maximum(abs, Δz_push); sigdigits = 4),
                 "max_abs_dbeta_z" => round(maximum(abs, Δβz); sigdigits = 4),
                 "dgamma_min" => minimum(Δγ), "dgamma_max" => maximum(Δγ),
                 "dgamma_mean" => sum(Δγ) / N),
-            "Same endpoint re-solve: per electron, the axial displacement relative to free " *
+            "Same re-solve: per electron, the axial displacement relative to free " *
             "streaming and the residual axial drift Δβ_z against the starting radius, and the " *
             "histogram of the net energy gain Δγ = γ_f − γ₀ over the disk."),
     )
@@ -233,7 +278,7 @@ for (kind, label, png, pp, desc) in (
             "depends_on" => [RUN_TAG], "kind" => kind, "label" => label,
             "plot" => png, "source" => basename(MFILE), "description" => desc,
         ),
-        "plot_params" => pp,
+        "plot_params" => NOTE === nothing ? pp : merge(pp, Dict{String, Any}("provenance_note" => NOTE)),
         "provenance" => Dict(
             "host" => readchomp(`hostname`), "repo_commit" => repo_commit,
             "script" => "plot_final_positions.jl",

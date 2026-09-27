@@ -35,7 +35,7 @@ export ThomsonScatteringSpec, load_spec, write_spec, spec_env, spec_from_manifes
 export find_parent_manifest, find_parent_run, spp_from_manifest, screen_halfwidth, window_start
 export write_derived, write_comparison, write_summary, write_run_manifest, write_solver_manifest, REQUIRED_CONFIG_KEYS
 export write_sweep_declaration, read_sweep_declarations
-export record_reduction!
+export record_reduction!, append_reduction!
 export units_section, units_from_manifest
 export MANIFEST_SCHEMA_VERSION, manifest_schema_version, check_schema_version
 export Dashboard, Sweep, RemoteRun
@@ -456,6 +456,34 @@ function record_reduction!(dir::AbstractString, run_id, file::AbstractString)
     push!(m["reduction"], Dict{String, Any}("file" => base, "bytes" => filesize(full)))
     open(io -> TOML.print(io, m; sorted = true), path, "w")
     return path
+end
+
+"""
+    append_reduction!(dir, run_id, files) -> Union{String, Nothing}
+
+Add `files` to the run's FINALIZED `<run_id>.reduced` marker in place — for products written
+after the reduce committed (post-reduce hooks, backfills). Unlike [`record_reduction!`](@ref) the
+header (`reduced_at`/`host`/`reduce_commit`) is kept: it dates the cube reduction, which this
+does not redo. Same-basename entries are replaced (fresh byte size); the write is atomic
+(tmp + mv). Returns `nothing` without touching anything when no final marker exists (the reduce
+has not committed, or it ran inline and never wrote one): a marker must enumerate EVERY cache of
+the run, so seeding one is the reducer's job, not a late product's.
+"""
+function append_reduction!(dir::AbstractString, run_id, files)
+    final = joinpath(dir, "$(run_id).reduced")
+    (isfile(final) && filesize(final) > 0) || return nothing
+    m = TOML.parsefile(final)
+    red = get!(m, "reduction", Any[])
+    for f in files
+        base = basename(f)
+        entry = Dict{String, Any}("file" => base, "bytes" => filesize(joinpath(dir, base)))
+        i = findfirst(e -> get(e, "file", "") == base, red)
+        i === nothing ? push!(red, entry) : (red[i] = entry)
+    end
+    tmp = final * ".tmp"
+    open(io -> TOML.print(io, m; sorted = true), tmp, "w")
+    mv(tmp, final; force = true)
+    return final
 end
 
 # Normalise one comparison side spec to (label, dir, script, where). Accepts a NamedTuple
