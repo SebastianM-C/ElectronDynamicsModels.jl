@@ -1,0 +1,2 @@
+# a0 = 20 LPWA twin: launch only after the numeric a20 probe has [window].ok = true and extent_a20_diag is alias-clean to h4 at SPP 16
+a20
