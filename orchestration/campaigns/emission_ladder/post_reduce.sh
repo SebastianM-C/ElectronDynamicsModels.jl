@@ -10,7 +10,7 @@
 # Set LADDER_SIDE=numeric|lpwa in the recipe.
 ladder_reduce() {
     local uuid=$1 m="$CAMP/run_$1.toml" log="$CAMP/run_$1.log" s
-    local jl=(nice -n 10 "${JL[@]}" --project=scripts)
+    local jl=(env ${PREENV[@]+"${PREENV[@]}"} nice -n 10 "${JL[@]}" --project=scripts)   # PREENV: cloud depot path
     {
         flock 9
         EDM_APODIZATION=none EDM_DIRECT_READ=1 _reduce_cell "$uuid"
