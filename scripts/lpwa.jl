@@ -183,7 +183,7 @@ t_trajectories = time() - _t0_traj   # analytic build (cheap vs the ODE solve in
 if get(ENV, "EDM_EMISSION_TIME", "1") == "1"
     ET = emission_time_acc(τi_solve, τf_solve, (2π / ω) / 16)
     fold_emission!(ET, emission_time(trajs, ET.τs, c, 2π / ω))
-    write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP)
+    write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP, w0 = w₀, Rdisc = Rmax)
 end
 
 # Screen (geometry + window sized above, before the trajectories)

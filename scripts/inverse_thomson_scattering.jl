@@ -638,7 +638,7 @@ if GAMMA_TRACE_OS > 0
     write_gamma_trace(OUTDIR, RUN_TAG, GT, N; γ0 = GAMMA, ω, τ_pulse = τ, knots_per_period = parse(Float64, INTERP_SAVEAT))
     @info "γ(τ)/γ₀ trace serialized" n_τ = length(GT.τs) mean_drain = sum(GT.drain) / length(GT.drain)
 end
-EMISSION_TIME && write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP)
+EMISSION_TIME && write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP, w0 = w₀, Rdisc = Rmax)
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default

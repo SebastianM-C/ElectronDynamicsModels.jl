@@ -9,7 +9,8 @@
 #
 #   julia +1.12 --project=scripts -t auto scripts/emission_time_backfill.jl <campaign_dir> [uuid8 ...]
 #
-# Idempotent: runs whose emissiontime_<uuid>.jls exists are skipped. EDM_ELECTRON_BATCH (default 1000)
+# Idempotent: runs whose emissiontime_<uuid>.jls already carries the per-electron ends are skipped
+# (an older cache without them is rebuilt). EDM_ELECTRON_BATCH (default 1000)
 # bounds the number of trajectories resident at once for the ODE path.
 using TOML, Dates, Serialization, Printf, LinearAlgebra, StaticArrays
 using CairoMakie, RunManifests
@@ -113,7 +114,7 @@ function backfill_run(dir, mfile)
     m = TOML.parsefile(joinpath(dir, mfile))
     uuid = m["provenance"]["run_id"]
     out = joinpath(dir, "emissiontime_$(uuid).jls")
-    isfile(out) && (println("skip $(first(uuid, 8)) — emissiontime_ exists"); return)
+    isfile(out) && hasproperty(deserialize(out), :t_end) && (println("skip $(first(uuid, 8)) — emissiontime_ has per-electron ends"); return)
     isfile(joinpath(dir, "$(uuid).reduced")) || (println("skip $(first(uuid, 8)) — not reduced"); return)
     cfg, st = m["config"], m["setup"]
     lpwa = get(cfg, "trajectory_source", "") == "lpwa_analytic"
@@ -122,7 +123,8 @@ function backfill_run(dir, mfile)
     t0 = time()
     T = lpwa ? lpwa_emission!(acc, m) : numeric_emission!(acc, m)
     note = "backfill: re-solved from the manifest at $(COMMIT) on $(Dates.today()) ($(lpwa ? "analytic LPWA orbit" : "forward ODE ensemble"))"
-    write_emission_time(dir, uuid, acc; T, window_periods = cfg["N_samples"] / cfg["samples_per_period"], note)
+    write_emission_time(dir, uuid, acc; T, window_periods = cfg["N_samples"] / cfg["samples_per_period"], note,
+        w0 = m["laser"]["w0"], Rdisc = st["Rmax"])
     enrich_marker!(dir, uuid, [out])
     @printf "%s a₀ = %-6g %s  %.0f s\n" first(uuid, 8) cfg["a0"] (lpwa ? "lpwa" : "numeric") time() - t0
     flush(stdout)
