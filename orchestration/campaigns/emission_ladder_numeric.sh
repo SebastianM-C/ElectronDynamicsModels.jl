@@ -21,7 +21,7 @@ REDUCE_HOOK='ladder_reduce "$uuid"'
 SWEEP_AXES=a0
 BASE=(
   EDM_NX=400 EDM_N=10000 EDM_FIELD_MODE=total
-  EDM_NSAMPLES=6000 EDM_SPP=16
+  EDM_NSAMPLES=6128 EDM_SPP=16   # 383 periods: +8 over 375 covers the a0 ≥ 5 burst tail (Sebastian 2026-09-27; harmonics stay on-bin)
   EDM_ACCUM_ALG=rk4 EDM_NSUBSTEPS=1
   EDM_RELTOL=1e-12 EDM_INTERP_SAVEAT=16
   EDM_APODIZATION=none EDM_DIRECT_READ=1

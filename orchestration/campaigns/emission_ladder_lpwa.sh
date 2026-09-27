@@ -13,7 +13,7 @@ NS_HIGH_RECOMMENDED=1
 NS_HIGH=UNSET_run_kernel_conv_diag_first
 BASE=(
   EDM_NX=400 EDM_N=10000 EDM_FIELD_MODE=total
-  EDM_NSAMPLES=6000 EDM_SPP=16
+  EDM_NSAMPLES=6128 EDM_SPP=16   # 383 periods: +8 over 375 covers the a0 ≥ 5 burst tail (Sebastian 2026-09-27; harmonics stay on-bin)
   EDM_NSUBSTEPS=1
   EDM_INITIAL_PHASE=-1.5707963267948966
 )
