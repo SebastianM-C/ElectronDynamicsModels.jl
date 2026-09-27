@@ -6,12 +6,14 @@
 # Split mode (E, B, E_far, B_far): cube 87.7 GiB ⇒ refused by every single card's 90 % guard (NVL 84 GiB);
 # on 2 × H100 NVL the solver shards electrons (43.9 GiB per device). Total mode (E and B, 43.8 GiB) fits one
 # card and still gives the E + B check. The ladder partner ran RK4; this cell runs Newton.
+# FIELD_MODE picks the cell: total (one card) | split (2 × NVL, sharded) — Sebastian's Q7.
+FIELD_MODE=${FIELD_MODE:-total}
 CAMPAIGN=gamma1_ladder_frame
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
 SWEEP_AXES=Z
 BASE=(
-  EDM_NX=400 EDM_N=10000 EDM_FIELD_MODE=split
+  EDM_NX=400 EDM_N=10000
   EDM_NSAMPLES=6128 EDM_SPP=16
   EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2 EDM_NSUBSTEPS=1
   EDM_RELTOL=1e-12 EDM_INTERP_SAVEAT=16
@@ -21,5 +23,5 @@ BASE=(
   EDM_EMISSION_TIME=1 EDM_GAMMA_TRACE_OVERSAMPLE=4
 )
 CELLS=(
-  "g1_a03_mz|EDM_A0=0.3 EDM_SCREEN_ZSIGN=-1"
+  "g1_a03_mz|EDM_A0=0.3 EDM_SCREEN_ZSIGN=-1 EDM_FIELD_MODE=$FIELD_MODE"
 )
