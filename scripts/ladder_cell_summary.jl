@@ -58,6 +58,8 @@ function load_cells(dirs)
             id, id8, a0 = Float64(m["config"]["a0"]), venue = venue(m["provenance"]),
             window_ok = get(w, "ok", missing), clipped = get(w, "electrons_clipped", missing),
             margin = min(get(w, "lead_margin_samples", 0), get(w, "tail_margin_samples", 0)),
+            tailmargin = get(w, "tail_margin_samples", 0), slot_fill = Float64(get(w, "slot_fill", NaN)),
+            N = get(m["config"], "N", 0),
             shelf, falloff = [get(fall, "P$(n)_over_P1", NaN) for n in 2:8], flat = flatness(dir, id),
             traj = get(t, "trajectories", NaN), kernel = get(t, "kernel", NaN),
             field = get(t, "field", NaN), total = get(t, "total", NaN)))
@@ -95,14 +97,24 @@ function shelf_verdict(c)
             headdev(s) < SHELF_TOL && taildev(s) ≥ SHELF_TOL && c.flat ≤ FLAT_TOL
     return c.a0 ≥ 5 && clean ? :physical : :fail
 end
-window_verdict(c) = c.window_ok === true && !(c.clipped isa Integer && c.clipped > 0) ? :pass : :fail
-verdict(c) = window_verdict(c) === :fail ? :fail : shelf_verdict(c)
+# Window: :pass, or :edge = a flagged window whose loss is a sub-1e-8 edge effect (slot fill ≥ 1 − 1e-8)
+# on a settled field (flatness ≤ FLAT_TOL) — shown as a flag, cell kept, not as accepted.
+function window_verdict(c)
+    c.window_ok === true && !(c.clipped isa Integer && c.clipped > 0) && return :pass
+    return c.slot_fill ≥ 1 - 1e-8 && c.flat ≤ FLAT_TOL ? :edge : :fail
+end
+function verdict(c)
+    w = window_verdict(c)
+    return w === :pass ? shelf_verdict(c) : w
+end
+const VLABEL = Dict(:pass => "pass", :physical => "physical shelf, accepted", :fail => "fail",
+    :edge => "fail (window, edge effect)")
 
 cells = load_cells(ARGS)
 isempty(cells) && error("no reduced cells found in $(ARGS)")
 a0s = [c.a0 for c in cells]; ids = [c.id for c in cells]; tag = cells[1].id8
 vs = [verdict(c) for c in cells]; vsh = [shelf_verdict(c) for c in cells]; vw = [window_verdict(c) for c in cells]
-vcol = Dict(:pass => :seagreen, :physical => :darkorange, :fail => :crimson)
+vcol = Dict(:pass => :seagreen, :physical => :darkorange, :edge => :orangered, :fail => :crimson)
 xs = (; xscale = log10, xlabel = L"a_0")
 
 # ── 1. production checks across a₀ ─────────────────────────────────────────────────────────
@@ -111,8 +123,11 @@ axw = Axis(fig[1, 1]; xs..., ylabel = "min window margin\n(samples)",
     title = "production checks per cell: $(basename(abspath(OUT)))")
 scatter!(axw, a0s, [c.margin for c in cells]; color = [vcol[v] for v in vw], markersize = 13,
     marker = [c.window_ok === true ? :circle : :xcross for c in cells])
-for c in cells
-    (c.clipped isa Integer && c.clipped > 0) &&
+for (c, v) in zip(cells, vw)
+    v === :edge && text!(axw, c.a0, c.margin; fontsize = 10, align = (:right, :bottom), offset = (-8, 6), text = @sprintf(
+        "window flag: %d/%d electrons lose the window's last %d samples (slot fill %.9f);\nradiated field flat at the window end to %.1e; sub-1e-8 edge effect, cell kept ",
+        c.clipped, c.N, -c.tailmargin, c.slot_fill, c.flat))
+    v === :fail && (c.clipped isa Integer && c.clipped > 0) &&
         text!(axw, c.a0, c.margin; text = " $(c.clipped) clipped", fontsize = 11, align = (:left, :center))
 end
 axs = Axis(fig[2, 1]; xs..., yscale = log10, ylabel = L"|-E^z/(N/Z^2)-1|")
@@ -140,14 +155,15 @@ fig[5, 2] = Legend(fig, axf; framevisible = false)
 linkxaxes!(axw, axs, axe, axt, axf)
 for a in (axw, axs, axe, axt); a.xlabelvisible = false; end
 ylims!(axs, nothing, 3SHELF_TOL * max(1, maximum(c -> taildev(c.shelf), cells) / SHELF_TOL))
-Label(fig[6, 1], "window row: window check · shelf and flatness rows: shelf check — green pass · orange physical shelf, accepted · red fail";
+Label(fig[6, 1], "window row: window check · shelf and flatness rows: shelf check — green pass · orange physical shelf, accepted · orange-red window edge flag, cell kept · red fail";
     fontsize = 13, tellwidth = false)
 out = joinpath(OUT, "ladder_checks_$tag.png")
 save(out, fig; px_per_unit = 2)
 write_summary(OUT; kind = "ladder_checks", label = "production checks vs a₀", run_ids = ids,
     axis = "a0", plot = basename(out),
     plot_params = Dict(
-        "a₀" => a0s, "verdict" => string.(vs), "window" => string.(vw), "shelf" => string.(vsh),
+        "a₀" => a0s, "verdict" => [VLABEL[v] for v in vs], "window" => [VLABEL[v] for v in vw], "shelf" => [VLABEL[v] for v in vsh],
+        "slot fill" => [c.slot_fill for c in cells],
         "window ok" => [string(c.window_ok) for c in cells],
         "electrons clipped" => [c.clipped isa Integer ? c.clipped : -1 for c in cells],
         "shelf |head−1|" => [round(headdev(c.shelf); sigdigits = 3) for c in cells],
@@ -157,7 +173,9 @@ write_summary(OUT; kind = "ladder_checks", label = "production checks vs a₀", 
     description = "Per-cell production checks against a₀, from each run's `[window]` and the " *
         "`shelf_sentinel.jl` sidecars. **Window**: the smaller of the lead/tail margins (observer " *
         "samples) between the burst and the recording-window edges; a cross marks `ok = false`, " *
-        "with the clipped-electron count. **Coulomb shelf**: \$|{-E^z}/(N/Z^2) - 1|\$ at the first " *
+        "with the clipped-electron count; a flagged window whose loss is a sub-\$10^{-8}\$ edge effect " *
+        "(slot fill \$\\ge 1 - 10^{-8}\$) on a settled field is shown orange-red, *fail (window, edge " *
+        "effect)*, cell kept. **Coulomb shelf**: \$|{-E^z}/(N/Z^2) - 1|\$ at the first " *
         "and last observer samples (the static field of the \$N\$ charges at the screen, uncut by the " *
         "window); dashed = the sentinel's \$10^{-3}\$ tolerance. At \$a_0 \\ge 5\$ the Coulomb-shelf " *
         "criterion is expected to fail physically: the post-pulse charge state differs from rest " *

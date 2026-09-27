@@ -97,7 +97,7 @@ for (fld, c) in ((:E, 1:3), (:B, 4:6))
         label = L"\mathrm{LPWA\ fit}\ %$(rng(R_LPWA)):\ %$(tex(fl[2]))\ a_0^{%$(pw(fl[1]))}")
     gs = g[g .≤ ax_]; gb = g[g .≥ min(0.1, R_BRANCH[1])]
     lines!(ax, gs, fs[2] .* gs .^ fs[1]; color = Cycled(2), linestyle = :dot,
-        label = L"\mathrm{numeric}\ %$(rng(R_SMALL)):\ %$(tex(fs[2]))\ a_0^{%$(pw(fs[1]))}\ \ (\mathrm{finite-}N\ \mathrm{residual},\ \propto N^{-2})")
+        label = L"\mathrm{numeric}\ %$(rng(R_SMALL)):\ %$(tex(fs[2]))\ a_0^{%$(pw(fs[1]))}\ \ (\mathrm{finite-}N\ \mathrm{residual,\ upper\ bound})")
     lines!(ax, gb, fb[2] .* gb .^ fb[1]; color = Cycled(2), linestyle = :dash,
         label = L"\mathrm{numeric}\ %$(rng(R_BRANCH)):\ %$(tex(fb[2]))\ a_0^{%$(pw(fb[1]))}")
     isfinite(ax_) && vlines!(ax, [ax_]; color = :gray50, linewidth = 1, label = L"\mathrm{laws\ meet\ at}\ a_0 = %$(cx)")
@@ -122,8 +122,10 @@ for (fld, c) in ((:E, 1:3), (:B, 4:6))
             "per-pixel **peak** ratio differs; the peak/norm factor per cell is in the plot " *
             "parameters. Log–log least-squares fits \$y = c\\,a_0^p\$: LPWA over \$$(fmtg(R_LPWA[1])) \\le a_0 \\le $(fmtg(R_LPWA[2]))\$ " *
             "(drawn over the full range; deviations of the \$a_0 > 1\$ cells in the plot parameters); " *
-            "numeric \$$(fmtg(R_SMALL[1])) \\le a_0 \\le $(fmtg(R_SMALL[2]))\$ — the finite-\$N\$ residual of a cancelling coherent " *
-            "sum (\$\\propto N^{-2}\$), not physics — and the numeric \$a_0^2\$ branch over " *
+            "numeric \$$(fmtg(R_SMALL[1])) \\le a_0 \\le $(fmtg(R_SMALL[2]))\$ — the finite-\$N\$ residual of a coherent sum (cancelled by the focused beam's \$E_z\$-driven " *
+            "longitudinal motion), which decreases with sampling density (\$\\times 492\$ from \$N = 400\$ to " *
+            "\$10\\,000\$): an upper bound on the continuum value, not physics " *
+            "— and the numeric \$a_0^2\$ branch over " *
             "\$$(fmtg(R_BRANCH[1])) \\le a_0 \\le $(fmtg(R_BRANCH[2]))\$ (dashed down to \$a_0 = 0.1\$). The vertical line marks where the fitted residual and " *
             "\$a_0^2\$ laws meet, \$a_0 = (c_1/c_2)^{1/(p_2-p_1)} \\approx $(@sprintf("%.3g", ax_))\$. The dense cells " *
             "\$a_0 = $(join(FIT_SKIP, ", "))\$ sample the crossover: plotted, not fitted." *
