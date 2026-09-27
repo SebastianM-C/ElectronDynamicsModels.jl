@@ -65,27 +65,6 @@ n_play_frames = 400
 play_times = LinRange(t_start, t_play_end, n_play_frames)
 
 # ── Electron cloud: sunflower disk at the focal plane, at rest ──
-const ϕg = (1 + √5) / 2
-
-function radius(k, n, b)
-    if k > n - b
-        return 1.0
-    else
-        return sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-    end
-end
-
-function sunflower(n, α)
-    points = Vector{Vector{Float64}}()
-    angle_stride = 2π / ϕg^2
-    b = round(Int, α * sqrt(n))
-    for k in 1:n
-        r = radius(k, n, b)
-        θ = k * angle_stride
-        push!(points, [r * cos(θ), r * sin(θ)])
-    end
-    return points
-end
 
 N = 800
 Rmax = 1.2w₀

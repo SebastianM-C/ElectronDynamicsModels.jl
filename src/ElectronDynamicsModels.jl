@@ -48,6 +48,7 @@ export ReferenceFrame, Worldline,
     ClassicalElectron, LandauLifshitzElectron,
     FieldEvaluator,
     ObserverScreen, observer_window_start, trajectory_span_for_window,
+    sunflower,
     ObserverScreen, trajectory_interpolants, TrajectoryInterpolant, canonical_state_order, accumulate_potential,
     accumulate_field, screen_observables, screen_spectrum,
     harmonic_bins, harmonic_maps, power_spectrum,
@@ -69,6 +70,7 @@ export ReferenceFrame, Worldline,
     hann, blackman_harris
 
 include("base.jl")
+include("sampling.jl")   # sunflower: the electron-disc layout of the production solvers
 include("dynamics.jl")
 include("fields.jl")
 include("radiation.jl")

@@ -390,28 +390,6 @@ prob = ODEProblem{false, SciMLBase.FullSpecialize}(
 )
 sol0 = solve(prob, Vern9(), reltol = 1.0e-15, abstol = 1.0e-12, dtmax = DTMAX)
 
-# Sunflower distribution for electron positions
-const ϕ = (1 + √5) / 2
-
-function radius(k, n, b)
-    if k > n - b
-        return 1.0
-    else
-        return sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-    end
-end
-
-function sunflower(n, α)
-    points = Vector{Vector{Float64}}()
-    angle_stride = 2π / ϕ^2
-    b = round(Int, α * sqrt(n))
-    for k in 1:n
-        r = radius(k, n, b)
-        θ = k * angle_stride
-        push!(points, [r * cos(θ), r * sin(θ)])
-    end
-    return points
-end
 
 # Ensemble solve. Each electron gets the sunflower transverse offset (r) at its −z start plane
 # and the same boosted 4-velocity; the shared timing makes them all reach z=0 (their transverse

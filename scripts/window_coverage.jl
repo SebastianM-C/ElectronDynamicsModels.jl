@@ -84,16 +84,6 @@ prob = ODEProblem{false, SciMLBase.FullSpecialize}(
     u0_constructor = SVector{8}, fully_determined = true
 )
 
-const ϕgold = (1 + √5) / 2
-function sunflower(n, α)
-    points = Vector{Vector{Float64}}()
-    b = round(Int, α * sqrt(n))
-    for k in 1:n
-        r = k > n - b ? 1.0 : sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-        push!(points, [r * cos(k * 2π / ϕgold^2), r * sin(k * 2π / ϕgold^2)])
-    end
-    return points
-end
 R₀ = Rmax * sunflower(Nfull, 2)
 xμ = [[u⁰_t * τ_lo, r..., u³_z * τ_lo] for r in R₀]
 # Electron subset: all (exact) or EDM_N uniformly spaced sunflower indices (the sunflower is

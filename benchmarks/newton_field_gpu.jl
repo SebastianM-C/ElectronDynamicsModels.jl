@@ -44,18 +44,6 @@ const prob = ODEProblem{false, SciMLBase.FullSpecialize}(
 )
 const set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
 
-const ϕ = (1 + √5) / 2
-radius(k, n, b) = k > n - b ? 1.0 : sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-function sunflower(n, α)
-    pts = Vector{Vector{Float64}}()
-    stride = 2π / ϕ^2
-    b = round(Int, α * sqrt(n))
-    for k in 1:n
-        r = radius(k, n, b)
-        push!(pts, [r * cos(k * stride), r * sin(k * stride)])
-    end
-    return pts
-end
 function abserr(a₀)
     amp = log10(a₀)
     return 10^(-amp^2 / 27 + 32amp / 27 - 220 / 27)

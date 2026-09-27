@@ -157,19 +157,6 @@ function phi_label(φ)
 end
 
 # ── Sunflower distribution + per-a₀ tolerance — identical to thomson_scattering.jl ──
-const GOLDEN = (1 + √5) / 2
-radius(k, n, b) = k > n - b ? 1.0 : sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-function sunflower(n, α)
-    pts = Vector{NTuple{2, Float64}}(undef, n)
-    stride = 2π / GOLDEN^2
-    b = round(Int, α * sqrt(n))
-    for k in 1:n
-        r = radius(k, n, b)
-        θ = k * stride
-        pts[k] = (r * cos(θ), r * sin(θ))
-    end
-    return pts
-end
 function abserr(a₀)
     amp = log10(a₀)
     expo = -amp^2 / 27 + 32amp / 27 - 220 / 27
