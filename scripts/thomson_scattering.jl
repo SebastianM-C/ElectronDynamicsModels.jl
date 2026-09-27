@@ -352,7 +352,7 @@ t_kernel = try maximum(sum, values(launch_times(launch_timer))) catch; NaN end
 
 GAMMA_TRACE_OS > 0 && write_gamma_trace(OUTDIR, RUN_TAG, GT, N; γ0 = 1.0, ω, τ_pulse = τ,
     knots_per_period = parse(Float64, isempty(INTERP_SAVEAT) ? "16" : INTERP_SAVEAT))
-EMISSION_TIME && write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP)
+EMISSION_TIME && write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP, w0 = w₀, Rdisc = Rmax)
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default

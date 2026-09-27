@@ -99,46 +99,115 @@ end
 # grid through the same interpolants the radiation kernel integrates (4-acceleration from `a_itp`), and its
 # emitted-energy weight per step is binned by lab time t = x⁰/c in laser periods (0 = the pulse peak at the
 # focus). Bins are a Dict so boosted (inverse) runs, whose lab time runs ≫ τ, need no preset range.
+# Per electron it also records the END of its own emission (see emission_end) and where it is then;
+# batches fold in electron order, so `acc.ends` is in sunflower order.
 #   acc = emission_time_acc(τi, τf, dτ)                               # dτ ≤ 0 ⇒ off
 #   fold_emission!(acc, emission_time(trajs, acc.τs, c, T))           # per batch
-#   write_emission_time(outdir, run_tag, acc; T, window_periods)
+#   write_emission_time(outdir, run_tag, acc; T, window_periods, w0, Rdisc)
 
 # Lab-frame radiated energy of one proper-time step dτ: the invariant Larmor power ∝ −𝔞μ𝔞^μ times the lab
 # duration dt = γ dτ (u⁰ = γc, metric (+,−,−,−)). dτ is constant on the grid, so it drops out of the
 # normalized profile; max(0, …) absorbs spline round-off where 𝔞 ≈ 0.
 emission_weight(uμ, 𝔞μ, c, dτ) = max(0.0, -ElectronDynamicsModels.m_dot(𝔞μ, 𝔞μ)) * uμ[1] / c
 
+# End of one electron's emission: the first sample by which 99 % of its own emitted energy is out (the
+# chip's t99, per electron — an energy integral, so invariant to the τ grid at any γ). `nothing` if it
+# emits nothing.
+function emission_end(w)
+    W = sum(w)
+    W > 0 || return nothing
+    return findfirst(>=(0.99W), cumsum(w))
+end
+
+# t: lab periods, x: 4-position (a.u.) at the end, ρ0: start radius, W: total weight (NaN t/x if none).
+const EmissionEnd = NamedTuple{(:t, :x, :ρ0, :W), Tuple{Float64, NTuple{4, Float64}, Float64, Float64}}
+
 function emission_time(trajs, τs, c, T)
     nch = max(1, min(Threads.nthreads(), length(trajs)))
     chunks = collect(Iterators.partition(eachindex(trajs), cld(length(trajs), nch)))
     dτ = length(τs) > 1 ? τs[2] - τs[1] : 0.0
     parts = [Dict{Int, Float64}() for _ in chunks]
+    ends = Vector{EmissionEnd}(undef, length(trajs))
     tasks = map(enumerate(chunks)) do (ci, ch)
         Threads.@spawn begin
             d = parts[ci]
-            for e in ch, τk in τs
-                xμ, uμ, 𝔞μ = ElectronDynamicsModels.state_with_acceleration(trajs[e], τk)
-                b = floor(Int, xμ[1] / c / T)
-                d[b] = get(d, b, 0.0) + emission_weight(uμ, 𝔞μ, c, dτ)
+            w = zeros(length(τs))
+            for e in ch
+                ρ0 = NaN
+                for (k, τk) in enumerate(τs)
+                    xμ, uμ, 𝔞μ = ElectronDynamicsModels.state_with_acceleration(trajs[e], τk)
+                    k == 1 && (ρ0 = hypot(xμ[2], xμ[3]))
+                    b = floor(Int, xμ[1] / c / T)
+                    w[k] = emission_weight(uμ, 𝔞μ, c, dτ)
+                    d[b] = get(d, b, 0.0) + w[k]
+                end
+                ke = emission_end(w)
+                ends[e] = if ke === nothing
+                    (; t = NaN, x = (NaN, NaN, NaN, NaN), ρ0, W = 0.0)
+                else
+                    xμ = ElectronDynamicsModels.state_with_acceleration(trajs[e], τs[ke])[1]
+                    (; t = xμ[1] / c / T, x = Tuple(xμ[1:4]), ρ0, W = sum(w))
+                end
             end
         end
     end
     foreach(wait, tasks)
-    return reduce(mergewith!(+), parts)
+    return (; bins = reduce(mergewith!(+), parts), ends)
 end
 
-emission_time_acc(τi, τf, dτ) = (; τs = dτ > 0 ? collect(τi:dτ:τf) : Float64[], bins = Dict{Int, Float64}())
-fold_emission!(acc, d) = (mergewith!(+, acc.bins, d); acc)
+emission_time_acc(τi, τf, dτ) = (; τs = dτ > 0 ? collect(τi:dτ:τf) : Float64[], bins = Dict{Int, Float64}(), ends = EmissionEnd[])
+fold_emission!(acc, d) = (mergewith!(+, acc.bins, d.bins); append!(acc.ends, d.ends); acc)
 
-function write_emission_time(outdir, run_tag, acc; T, window_periods, note = nothing)
+function write_emission_time(outdir, run_tag, acc; T, window_periods, w0 = nothing, Rdisc = nothing, note = nothing)
     ks = sort!(collect(keys(acc.bins)))
     t = Float64.(ks) .+ 0.5                                   # bin centres, periods
     w = [acc.bins[k] for k in ks]
-    et = (; t, w, T, window_periods, dτ = length(acc.τs) > 1 ? acc.τs[2] - acc.τs[1] : NaN, note)
+    # per electron, sunflower order: own 99 % emission end (lab periods), 4-position then (N×4, a.u.),
+    # start radius (a.u.) and total emitted weight (same units as w)
+    t_end = [e.t for e in acc.ends]
+    x_end = isempty(acc.ends) ? zeros(0, 4) : permutedims(reduce(hcat, [collect(e.x) for e in acc.ends]))
+    et = (; t, w, T, window_periods, dτ = length(acc.τs) > 1 ? acc.τs[2] - acc.τs[1] : NaN, note,
+        t_end, x_end, ρ0 = [e.ρ0 for e in acc.ends], W_end = [e.W for e in acc.ends], w0, Rdisc)
     file = joinpath(outdir, "emissiontime_$(run_tag).jls")
     serialize(file, et)
     write_emission_time_chip(outdir, run_tag, et)
+    any(isfinite, t_end) && w0 !== nothing && Rdisc !== nothing && write_emission_end_chip(outdir, run_tag, et)
     return file
+end
+
+# Chip: where each electron is when its own emission ends (99 % of its energy out), colored by that lab
+# time, with the start disc's edge dashed; and the end time against the starting radius.
+function write_emission_end_chip(outdir, run_tag, et)
+    em = isfinite.(et.t_end)
+    interior = et.ρ0 .< et.Rdisc * (1 - 1e-9)                 # sunflower edge points start ON R_disc
+    ρe = hypot.(et.x_end[:, 2], et.x_end[:, 3])
+    sel = em .& interior
+    frac_out = count(ρe[sel] .> et.Rdisc) / max(1, count(sel))
+    lo, hi = extrema(et.t_end[em])
+    ord = filter(i -> em[i], sortperm(et.t_end))              # latest on top
+    fig = Figure(size = (1250, 540))
+    ax1 = Axis(fig[1, 1]; title = "position when each electron's emission ends", xlabel = "x / w₀", ylabel = "y / w₀", aspect = 1)
+    sc = scatter!(ax1, et.x_end[ord, 2] ./ et.w0, et.x_end[ord, 3] ./ et.w0; color = et.t_end[ord], colormap = :viridis, markersize = 4)
+    φs = range(0, 2π, length = 361)
+    lines!(ax1, et.Rdisc / et.w0 .* cos.(φs), et.Rdisc / et.w0 .* sin.(φs); color = :crimson, linestyle = :dash, linewidth = 1.5)
+    Colorbar(fig[1, 2], sc; label = "emission end t (periods, 0 = pulse peak at the focus)")
+    ax2 = Axis(fig[1, 3]; title = "emission end by starting radius", xlabel = "ρ₀ / w₀", ylabel = "emission end t (periods)")
+    scatter!(ax2, et.ρ0[em] ./ et.w0, et.t_end[em]; markersize = 3, color = (:steelblue, 0.6))
+    Label(fig[0, :], @sprintf("emission end — %s  (99 %% of each electron's energy out; %.1f %% outside R_disc then; t ∈ [%.0f, %.0f] periods)",
+        first(run_tag, 8), 100frac_out, lo, hi); fontsize = 15, font = :bold)
+    png = joinpath(outdir, "emitend_$(run_tag).png")
+    save(png, fig)
+    write_derived(outdir; kind = "emission_end", label = @sprintf("emission end: %.1f %% outside R_disc", 100frac_out), run_id = run_tag,
+        plot = basename(png), source = "emissiontime_$(run_tag).jls",
+        plot_params = merge(Dict{String, Any}("frac_outside_Rdisc" => frac_out, "t_end_min" => lo, "t_end_max" => hi,
+            "t_end_median" => sort(et.t_end[em])[cld(count(em), 2)], "n_edge" => count(.!interior)),
+            et.note === nothing ? Dict{String, Any}() : Dict{String, Any}("provenance_note" => et.note)),
+        description = "Where the electrons are when they stop radiating: for each electron, the lab time by which " *
+            "99 % of its own emitted energy is out (the emission-time chip's weight, per electron) and its transverse " *
+            "position at that moment, colored by that time; the start disc's edge dashed. The fraction outside " *
+            "R_disc counts interior electrons (the sunflower's edge points start on it). Right: the end time " *
+            "against the starting radius.")
+    return png
 end
 
 # Chip: normalized emission rate and its cumulative fraction vs lab time, with the 50 / 90 / 99 % times.
