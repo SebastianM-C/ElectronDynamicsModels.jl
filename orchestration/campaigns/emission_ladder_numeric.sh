@@ -3,14 +3,13 @@
 # EDM main (v0.4.3 pin), total mode, uniform trajectory knots, rect reduction: the inline reduction is Hann-only, so
 # REDUCE_OVERLAP=1 defers it to harmonic_products.jl and REDUCE_HOOK hands that reducer EDM_APODIZATION=none +
 # EDM_DIRECT_READ=1 (it reads them from its own env, not BASE) under a per-host lock (one reduce at a time per host);
-# SPP 16 / Ns 6000 (Figs 7–8 use h1 and h2), φ₀ = −π/2. Kernel: RK4 (rest electrons; same kernel as lpwa.jl, which is
-# RK4-only). n_substeps 1 for a₀ ≤ 1; for a₀ ≥ 2 set NS_HIGH from kernel_conv_diag before launch — until then those
-# cells fail at their first parse. Twin: emission_ladder_lpwa.sh. Lane wrappers in emission_ladder/.
+# SPP 16 / Ns 6128 (Figs 7–8 use h1 and h2), φ₀ = −π/2. Kernel: RK4 (rest electrons; same kernel as lpwa.jl, which is
+# RK4-only). n_substeps 1 for a₀ ≤ 1 and NS_HIGH for a₀ ≥ 2. Twin: emission_ladder_lpwa.sh. Lane wrappers in
+# emission_ladder/.
 # kernel_conv_diag (2026-09-27): RK4 ns1 is within 2e-5 (rel. L2, h1/h2 maps, E and B) of the converged maps even at
-# a₀ = 10 (ns4 gains ~1 digit on h1 at ~1.8× field time) ⇒ recommended 1. Launch guard: NS_HIGH stays unparseable
-# until the author approves; then set NS_HIGH=$NS_HIGH_RECOMMENDED.
+# a₀ = 10 (ns4 gains ~1 digit on h1 at ~1.8× field time) ⇒ NS_HIGH = 1, approved 2026-09-27.
 NS_HIGH_RECOMMENDED=1
-NS_HIGH=UNSET_run_kernel_conv_diag_first
+NS_HIGH=$NS_HIGH_RECOMMENDED
 CAMPAIGN=emission_ladder_numeric
 SCRIPT=scripts/thomson_scattering.jl
 KEEP_CUBE=0

@@ -10,7 +10,7 @@ LADDER_SIDE=lpwa
 REDUCE_HOOK='ladder_reduce "$uuid"'
 SWEEP_AXES=a0
 NS_HIGH_RECOMMENDED=1
-NS_HIGH=UNSET_run_kernel_conv_diag_first
+NS_HIGH=$NS_HIGH_RECOMMENDED
 BASE=(
   EDM_NX=400 EDM_N=10000 EDM_FIELD_MODE=total
   EDM_NSAMPLES=6128 EDM_SPP=16   # 383 periods: +8 over 375 covers the a0 ≥ 5 burst tail (Sebastian 2026-09-27; harmonics stay on-bin)
