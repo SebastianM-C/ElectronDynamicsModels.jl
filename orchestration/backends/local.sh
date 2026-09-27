@@ -22,6 +22,15 @@ JL=(julia +"${JULIA_CHANNEL:-release}" --startup=no -t "${LOCAL_JL_THREADS:-auto
 PREENV=(); [ -n "${LOCAL_PREENV:-}" ] && read -r -a PREENV <<< "$LOCAL_PREENV"
 CAMP="$REPO/runs/$CAMPAIGN"
 mkdir -p "$CAMP"
+# Opt-in R2 drain (config.env LOCAL_DRAIN_R2=1, creds in ~/.config/edm-r2.env): one cube_drain_r2.sh per campaign
+# uploads each reduced cube + .sha256 and, with LOCAL_DRAIN_DELETE=1 (default), frees it here; the archive-side
+# R2 puller archives it. The drainer outlives the campaign (it idles on an empty dir) — stop it by hand when done.
+if [ "$KEEP_CUBE" = 1 ] && [ "${LOCAL_DRAIN_R2:-0}" = 1 ] &&
+   ! pgrep -u "$(id -un)" -f "[c]ube_drain_r2\.sh $CAMPAIGN\$" >/dev/null; then
+    DRAIN_RUNS_ROOT="$REPO/runs" DRAIN_DELETE_LOCAL="${LOCAL_DRAIN_DELETE:-1}" \
+        setsid nohup bash "$ORCH/cube_drain_r2.sh" "$CAMPAIGN" >> "$REPO/runs/drain_r2_$CAMPAIGN.log" 2>&1 < /dev/null &
+    echo "[local] R2 drainer started for $CAMPAIGN (log: runs/drain_r2_$CAMPAIGN.log)"
+fi
 echo "[local] campaign=$CAMPAIGN backend=$BACKEND cells=${#CELLS[@]} threads=${LOCAL_JL_THREADS:-auto} -> $CAMP"
 run_cells
 echo "[local] $CAMPAIGN DONE ($(date -u +%FT%TZ))"
