@@ -10,6 +10,7 @@ using Serialization
 
 using RunManifests
 include(joinpath(@__DIR__, "harmonic_products.jl"))   # write_harmonic_products (shared with thomson + recovery)
+include(joinpath(@__DIR__, "trajectory_products.jl"))  # emission-time profile (shared with thomson + inverse)
 include(joinpath(@__DIR__, "gpu_telemetry.jl"))   # with_gpu_sampler + gpu_manifest_section → the manifest [gpu] section
 
 const T_START = time()   # wall-clock anchor for the [timing] section (mirrors thomson_scattering.jl)
@@ -177,6 +178,13 @@ Threads.@threads for i in 1:N
 end
 trajs = identity.(trajs)
 t_trajectories = time() - _t0_traj   # analytic build (cheap vs the ODE solve in thomson)
+
+# Emission-time profile (lab time) through the same interpolants; EDM_EMISSION_TIME=0 disables it.
+if get(ENV, "EDM_EMISSION_TIME", "1") == "1"
+    ET = emission_time_acc(τi_solve, τf_solve, (2π / ω) / 16)
+    fold_emission!(ET, emission_time(trajs, ET.τs, c, 2π / ω))
+    write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP)
+end
 
 # Screen (geometry + window sized above, before the trajectories)
 Nx = NX
