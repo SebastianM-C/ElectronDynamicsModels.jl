@@ -258,7 +258,7 @@ end
 # in (−π,π]) per (component, radius). A Δb constant across the two radii ⇒ a radius-independent
 # phase offset — the suspected origin of the constant √2 transverse gap (see lpwa-vs-numeric notes).
 let
-    offset_comps = (1, 2, 3)                       # Eˣ, Eʸ, Eᶻ (Eᶻ winding ℓ differs: num 3 vs LPWA 1)
+    offset_comps = (1, 2, 3)                       # Eˣ, Eʸ, Eᶻ (Eᶻ winds one less than Eˣ,ʸ on both sides)
     offset_radii = L.w₀ .* (4, 12)
     tol = 0.5 * (xg[2] - xg[1])
     palette = (:dodgerblue, :crimson)
