@@ -1,10 +1,10 @@
 # Ladder-wide numeric-vs-LPWA summaries for the one-go emission ladder (the Figs 7–8 campaign
-# pair): (1) h2/h1 vs a₀ per side with power-law fits, (2) the per-harmonic phase-aligned
+# pair): (1) h2/h1 vs a₀ per side with power-law fits, (2) the per-harmonic raw
 # rel-L2 ‖F_lpwa − F_num‖/‖F_num‖ vs a₀, (3) the pattern correlation |⟨F_num, F_lpwa⟩|/(‖·‖‖·‖)
 # vs a₀. Every summary is written into BOTH campaign dirs (each with its own run first in
 # depends_on, so the Summaries tab shows it on both cards). Definitions follow the ladder
 # reports: F = hmaps fields_h[n, comps, :, :] / N_samples (rect reduction), ‖·‖ over components
-# × pixels, E = comps 1:3 (B = 4:6 as the check); phase alignment e^{iβ}, β = arg⟨F_lpwa, F_num⟩.
+# × pixels, E = comps 1:3 (B = 4:6 as the check); no phase alignment (θ* reported, not applied).
 #
 #   julia --project=scripts scripts/ladder_boundary_summary.jl <lpwa_dir> [...] -- <numeric_dir> [...]
 #
@@ -134,42 +134,37 @@ for (fld, c) in ((:E, 1:3), (:B, 4:6))
             (fld === :B ? " B-field check of the E-field figure." : ""))
 end
 
-# ── 2. per-harmonic phase-aligned rel-L2 and 3. pattern correlation, per a₀ pair ───────────
+# ── 2. per-harmonic RAW rel-L2 and 3. pattern correlation, per a₀ pair ────────────────────────
+# No phase alignment (it can hide setup mistakes); θ* = arg⟨F_lpwa, F_num⟩ is reported, not applied.
 rows = map(pairs) do a
     l, n = L[a], pn(a)
     map((1, 2)) do h
         Fl, Fn = field(l, h, 1:3), field(n, h, 1:3)
-        nn = norm(Fn); β = angle(dot(Fl, Fn))
-        (; raw = norm(Fl .- Fn) / nn, phs = norm(cis(β) .* Fl .- Fn) / nn,
-           corr = abs(dot(Fl, Fn)) / (nn * norm(Fl)), β = rad2deg(β))
+        nn = norm(Fn)
+        (; raw = norm(Fl .- Fn) / nn, corr = abs(dot(Fl, Fn)) / (nn * norm(Fl)),
+           θ = rad2deg(angle(dot(Fl, Fn))))
     end
 end
 ids2 = (vcat([L[a].id for a in pairs]), vcat([pn(a).id for a in pairs]))
 
 fig = Figure(size = (1000, 750))
 ax = Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = L"a_0",
-    ylabel = L"\Vert F_\mathrm{LPWA}-F_\mathrm{num}\Vert\ /\ \Vert F_\mathrm{num}\Vert\ \ (E)", title = "LPWA − numeric, per harmonic (phase-aligned)")
+    ylabel = L"\Vert F_\mathrm{LPWA}-F_\mathrm{num}\Vert\ /\ \Vert F_\mathrm{num}\Vert\ \ (E)", title = "LPWA − numeric, per harmonic (raw)")
 for h in (1, 2)
-    y = [r[h].phs for r in rows]; yr = [r[h].raw for r in rows]
-    scatterlines!(ax, pairs, y; color = Cycled(h), markersize = 12, label = "h$h (phase-aligned)")
-    differ = [!isapprox(yr[i], y[i]; rtol = 0.05) for i in eachindex(y)]
-    any(differ) && scatter!(ax, pairs[differ], yr[differ]; color = (Makie.wong_colors()[h], 0.35),
-        markersize = 12, marker = :circle, label = "h$h raw (where it differs)")
+    scatterlines!(ax, pairs, [r[h].raw for r in rows]; color = Cycled(h), markersize = 12, label = "h$h")
 end
 axislegend(ax; position = :lt, framevisible = false)
 emit(fig, "ladder_relL2", "LPWA − numeric rel-L2 per harmonic vs a₀"; lids = ids2[1], nids = ids2[2],
     plot_params = Dict("a₀" => pairs,
-        "h1 phase-aligned" => [round(r[1].phs; sigdigits = 3) for r in rows],
-        "h2 phase-aligned" => [round(r[2].phs; sigdigits = 3) for r in rows],
-        "h1 raw" => [round(r[1].raw; sigdigits = 3) for r in rows],
-        "h2 raw" => [round(r[2].raw; sigdigits = 3) for r in rows],
-        "β h1 [deg]" => [round(r[1].β; digits = 2) for r in rows],
-        "β h2 [deg]" => [round(r[2].β; digits = 2) for r in rows]),
+        "h1 rel-L2" => [round(r[1].raw; sigdigits = 3) for r in rows],
+        "h2 rel-L2" => [round(r[2].raw; sigdigits = 3) for r in rows],
+        "θ* h1 [deg] (not applied)" => [round(r[1].θ; digits = 2) for r in rows],
+        "θ* h2 [deg] (not applied)" => [round(r[2].θ; digits = 2) for r in rows]),
     description = "Relative L2 difference of the LPWA and numeric screen fields per harmonic, " *
-        "\$\\|e^{i\\beta}\\tilde F_\\mathrm{LPWA} - \\tilde F_\\mathrm{num}\\| / \\|\\tilde F_\\mathrm{num}\\|\$ " *
-        "(E, norm over components and pixels), after the optimal global phase " *
-        "\$\\beta = \\arg\\langle \\tilde F_\\mathrm{LPWA}, \\tilde F_\\mathrm{num}\\rangle\$ (in the plot " *
-        "parameters). Light markers show the unaligned value where it differs by more than 5 %.")
+        "\$\\|\\tilde F_\\mathrm{LPWA} - \\tilde F_\\mathrm{num}\\| / \\|\\tilde F_\\mathrm{num}\\|\$ " *
+        "(E, norm over components and pixels), **raw**: no phase alignment is applied. The global phase " *
+        "offset \$\\theta^* = \\arg\\langle \\tilde F_\\mathrm{LPWA}, \\tilde F_\\mathrm{num}\\rangle\$ per " *
+        "pair is in the plot parameters as a diagnostic only (not applied).")
 
 fig = Figure(size = (1000, 750))
 ax = Axis(fig[1, 1]; xscale = log10, yscale = log10, xlabel = L"a_0",
