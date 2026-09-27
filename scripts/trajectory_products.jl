@@ -130,11 +130,11 @@ end
 emission_time_acc(τi, τf, dτ) = (; τs = dτ > 0 ? collect(τi:dτ:τf) : Float64[], bins = Dict{Int, Float64}())
 fold_emission!(acc, d) = (mergewith!(+, acc.bins, d); acc)
 
-function write_emission_time(outdir, run_tag, acc; T, window_periods)
+function write_emission_time(outdir, run_tag, acc; T, window_periods, note = nothing)
     ks = sort!(collect(keys(acc.bins)))
     t = Float64.(ks) .+ 0.5                                   # bin centres, periods
     w = [acc.bins[k] for k in ks]
-    et = (; t, w, T, window_periods, dτ = length(acc.τs) > 1 ? acc.τs[2] - acc.τs[1] : NaN)
+    et = (; t, w, T, window_periods, dτ = length(acc.τs) > 1 ? acc.τs[2] - acc.τs[1] : NaN, note)
     file = joinpath(outdir, "emissiontime_$(run_tag).jls")
     serialize(file, et)
     write_emission_time_chip(outdir, run_tag, et)
@@ -163,8 +163,9 @@ function write_emission_time_chip(outdir, run_tag, et)
     save(png, fig)
     write_derived(outdir; kind = "emission_time", label = @sprintf("emission time: 99 %% by t = %.0f periods", t99), run_id = run_tag,
         plot = basename(png), source = "emissiontime_$(run_tag).jls",
-        plot_params = Dict("t50_periods" => t50, "t90_periods" => t90, "t99_periods" => t99,
+        plot_params = merge(Dict{String, Any}("t50_periods" => t50, "t90_periods" => t90, "t99_periods" => t99,
             "window_periods" => et.window_periods, "dtau" => et.dτ),
+            get(et, :note, nothing) === nothing ? Dict{String, Any}() : Dict{String, Any}("provenance_note" => et.note)),
         description = "When the electron ensemble radiates: the emitted-energy weight of every electron, sampled " *
             "through the trajectory interpolants the radiation kernel integrates, binned by LAB time (laser periods, " *
             "0 = pulse peak at the focus). Left: normalized rate; right: cumulative fraction with the times by " *
