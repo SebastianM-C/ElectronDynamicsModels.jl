@@ -37,14 +37,6 @@ const c = 137.03599908330932
 const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
 GAMMA_TRACE_OS > 0 || error("EDM_GAMMA_TRACE_OVERSAMPLE must be > 0 for a backfill")
 
-# Sunflower distribution — identical to inverse_thomson_scattering.jl.
-const ϕgold = (1 + √5) / 2
-sf_radius(k, n, b) = k > n - b ? 1.0 : sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-function sunflower(n, α)
-    b = round(Int, α * sqrt(n))
-    return [[sf_radius(k, n, b) * cos(k * 2π / ϕgold^2),
-             sf_radius(k, n, b) * sin(k * 2π / ϕgold^2)] for k in 1:n]
-end
 
 # Append `files` to the run's FINAL .reduced marker (record_reduction! writes .partial for the
 # in-flight reduce; here the reduce is long done, so we edit the committed marker — atomically,

@@ -36,20 +36,6 @@ const p_radial, m_azimuthal = 2, -2
 const OUTDIR = get(ENV, "EDM_OUTDIR", joinpath(pkgdir(ElectronDynamicsModels), "runs"))
 const RUN_TAG = string(uuid4())
 
-# Sunflower distribution — identical to thomson_scattering.jl.
-const ϕ = (1 + √5) / 2
-radius(k, n, b) = k > n - b ? 1.0 : sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-function sunflower(n, α)
-    pts = Vector{SVector{2, Float64}}(undef, n)
-    stride = 2π / ϕ^2
-    b = round(Int, α * sqrt(n))
-    for k in 1:n
-        r = radius(k, n, b)
-        θ = k * stride
-        pts[k] = SVector(r * cos(θ), r * sin(θ))
-    end
-    return pts
-end
 
 # ── Laser + field evaluator (same params as thomson_scattering.jl) ──
 @named world = Worldline(:τ, :atomic)

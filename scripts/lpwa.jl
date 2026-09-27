@@ -97,28 +97,6 @@ function trajectory(τ, ℜ₀)
     return SVector{8}(x⁰, x₀ + Δx, y₀ + Δy, z₀ + Δz, cγ, ẋ, ẏ, ż)
 end
 
-const ϕ = (1 + √5) / 2
-
-function radius(k, n, b)
-    if k > n - b
-        return 1.0
-    else
-        return sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-    end
-end
-
-function sunflower(n, α)
-    points = Vector{Vector{Float64}}()
-    angle_stride = 2π / ϕ^2
-    b = round(Int, α * sqrt(n))
-    for k in 1:n
-        r = radius(k, n, b)
-        θ = k * angle_stride
-        push!(points, [r * cos(θ), r * sin(θ)])
-    end
-    return points
-end
-
 N = NELEC
 Rmax = 3.25w₀
 

@@ -69,7 +69,6 @@ z₀ = 0.0
 # Create electron system
 @named lg_elec = ClassicalElectron(; laser)
 
-
 # Compile the system
 sys = mtkcompile(lg_elec)
 
@@ -90,32 +89,7 @@ u0 = [
 prob = ODEProblem{false, SciMLBase.FullSpecialize}(sys, u0, tspan, u0_constructor = SVector{8}, fully_determined = true)
 sol0 = solve(prob, Vern9(), reltol = 1.0e-15, abstol = 1.0e-12)
 
-# Sunflower pattern for initial positions
 N = 900
-
-const ϕ = (1 + √5) / 2
-
-function radius(k, n, b)
-    if k > n - b
-        return 1.0
-    else
-        return sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-    end
-end
-
-function sunflower(n, α)
-    points = []
-    angle_stride = 2π / ϕ^2 # geodesic ? 360 * ϕ :
-    b = round(Int, α * sqrt(n))  # number of boundary points
-
-    for k in 1:n
-        r = radius(k, n, b)
-        θ = k * angle_stride
-        append!(points, ([r * cos(θ), r * sin(θ)],))
-    end
-
-    return points
-end
 
 # Generate initial positions in sunflower pattern
 R₀ = Rmax * sunflower(N, 2)
@@ -186,7 +160,6 @@ Symbolics.fixpoint_sub(all_eqs, eq_dict)
 fig = Figure(fontsize = 14pt)
 # ax = Axis3(fig[1, 1], aspect=:data)
 ax = Axis3(fig[1, 1], aspect = (1, 1, 1))
-
 
 # Extract trajectory
 t_range = range(τi, τf, length = 10001)

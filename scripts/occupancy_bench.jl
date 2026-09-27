@@ -62,18 +62,6 @@ u⁰ = [c, 0.0, 0.0, 0.0]
 prob = ODEProblem{false, SciMLBase.FullSpecialize}(
     sys, [sys.x => x⁰, sys.u => u⁰], (τi, τf); u0_constructor = SVector{8}, fully_determined = true)
 
-const φ = (1 + √5) / 2
-radius(k, n, b) = k > n - b ? 1.0 : sqrt(k - 0.5) / sqrt(n - (b + 1) / 2)
-function sunflower(n, α)
-    pts = Vector{Vector{Float64}}()
-    b = round(Int, α * sqrt(n))
-    for k in 1:n
-        r = radius(k, n, b)
-        θ = k * 2π / φ^2
-        push!(pts, [r * cos(θ), r * sin(θ)])
-    end
-    return pts
-end
 R₀ = Rmax * sunflower(NELEC, 2)
 xμ = [[τi * c, r..., 0.0] for r in R₀]
 set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
