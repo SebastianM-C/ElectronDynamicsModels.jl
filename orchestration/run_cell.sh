@@ -257,6 +257,8 @@ run_cells() {
     for entry in "${CELLS[@]}"; do
         label=${entry%%|*}; overrides=${entry#*|}
         [ "$overrides" = "$entry" ] && overrides=""   # no '|' ⇒ baseline cell
+        # skip marker: a not-yet-started cell reassigned to another lane/host
+        if [ -e "$CAMP/skip_$label" ]; then echo "[$(date -u +%FT%TZ)] skip $label (reassigned: $CAMP/skip_$label)"; continue; fi
         # shellcheck disable=SC2086
         run_cell "$label" $overrides
     done

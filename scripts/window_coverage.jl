@@ -43,6 +43,8 @@ a₀ = Float64(cfg["a0"])
 Nfull = Int(cfg["N"])
 Rmax = Float64(setup["Rmax"])
 τi, τf = Float64(setup["τi"]), Float64(setup["τf"])
+# the span the solver actually integrated (window-end coverage extends it past τf); legacy manifests: τi, τf
+τ_lo, τ_hi = Float64(get(setup, "τi_solve", τi)), Float64(get(setup, "τf_solve", τf))
 Z = Float64(setup["Z"])
 Nx = Int(cfg["Nx"])
 Ny = Int(get(cfg, "Ny", Nx))
@@ -62,7 +64,7 @@ u³_z = inverse ? c * sqrt(γboost^2 - 1) : 0.0
 dtmax_cfg = Float64(get(cfg, "dtmax", Inf))
 dtmax_kw = isfinite(dtmax_cfg) ? (; dtmax = dtmax_cfg) : (;)
 saveat_kw = interp_saveat == "adaptive" ? (;) :
-    (; saveat = collect(τi:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τf))
+    (; saveat = collect(τ_lo:((2π / ω) / (γboost * (1 + βz)) / parse(Float64, interp_saveat)):τ_hi))
 inverse && Int(get(cfg, "bunch_nb", 0)) > 0 &&
     @warn "bunched inverse run (bunch_nb > 0): Δz offsets are NOT reconstructed"
 
@@ -78,7 +80,7 @@ inverse && Int(get(cfg, "bunch_nb", 0)) > 0 &&
 @named elec = ClassicalElectron(; laser)
 sys = mtkcompile(elec)
 prob = ODEProblem{false, SciMLBase.FullSpecialize}(
-    sys, [sys.x => [u⁰_t * τi, 0.0, 0.0, u³_z * τi], sys.u => [u⁰_t, 0.0, 0.0, u³_z]], (τi, τf);
+    sys, [sys.x => [u⁰_t * τ_lo, 0.0, 0.0, u³_z * τ_lo], sys.u => [u⁰_t, 0.0, 0.0, u³_z]], (τ_lo, τ_hi);
     u0_constructor = SVector{8}, fully_determined = true
 )
 
@@ -93,7 +95,7 @@ function sunflower(n, α)
     return points
 end
 R₀ = Rmax * sunflower(Nfull, 2)
-xμ = [[u⁰_t * τi, r..., u³_z * τi] for r in R₀]
+xμ = [[u⁰_t * τ_lo, r..., u³_z * τ_lo] for r in R₀]
 # Electron subset: all (exact) or EDM_N uniformly spaced sunflower indices (the sunflower is
 # radially ordered, so a uniform index subset spans r₀ = 0 … Rmax including the outermost).
 solve_idx = (N_CAP <= 0 || N_CAP >= Nfull) ? collect(1:Nfull) :
@@ -122,6 +124,30 @@ t_cov = @elapsed cov = window_coverage(trajs, screen)
 scale = Nfull / length(solve_idx)   # subset → whole-run extrapolation (exact when scale == 1)
 @info "coverage" cov.ok cov.slot_fill cov.electrons_clipped cov.lead_margin_samples cov.tail_margin_samples t_cov
 cov.ok || @warn "observer window NOT fully covered — $(cov.electrons_clipped)/$(length(solve_idx)) re-solved electrons are clipped; the cube lacks their contribution in the clipped slots" cov.slots_dropped cov.worst_electron
+
+# ── Window budget: what the auto-sizer chose vs what the trajectories need (≤ 200 electrons, all radii) ──
+# Interaction = the τ range where |γ − γ₀| exceeds 1 % of its peak; its lab-time extent, and the observer-time span
+# over which that part of the history arrives at the centre pixel, against the sampled window. Units: laser periods.
+per(Δx⁰) = Δx⁰ / (c * 2π / ω)
+bud = unique(round.(Int, range(1, length(trajs); length = min(200, length(trajs)))))
+τgrid = range(τ_lo, τ_hi; length = 4000)
+arrive(x) = x[1] + sqrt(x[2]^2 + x[3]^2 + (Z - x[4])^2)          # x⁰ at the centre pixel (0, 0, Z)
+rows = map(bud) do e
+    st = [trajs[e](τ) for τ in τgrid]
+    dγ = [s[2][1] / c - γboost for s in st]
+    on = findall(abs.(dγ) .> 0.01 * maximum(abs, dγ))
+    i1, i2 = isempty(on) ? (1, length(τgrid)) : (first(on), last(on))
+    (; γmax = maximum(s[2][1] / c for s in st), lab = per(st[i2][1][1] - st[i1][1][1]),
+        a1 = arrive(st[i1][1]), a2 = arrive(st[i2][1]))
+end
+win_periods = N_samples / spp
+γmax_all = maximum(r.γmax for r in rows)
+lab_periods = maximum(r.lab for r in rows)
+arr_lo, arr_hi = minimum(r.a1 for r in rows), maximum(r.a2 for r in rows)
+arr_periods, lead_periods, tail_periods = per(arr_hi - arr_lo), per(arr_lo - first(x⁰_samples)), per(last(x⁰_samples) - arr_hi)
+n_cycles = τ0 * ω / 2π
+pw_periods = γmax_all * n_cycles
+@info "window budget [laser periods]" win_periods arr_periods lead_periods tail_periods lab_periods γmax_all pw_periods
 
 # ── Figure: per-electron margins vs initial radius ──
 lead = [p.lead_margin for p in cov.per_electron]
@@ -172,6 +198,15 @@ sidecar = Dict(
         (cov.slots_executed === missing ? () :
             ("slot_fill" => Float64(cov.slot_fill),
              "slots_executed_scaled" => round(Int, cov.slots_executed * scale)))...,
+        "window_periods" => win_periods,
+        "solve_span_tau_pulse" => [τ_lo / τ0, τ_hi / τ0],
+        "gamma_max" => γmax_all,
+        "lab_interaction_periods" => lab_periods,
+        "arrival_span_periods_centre" => arr_periods,
+        "arrival_lead_periods_centre" => lead_periods,
+        "arrival_tail_periods_centre" => tail_periods,
+        "planewave_estimate_periods" => pw_periods,
+        "pulse_cycles" => n_cycles,
     ),
     "provenance" => Dict(
         "host" => readchomp(`hostname`), "repo_commit" => repo_commit,
@@ -185,3 +220,28 @@ open(scfile, "w") do io
     TOML.print(io, sidecar)
 end
 println("sidecar → $scfile")
+
+# ── Budget chip: the four lengths side by side (laser periods) ──
+fig2 = Figure(size = (900, 300))
+ax2 = Axis(fig2[1, 1]; xlabel = "observer time since the window opens [laser periods]",
+    yticks = (1:2, ["interaction arrives\n(centre pixel)", "sampled window"]),
+    title = @sprintf("window budget — %s: lead %.1f, tail %.1f periods%s", idtag, lead_periods, tail_periods,
+        tail_periods < 0 || lead_periods < 0 ? "  ⚠ burst outside the window" : ""),
+    subtitle = @sprintf("γ_max = %.3g · lab interaction %.0f periods (|γ−γ₀| > 1 %% of peak) · plane-wave γ_max×N_cyc = %.0f",
+        γmax_all, lab_periods, pw_periods))
+rangebars!(ax2, [2, 1], [0.0, lead_periods], [win_periods, win_periods - tail_periods]; direction = :x,
+    linewidth = 14, color = [:black, :darkorange])
+vlines!(ax2, [0.0, win_periods]; color = :gray50, linestyle = :dash)
+ylims!(ax2, 0.4, 2.6)
+png2 = joinpath(OUTDIR, "window_budget_$(RUN_TAG).png"); save(png2, fig2)
+open(joinpath(OUTDIR, "derived_window_budget_$(idtag).toml"), "w") do io
+    TOML.print(io, Dict("schema_version" => 1,
+        "derived" => Dict("depends_on" => [RUN_TAG], "kind" => "window_budget", "plot" => basename(png2),
+            "label" => @sprintf("window budget: %.0f-period window, arrival span %.0f, tail margin %.1f", win_periods, arr_periods, tail_periods),
+            "source" => basename(MFILE),
+            "description" => "The observer window the auto-sizer chose against what the re-solved trajectories need: " *
+                "the observer-time span over which the interaction (|γ−γ₀| > 1 % of peak) arrives at the centre pixel, " *
+                "the measured lab-time interaction length, and the plane-wave estimate γ_max × pulse cycles."),
+        "plot_params" => sidecar["coverage"], "provenance" => sidecar["provenance"], "setup" => sidecar["setup"]))
+end
+println("budget chip → $png2")
