@@ -1,5 +1,5 @@
 # lane (Verda C″, rerun): the a₀ 10 pair of ll_probe_s_v2 on card 1 after the a₀ = 5 cell — first attempts died at the first
-# CUDA call (CC GPUs "not ready" until `nvidia-smi conf-compute -srs 1`, 2026-09-28 03:38Z). Batching as verda_llps_g0.sh.
+# CUDA call (CC GPUs "not ready" until `nvidia-smi conf-compute -srs 1`, 2026-09-28 03:38Z). Batching as verda_llps_4_g0.sh.
 LLS_SCREEN=nx281
 . "$(dirname "${BASH_SOURCE[0]}")/ll_probe_s_v2.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/verda_inverse_lanes.sh"

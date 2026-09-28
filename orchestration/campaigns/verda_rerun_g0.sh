@@ -1,5 +1,5 @@
 # lane (Verda C″, rerun): the a₀ 30 pair of ll_probe_s_v2 on card 0 after the ll_pairs_v2 tail — first attempts died at the first
-# CUDA call (CC GPUs "not ready", 2026-09-28 03:38Z). Batching as verda_llps_g0.sh.
+# CUDA call (CC GPUs "not ready", 2026-09-28 03:38Z). Batching as verda_llps_4_g0.sh.
 LLS_SCREEN=nx281
 . "$(dirname "${BASH_SOURCE[0]}")/ll_probe_s_v2.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/verda_inverse_lanes.sh"
