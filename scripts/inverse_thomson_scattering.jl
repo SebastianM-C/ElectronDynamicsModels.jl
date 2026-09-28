@@ -791,7 +791,6 @@ GAMMA_EPS === nothing || (config["gamma_eps"] = GAMMA_EPS)
 # run_cell), so a manual run never claims "discarded"; lets the dashboard status collector
 # tell discarded-by-policy from location-unknown.
 haskey(ENV, "EDM_KEEP_CUBE") && (config["keep_cube"] = ENV["EDM_KEEP_CUBE"] == "1")
-FIELD || (config["keep_cube"] = false)   # EDM_FIELD=0 makes no cube: settled ("discarded") once the caches are durable
 config["coef_reuse"] = COEF_REUSE
 ndev > 1 && (config["reduce"] = String(REDUCE); config["reduce_workers"] = REDUCE_WORKERS)
 config["sample_chunks"] = SAMPLE_CHUNKS
