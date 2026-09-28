@@ -414,3 +414,34 @@ end
         end
     end
 end
+
+@testset "lg_peak_factor / a0_from_peak" begin
+    # brute-force reference on a fine ρ grid, independent of the implementation's search
+    ref(p, m) = sqrt(pochhammer(p + 1, abs(m))) * maximum(
+        ρ -> ElectronDynamicsModels._lg_profile(ρ, p, abs(m)), range(0, 8, 400_001))
+    @test lg_peak_factor(0, 0) == 1.0
+    @test lg_peak_factor(3, 0) == 1.0
+    @test lg_peak_factor(0, 7) ≈ sqrt(factorial(7)) * 7^3.5 * exp(-3.5) rtol = 1e-12
+    @test lg_peak_factor(0, 7) ≈ 1945.4842605828662 rtol = 1e-10
+    @test lg_peak_factor(0, -2) == lg_peak_factor(0, 2)
+    @testset "p=$p, m=$m" for (p, m) in ((1, 1), (1, 2), (2, -2), (2, 5), (4, 3))
+        @test lg_peak_factor(p, m) ≈ ref(p, m) rtol = 1e-8
+    end
+    @test a0_from_peak(0.27; mode = (p = 0, m = 7)) ≈ 0.27 / 1945.4842605828662 rtol = 1e-10
+    @test_throws ArgumentError lg_peak_factor(-1, 2)
+
+    # the factor is what FieldEvaluator sees: peak |E| on the focal plane, LG over Gaussian
+    c = 137.03599908330932
+    ω = 0.057
+    λ_val = 2π * c / ω
+    w₀_val = 25λ_val
+    peak(p, m) = let
+        @named world = Worldline(:τ, :atomic)
+        @named laser = LaguerreGaussLaser(wavelength = λ_val, a0 = 0.1, beam_waist = w₀_val,
+            radial_index = p, azimuthal_index = m, world = world, temporal_profile = :constant,
+            polarization = :circular_plus)
+        fe = FieldEvaluator(laser)
+        maximum(ρ -> norm(fe((0.0, ρ * w₀_val, 0.0, 0.0)).E[1:2]), range(0, 4, 4001))
+    end
+    @test peak(1, 2) / peak(0, 0) ≈ lg_peak_factor(1, 2) rtol = 1e-4
+end
