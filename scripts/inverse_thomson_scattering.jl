@@ -38,6 +38,7 @@
 # EDM_NSAMPLES, EDM_SPP, EDM_NSUBSTEPS, EDM_SYNC_PER_ELECTRON, EDM_OUTDIR.
 # Laser mode: EDM_LG_P, EDM_LG_M (LG radial/azimuthal index, default 2/−2; 0/0 = Gaussian),
 # EDM_W0_LAMBDA (waist in λ, default 75; the electron disc Rmax = 3.25 w₀ follows it).
+# EDM_OMEGA_TAU (ω·τ of the e^(−(t/τ)²) field envelope, default 150).
 # Backscatter-spectrum knobs: EDM_WINDOW (full|narrow), EDM_SCREEN_HW (screen half-width in w₀,
 # default 25), EDM_HARMONICS (comma-sep n; default ≈4γ² in :narrow). Guards (fail fast, BEFORE the
 # ensemble solve): requested harmonics must clear Nyquist (any mode); the :full window must reach
@@ -185,7 +186,9 @@ const T_START = time()   # wall-clock start → [timing].total in the manifest
 
 # Laser parameters
 ω = 0.057
-τ = 150 / ω
+const OMEGA_TAU = parse(Float64, get(ENV, "EDM_OMEGA_TAU", "150"))   # ω·τ, field-envelope half-width (25 fs FWHM intensity at 800 nm ≈ 50)
+OMEGA_TAU > 0 || error("EDM_OMEGA_TAU must be > 0, got $OMEGA_TAU")
+τ = OMEGA_TAU / ω
 λ = 2π * c / ω
 const W0_LAMBDA = parse(Float64, get(ENV, "EDM_W0_LAMBDA", "75"))
 W0_LAMBDA > 0 || error("EDM_W0_LAMBDA must be > 0, got $W0_LAMBDA")
@@ -730,6 +733,7 @@ config = Dict{String, Any}(
     "lg_p" => p_radial,                # EDM_LG_P / EDM_LG_M / EDM_W0_LAMBDA knobs (sweepable; [laser] has p, m, w0 in a.u.)
     "lg_m" => m_azimuthal,
     "w0_lambda" => W0_LAMBDA,
+    "omega_tau" => OMEGA_TAU,          # EDM_OMEGA_TAU knob ([laser].temporal_width has τ in a.u.)
     "accumulation_alg" => (ACCUM_ALG == "newton" ? "GPUKernelNewton" : "GPUKernelRK4"),   # dashboard canonical name
     "newton_iters" => NEWTON_ITERS,    # recorded UNCONDITIONALLY (rk4 runs too): a mixed rk4/newton
     #   pool otherwise turns newton_iters into a sweep axis whose rk4 members lack the key, and the
