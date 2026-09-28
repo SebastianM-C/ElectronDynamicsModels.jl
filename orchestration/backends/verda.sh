@@ -226,6 +226,12 @@ wait_ready() {   # status → running + public ip, then sshd
 }
 
 warm() {
+    # Confidential-computing types (.CC) boot with the GPUs "not ready": every CUDA init fails (802, then 3) until
+    # the ready state is set, and a process that initialized before keeps failing (2026-09-28, 2B200.60V.CC).
+    case "${TYPE:-}" in *.CC)
+        ssh_vm 'nvidia-smi conf-compute -srs 1 >/dev/null && nvidia-smi conf-compute -grs' | sed 's/^/[cc] /' \
+            || log "[warn] could not set the CC ready state — CUDA will not initialize on this VM" ;;
+    esac
     log "warm: clone $BRANCH + instantiate ($BACKEND depot on the OS volume; cache: ${DEPOT_CACHE:-none})"
     # Ubuntu cloud images run unattended-upgrades at first boot — wait for the dpkg lock
     # instead of failing the apt call; rsync + zstd serve the depot cache + product download.
