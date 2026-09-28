@@ -30,6 +30,7 @@ case $LLS_SCREEN in full) _SCR="EDM_NX=361 EDM_SCREEN_HW=0.00619";; nx281) _SCR=
 CAMPAIGN=ll_probe_s_v2
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
+REDUCE_HOOK='export EDM_DIRECT_READ=1; _reduce_cell "$uuid"'   # overlap reducer reads ITS env, not BASE: O_DIRECT keeps the reduce at ~1.5× cube
 SWEEP_AXES=N,a0      # as the ll_probe_s declaration
 BASE=(
   EDM_GAMMA=100 EDM_TSPAN_TAU=0.16 EDM_WINDOW=narrow EDM_FIELD_MODE=total

@@ -21,6 +21,7 @@
 CAMPAIGN=inverse_a0_ladder_g5
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
+REDUCE_HOOK='export EDM_DIRECT_READ=1; _reduce_cell "$uuid"'   # overlap reducer reads ITS env, not BASE: O_DIRECT keeps the reduce at ~1.5× cube
 SWEEP_AXES=a0
 BASE=(
   EDM_NX=401 EDM_FIELD_MODE=total

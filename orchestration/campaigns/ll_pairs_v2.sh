@@ -13,6 +13,7 @@ A8_ISA=${A8_ISA:-32}   # knots per Doppler period for the a₀ 8 pair (Sebastian
 CAMPAIGN=ll_pairs_v2
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
+REDUCE_HOOK='export EDM_DIRECT_READ=1; _reduce_cell "$uuid"'   # overlap reducer reads ITS env, not BASE: O_DIRECT keeps the reduce at ~1.5× cube
 SWEEP_AXES=system
 BASE=(
   EDM_WINDOW=narrow EDM_FIELD_MODE=total
