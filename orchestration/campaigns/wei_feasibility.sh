@@ -6,7 +6,7 @@
 # radiated energy (emission-time + emission-end chips), before an angular-energy reduction script is written. The
 # screen is a token 33² on axis (±0.02 w₀), so the field products are a by-product, not a result.
 # tspan ∝ 1/γ (TSPAN·γ = 16, as ll_probe_s); knots 64 per Doppler period (ll_probe_s). n₀ = 611522 (4γ²),
-# n_a = n₀/(1 + a₀²) = 569971; SPP 1.3e6 puts both inside Nyquist (650000) — fundamental only.
+# n_a = n₀/(1 + a₀²/2) = 590016 (same-intensity a₀); SPP 1.3e6 puts both inside Nyquist (650000) — fundamental only.
 # Narrow window with ll_probe_s-style 0.002 λ margins: Ns ≈ 27336 ⇒ cube 1.33 GiB. χ ≈ 6e-4 (classical).
 # Needs the EDM_LG_P / EDM_LG_M / EDM_W0_LAMBDA knobs (this branch).
 CAMPAIGN=wei_feasibility
@@ -23,7 +23,7 @@ BASE=(
   EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2
   EDM_INITIAL_PHASE=-1.5707963267948966
   EDM_APODIZATION=none EDM_DIRECT_READ=1
-  EDM_HARMONICS=569971,611522
+  EDM_HARMONICS=590016,611522
   EDM_EMISSION_TIME=1 EDM_GAMMA_TRACE_OVERSAMPLE=4
 )
 CELLS=(
