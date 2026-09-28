@@ -330,6 +330,60 @@ function a0_from_pulse_energy(W, w₀, τ₀, ω; world, mode = (p = 0, m = 2))
     return sqrt(a₀²)
 end
 
+# Focal-plane transverse profile of LaguerreGaussLaser in units of E₀, ρ = r/w₀ (without Nₚₘ).
+_lg_profile(ρ, p, mₐ) = abs((√2 * ρ)^mₐ * _₁F₁(-p, mₐ + 1, 2ρ^2) * exp(-ρ^2))
+
+# Maximum of `_lg_profile(ρ, p, mₐ)` over ρ ≥ 0, for p ≥ 1 and mₐ ≥ 1 (the other cases are closed-form).
+function _lg_profile_max(p, m)
+    g(ρ) = (m/ρ - 2ρ) * _₁F₁(-p, m+1, 2ρ^2) - (4p*ρ/(m+1)) * _₁F₁(-p+1, m+2, 2ρ^2)
+
+    x = range(0, √(2p+m+1) + 3, length=100)
+    _, idx = findmax(ρ -> _lg_profile(ρ, p, m), x)
+    a, b = x[max(idx - 1, 1)], x[min(idx + 1, end)]
+
+    while b - a > eps(b)
+        c = (a + b) / 2
+        sign(g(c)) == sign(g(a)) ? (a = c) : (b = c)
+    end
+
+    return _lg_profile((a + b) / 2, p, m)
+end
+
+"""
+    lg_peak_factor(p, m) -> F
+
+Peak transverse field of `LaguerreGaussLaser(; a0, radial_index = p, azimuthal_index = m)` on its
+focal plane, relative to the Gaussian mode (p = m = 0) with the same `a0` and polarization:
+
+    F = √((p+1)_|m|) · max_ρ |(√2ρ)^|m| ₁F₁(−p, |m|+1, 2ρ²) e^{−ρ²}|,   ρ = r/w₀.
+
+EDM's `a0` scales the underlying Gaussian amplitude E₀ (the LaserTypes convention, see
+`references/lg_pulse_energy_a0.tex`), so the ring of a high-|m| mode is far hotter than `a0`
+suggests: F(0, 7) ≈ 1945.5, while F(2, −2) ≈ 0.98. For p = 0 the ring sits at ρ = √(|m|/2) and
+F = √(|m|!)·|m|^{|m|/2}·e^{−|m|/2}. The polarization vector multiplies every mode alike, so F does
+not depend on it; E_z (order 1/(k w₀)) is not included.
+"""
+function lg_peak_factor(p::Integer, m::Integer)
+    p >= 0 || throw(ArgumentError("radial index p must be ≥ 0, got $p"))
+    mₐ = abs(m)
+    mₐ == 0 && return 1.0   # |L_p(x)|e^{−x/2} ≤ 1, attained on the axis
+    Nₚₘ = sqrt(pochhammer(p + 1, mₐ))
+    p == 0 && return Nₚₘ * mₐ^(mₐ / 2) * exp(-mₐ / 2)
+    return Nₚₘ * _lg_profile_max(p, mₐ)
+end
+
+"""
+    a0_from_peak(a_peak; mode) -> a₀
+
+EDM `a0` for the LG mode `mode = (p, m)` whose focal-plane peak field equals that of a Gaussian
+beam with `a0 = a_peak` (same polarization): `a_peak / lg_peak_factor(p, m)`.
+
+Use it to match a measured peak intensity, e.g. `a_peak = 0.855·λ[μm]·√(I / 10¹⁸ W cm⁻²)`; use
+[`a0_from_pulse_energy`](@ref) to match a pulse energy instead. At m = 7 the two targets and the
+bare `a0` differ by orders of magnitude.
+"""
+a0_from_peak(a_peak; mode) = a_peak / lg_peak_factor(mode.p, mode.m)
+
 """
 Laguerre-Gauss laser beam electromagnetic field.
 

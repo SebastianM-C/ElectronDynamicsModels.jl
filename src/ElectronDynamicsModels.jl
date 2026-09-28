@@ -39,7 +39,7 @@ const η = @SMatrix [
     0.0  0.0  0.0 -1.0
 ]
 
-export GaussLaser, LaguerreGaussLaser, a0_from_pulse_energy
+export GaussLaser, LaguerreGaussLaser, a0_from_pulse_energy, a0_from_peak, lg_peak_factor
 export ReferenceFrame, Worldline,
     UniformField, PlaneWave,
     ParticleDynamics,
