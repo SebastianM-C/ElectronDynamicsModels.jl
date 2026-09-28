@@ -25,6 +25,21 @@ function pulse_traj(; a₀, δ = 0.0, T = 12.0, φc = 0.0, span = 4T, N = 6001, 
     return TrajectoryInterpolant(itp, a_itp, SVector{4, Int}(1, 2, 3, 4), SVector{4, Int}(5, 6, 7, 8), K)
 end
 
+# Boost along +z by γb, then rotate about ŷ by α: a valid worldline moving along (sin α, 0, cos α). x, u and 𝔞
+# transform as 4-vectors; proper time is invariant, so the knots stay put.
+function boost_rotate(traj, γb, α)
+    βb = sqrt(1 - 1 / γb^2)
+    s, c = sincos(α)
+    Λ = SMatrix{4, 4}(1.0, 0, 0, 0, 0, c, 0, -s, 0, 0, 1, 0, 0, s, 0, c) *   # R_y(α), column-major
+        SMatrix{4, 4}(γb, 0, 0, γb * βb, 0, 1, 0, 0, 0, 0, 1, 0, γb * βb, 0, 0, γb)   # boost along z
+    τs = traj.itp.t
+    states = [(v = traj.itp(τ); SVector{8}(Λ * v[SVector(1, 2, 3, 4)]..., Λ * v[SVector(5, 6, 7, 8)]...)) for τ in τs]
+    accs = [Λ * traj.a_itp(τ) for τ in τs]
+    itp = CubicSpline(states, τs; extrapolation = ExtrapolationType.Extension)
+    a_itp = CubicSpline(accs, τs; extrapolation = ExtrapolationType.Extension)
+    return TrajectoryInterpolant(itp, a_itp, SVector{4, Int}(1, 2, 3, 4), SVector{4, Int}(5, 6, 7, 8), traj.K)
+end
+
 const ε₀ = 1 / (4π)   # the atomic-unit value; with c = K = 1 the prefactor ε₀c²K² is 1/(4π)
 
 @testset "angular_energy" begin
@@ -109,5 +124,22 @@ const ε₀ = 1 / (4π)   # the atomic-unit value; with c = K = 1 the prefactor 
         @test w.y ≈ √2 * sy rtol = 1e-3
         @test w.r_eq ≈ √2 * sqrt(sx * sy) rtol = 2e-2
         @test isnan(one_over_e_halfwidths(W[190:212, :], θx[190:212], θy).x)   # level outside the grid
+    end
+    @testset "tilted grid: identity at tilt 0, rotation-covariant, centred on the beam" begin
+        θ = collect(range(-0.15, 0.15, 31))
+        @test far_field_directions(θ, θ; tilt = 0.0) == far_field_directions(θ, θ)
+        @test far_field_directions(θ, θ; zsign = -1, tilt = 0.0) == far_field_directions(θ, θ; zsign = -1)
+        α = π / 4
+        c₀ = far_field_directions([0.0], [0.0]; tilt = α)[1]
+        @test c₀ ≈ SVector(sin(α), 0.0, cos(α)) atol = 1e-15
+        base = pulse_traj(; a₀ = 0.05, N = 4001)
+        head = boost_rotate(base, 20.0, 0.0)
+        tilted = boost_rotate(base, 20.0, α)
+        W0 = angular_energy([head], θ, θ; c = 1.0, ε₀)
+        Wα = angular_energy([tilted], far_field_directions(θ, θ; tilt = α); c = 1.0, ε₀)
+        @test maximum(abs.(Wα .- W0)) / maximum(W0) < 1e-10   # the reducer is rotation-covariant
+        i, j = Tuple(argmax(Wα))
+        @test abs(i - 16) <= 1 && abs(j - 16) <= 1            # peak on the beam axis (1/γ = 50 mrad, step 10)
+        @test Wα ≈ reverse(Wα; dims = 2) rtol = 1e-10          # mirror symmetry θy → −θy (motion in the x–z plane)
     end
 end

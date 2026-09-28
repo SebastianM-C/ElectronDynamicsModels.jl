@@ -7,15 +7,20 @@
 # worldline and summed; no observer clock, no window, O(directions) memory.
 
 """
-    far_field_directions(θx, θy; zsign = 1) -> Matrix{SVector{3,Float64}}
+    far_field_directions(θx, θy; zsign = 1, tilt = 0.0) -> Matrix{SVector{3,Float64}}
 
 Unit vectors `n̂ = normalize(tan θx, tan θy, zsign)` on the grid `θx × θy` (radians): the directions
 of the pixels of a flat screen normal to ẑ at distance `Z` on the `zsign` side, seen from the
 origin (`x = Z tan θx`, `y = Z tan θy`, as `ObserverScreen` pixels map to angles). `zsign` follows
-`EDM_SCREEN_ZSIGN`.
+`EDM_SCREEN_ZSIGN`. `tilt` (rad) rotates the whole grid about ŷ, so its centre points along
+(zsign·sin tilt, 0, zsign·cos tilt): the grid of an electron beam moving at `tilt` from ±ẑ in the x–z plane.
 """
-far_field_directions(θx, θy; zsign = 1) =
-    [normalize(SVector{3, Float64}(tan(a), tan(b), zsign)) for a in θx, b in θy]
+function far_field_directions(θx, θy; zsign = 1, tilt = 0.0)
+    dirs = [normalize(SVector{3, Float64}(tan(a), tan(b), zsign)) for a in θx, b in θy]
+    iszero(tilt) && return dirs
+    s, c = sincos(tilt)
+    return [SVector(c * n[1] + s * n[3], n[2], -s * n[1] + c * n[3]) for n in dirs]
+end
 
 """
     angular_energy(trajs, dirs; c, ε₀, oversample = 1, τspan = nothing) -> Array{Float64}
