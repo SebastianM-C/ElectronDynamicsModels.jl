@@ -36,6 +36,8 @@
 # ENV knobs (defaults = full production): EDM_GPU_BACKEND (rocm|cuda), EDM_A0, EDM_GAMMA,
 # EDM_INITIAL_PHASE, EDM_POL (linear|circular[_plus]|circular_minus), EDM_NX, EDM_N,
 # EDM_NSAMPLES, EDM_SPP, EDM_NSUBSTEPS, EDM_SYNC_PER_ELECTRON, EDM_OUTDIR.
+# Laser mode: EDM_LG_P, EDM_LG_M (LG radial/azimuthal index, default 2/−2; 0/0 = Gaussian),
+# EDM_W0_LAMBDA (waist in λ, default 75; the electron disc Rmax = 3.25 w₀ follows it).
 # Backscatter-spectrum knobs: EDM_WINDOW (full|narrow), EDM_SCREEN_HW (screen half-width in w₀,
 # default 25), EDM_HARMONICS (comma-sep n; default ≈4γ² in :narrow). Guards (fail fast, BEFORE the
 # ensemble solve): requested harmonics must clear Nyquist (any mode); the :full window must reach
@@ -185,13 +187,16 @@ const T_START = time()   # wall-clock start → [timing].total in the manifest
 ω = 0.057
 τ = 150 / ω
 λ = 2π * c / ω
-w₀ = 75λ
+const W0_LAMBDA = parse(Float64, get(ENV, "EDM_W0_LAMBDA", "75"))
+W0_LAMBDA > 0 || error("EDM_W0_LAMBDA must be > 0, got $W0_LAMBDA")
+w₀ = W0_LAMBDA * λ
 Rmax = 3.25w₀
 
 a₀ = A0
 
-p_radial = 2
-m_azimuthal = -2
+p_radial = parse(Int, get(ENV, "EDM_LG_P", "2"))
+m_azimuthal = parse(Int, get(ENV, "EDM_LG_M", "-2"))
+p_radial >= 0 || error("EDM_LG_P must be ≥ 0, got $p_radial")
 pol = Symbol(get(ENV, "EDM_POL", "circular_minus"))   # EDM_POL: linear | circular[_plus] | circular_minus (default matches the LPWA analytic trajectory's spin); recorded in [laser].pol
 profile = :gaussian
 z_focus = 0.0
@@ -722,6 +727,9 @@ config = Dict{String, Any}(
     # N0 stays integer for the :narrow defaults; this key is the dashboard/display value.
     "backscatter_n0" => N0_EXACT,      # on-axis backscatter fundamental ω_s/ω ≈ 4γ²
     "screen_zsign" => SCREEN_ZSIGN,    # screen side: +1 backscatter (+Z), −1 transmission (−Z)
+    "lg_p" => p_radial,                # EDM_LG_P / EDM_LG_M / EDM_W0_LAMBDA knobs (sweepable; [laser] has p, m, w0 in a.u.)
+    "lg_m" => m_azimuthal,
+    "w0_lambda" => W0_LAMBDA,
     "accumulation_alg" => (ACCUM_ALG == "newton" ? "GPUKernelNewton" : "GPUKernelRK4"),   # dashboard canonical name
     "newton_iters" => NEWTON_ITERS,    # recorded UNCONDITIONALLY (rk4 runs too): a mixed rk4/newton
     #   pool otherwise turns newton_iters into a sweep axis whose rk4 members lack the key, and the
