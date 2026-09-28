@@ -14,7 +14,7 @@ CAMPAIGN=ll_pairs_v2
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
 REDUCE_HOOK='export EDM_DIRECT_READ=1; _reduce_cell "$uuid"'   # overlap reducer reads ITS env, not BASE: O_DIRECT keeps the reduce at ~1.5× cube
-SWEEP_AXES=system
+SWEEP_AXES=gamma,a0   # the classical/LL pairing is the system key; γ × a₀ lays the pairs out as a grid
 BASE=(
   EDM_WINDOW=narrow EDM_FIELD_MODE=total
   EDM_N=2000 EDM_NSUBSTEPS=1 EDM_INTERP_SAVEAT=16
