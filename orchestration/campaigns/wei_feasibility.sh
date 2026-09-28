@@ -29,7 +29,7 @@ BASE=(
 CELLS=(
   "gauss|EDM_LG_M=0"
   "lg7|EDM_LG_M=7"
-  # handedness comparison (uncomment both): own named sweep, since pol lives in [laser], not [config]
-  # "gauss_cm|EDM_LG_M=0 EDM_POL=circular_minus EDM_SWEEP=wei_feasibility_cm"
-  # "lg7_cm|EDM_LG_M=7 EDM_POL=circular_minus EDM_SWEEP=wei_feasibility_cm"
+  # handedness comparison (Sebastian: both): own named sweep, since pol lives in [laser], not [config]
+  "gauss_cm|EDM_LG_M=0 EDM_POL=circular_minus EDM_SWEEP=wei_feasibility_cm"
+  "lg7_cm|EDM_LG_M=7 EDM_POL=circular_minus EDM_SWEEP=wei_feasibility_cm"
 )
