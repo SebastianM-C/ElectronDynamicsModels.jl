@@ -429,6 +429,8 @@ end
 function recover_from_manifest(toml)
     m = TOML.parsefile(toml)
     check_schema_version(m; source = basename(toml))
+    # EDM_FIELD=0 runs have no cube; the solver already stamped its caches in the marker.
+    haskey(m["outputs"], "datafile") || (println("$(basename(toml)): no field cube (EDM_FIELD=0) — nothing to reduce"); return nothing)
     dir = dirname(abspath(toml))
     cfg, las = m["config"], m["laser"]
     # Only title/filename differ by family — all use the shared harmonic_field_style() colormap.

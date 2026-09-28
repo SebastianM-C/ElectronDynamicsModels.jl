@@ -182,6 +182,17 @@ BUNCH_NB >= 0 || error("EDM_BUNCH_NB must be ≥ 0, got $BUNCH_NB")
 (BUNCH_NB == 0 && BUNCH_CHIRP != 0) &&
     error("EDM_BUNCH_CHIRP requires EDM_BUNCH_NB > 0 (it is part of the array phasing)")
 const SKIP_POST = get(ENV, "EDM_SKIP_POSTPROCESS", "0") == "1"   # field-only: serialize cube + manifest, defer the (CPU/IO) reduction to an async step
+# EDM_FIELD=0: no field cube — trajectories, γ trace, emission and angular-energy products, ic, manifest only.
+const FIELD = get(ENV, "EDM_FIELD", "1") == "1"
+# EDM_COLLISION_ANGLE: angle between the electron velocity and the laser k̂ = −ẑ, in degrees (180 = head-on).
+# The velocity tilts in the x–z plane by TILT = 180° − angle from +ẑ; every electron still crosses its waist
+# position at t = 0. The screen/window arithmetic assumes motion along z, so a tilt needs EDM_FIELD=0.
+const COLLISION_ANGLE = parse(Float64, get(ENV, "EDM_COLLISION_ANGLE", "180"))
+0 < COLLISION_ANGLE <= 180 || error("EDM_COLLISION_ANGLE must be in (0, 180] degrees, got $COLLISION_ANGLE")
+const TILT = deg2rad(180 - COLLISION_ANGLE)
+(TILT != 0 && FIELD) &&
+    error("EDM_COLLISION_ANGLE=$COLLISION_ANGLE needs EDM_FIELD=0: the field screen and window assume motion along z")
+(TILT != 0 && BUNCH_NB != 0) && error("EDM_BUNCH_NB assumes motion along z; not with EDM_COLLISION_ANGLE")
 const RUN_TAG = get(ENV, "EDM_RUN_TAG", string(uuid4()))   # launcher may pin via EDM_RUN_TAG so .jls/log/manifest share one id
 mkpath(OUTDIR)
 @info "Inverse-Thomson (field) run config" RUN_TAG GPU_BACKEND ϕ₀ A0 GAMMA TSPAN_TAU WINDOW SCREEN_HW SCREEN_ZSIGN WINDOW_LEAD WINDOW_TAIL BUNCH_NB BUNCH_L SYNC FIELD_MODE OUTDIR NX NELEC NSAMPLES SPP NSUBSTEPS
@@ -212,7 +223,10 @@ z_focus = 0.0
 # √(γ²−1) is used directly (avoids the 1−1/γ² cancellation at large γ).
 const β = sqrt(1 - 1 / GAMMA^2)
 const u⁰_t = GAMMA * c              # time component γc
-const u³_z = c * sqrt(GAMMA^2 - 1)  # +z spatial component γβc (> 0)
+const u³_z = c * sqrt(GAMMA^2 - 1) * cos(TILT)  # +z spatial component γβc·cos(TILT) (> 0)
+const u¹_x = c * sqrt(GAMMA^2 - 1) * sin(TILT)  # +x component (0 head-on)
+# Laser phase rate seen by the electron, dφ/dτ = ωγ(1 − β·k̂) with k̂ = −ẑ: sets the knot spacing.
+const DOPPLER_IN = GAMMA * (1 + β * cos(TILT))
 # Anti-skip cap on the max proper-time step: the interaction's 1/e width is ~τ/γ, so half of it
 # guarantees the adaptive solver lands ≥1 step inside instead of leaping over it (see the tolerance note).
 const DTMAX = τ / (2 * GAMMA)
@@ -220,12 +234,12 @@ const DTMAX = τ / (2 * GAMMA)
 # On-axis backscatter fundamental in units of ω: ω_s/ω = (1+β)/(1−β) ≈ 4γ² (≈398 at γ=10). This is the
 # harmonic the :narrow window targets. EDM_HARMONICS overrides (comma-separated n); default is the
 # fundamental ±1 + its 2nd (narrow) or the legacy (1,2,3,4) (full — the ω-harmonics of the drive laser).
-const N0 = round(Int, (1 + β) / (1 - β))
+const N0 = round(Int, (1 + β * cos(TILT)) / (1 - β))   # along β̂: (1 − β·k̂)/(1 − β·β̂), k̂ = −ẑ
 # Display/units twin of N0: the EXACT line ratio. N0 stays integer where integers belong
 # (:narrow default bins, Nyquist guard, burst sizing — acquisition parity); every ω_bs
 # LABEL and axis uses the exact value, else near-rest rungs show the line at 0.98 ω_bs
 # (the round is +2.1% at γ=1.5 — larger than the physical a0² redshift it obscures).
-const N0_EXACT = (1 + β) / (1 - β)
+const N0_EXACT = (1 + β * cos(TILT)) / (1 - β)
 const HARMONICS = let h = get(ENV, "EDM_HARMONICS", "")
     # Fractional n is allowed: near-rest boosted lines sit BETWEEN laser harmonics
     # ((1+β)/(1−β) = 1.33 at ε = 1e-2) — extraction is nearest-rfft-bin of n·ω₁ either way
@@ -319,7 +333,7 @@ BUNCH_NB > 0 && WINDOW == :narrow &&
 # (+corner_spread off-axis), but the legacy window starts a fixed ≈8cτ ≈ 191λ BEFORE Z with length
 # NSAMPLES·λ/SPP — so raising EDM_SPP (the natural knob for the ≈4γ²ω line) shrinks it until it
 # ends before any signal arrives, and the all-zero cube would serialize + reduce + publish silently.
-WINDOW == :full && x⁰_start + (N_samples - 1) * c * δt < Z + corner_spread + burst &&
+FIELD && WINDOW == :full && x⁰_start + (N_samples - 1) * c * δt < Z + corner_spread + burst &&
     error(
     "EDM_WINDOW=full observer window ends " *
         "$(round((Z + corner_spread + burst - x⁰_start - (N_samples - 1) * c * δt) / λ, digits = 1))λ " *
@@ -330,7 +344,7 @@ WINDOW == :full && x⁰_start + (N_samples - 1) * c * δt < Z + corner_spread + 
 # device (electron sharding replicates them per device), so an oversized window — e.g. :narrow at the
 # default EDM_SCREEN_HW=25, whose corner_spread ≈ 21λ at SPP=2048 asks for ~700 GB — must fail HERE,
 # not OOM after the ensemble solve. EDM_SKIP_MEMCHECK=1 overrides (exotic backends/memory pools).
-let nbuf = FIELD_MODE == :split ? 4 : 2, bytes = nbuf * N_samples * 3 * NX * NX * 8
+FIELD && let nbuf = FIELD_MODE == :split ? 4 : 2, bytes = nbuf * N_samples * 3 * NX * NX * 8
     @info "field cube estimate" N_samples nbuf cube_gib = round(bytes / 2^30, digits = 1)
     if get(ENV, "EDM_SKIP_MEMCHECK", "0") != "1"
         mem = try
@@ -378,7 +392,7 @@ sys = mtkcompile(elec)
 # toward the screen the light-front coordinate advances as c·τ/(γ(1+β)), so both bounds scale
 # with `stretch = γ(1+β)` (1 at γ=1, where this is the rest-electron thomson window exactly).
 # :narrow keeps the physics span — it samples the Doppler-compressed burst only, by design.
-τi_solve, τf_solve = if WINDOW == :full
+τi_solve, τf_solve = if FIELD && WINDOW == :full   # no cube ⇒ no window to cover
     trajectory_span_for_window(τi, τf, range(x⁰_start; step = c * δt, length = N_samples), Z,
         screen_hw, Rmax; c, stretch = GAMMA * (1 + β))
 else
@@ -392,8 +406,9 @@ end
 # Meet-at-origin timing: with x⁰(τ)=γc·τ and z(τ)=γβc·τ (force-free flight), every electron
 # crosses z=0 at τ=0 ⇔ t=0, exactly when the −z pulse peaks at the focus. So the on-axis start
 # (τ=τi) is x⁰=γc·τi (< 0, in the past) and z=γβc·τi (< 0, far behind the focus in −z).
-x⁰ = [u⁰_t * τi_solve, 0.0, 0.0, u³_z * τi_solve]
-u⁰ = [u⁰_t, 0.0, 0.0, u³_z]
+x_tilt(τ) = TILT == 0 ? 0.0 : u¹_x * τ   # exact 0.0 head-on (no −0.0 on the axis)
+x⁰ = [u⁰_t * τi_solve, x_tilt(τi_solve), 0.0, u³_z * τi_solve]
+u⁰ = [u⁰_t, u¹_x, 0.0, u³_z]
 u0 = [sys.x => x⁰, sys.u => u⁰]
 
 prob = ODEProblem{false, SciMLBase.FullSpecialize}(
@@ -457,14 +472,14 @@ end
 bunch_dz(r) = BUNCH_NB == 0 ? 0.0 :
     ((1 + β) / 2) * ((r[1]^2 + r[2]^2) / (2Z) + BUNCH_L * atan(r[2], r[1]) / (2π) * λ / BUNCH_NB) -
     BUNCH_CHIRP * A0^2 * u_rel2(r) * sqrt(π / 2) * c * τ / (N0 + 1)
-xμ = [[u⁰_t * τi_solve, r..., u³_z * τi_solve + bunch_dz(r)] for r in R₀]
+xμ = [[u⁰_t * τi_solve, TILT == 0 ? r[1] : r[1] + u¹_x * τi_solve, r[2], u³_z * τi_solve + bunch_dz(r)] for r in R₀]   # through (r, 0) at t = 0
 
 set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
 
 function prob_func(prob, ctx)
     i = ctx.sim_id
     x_new = SVector{4}(xμ[i]...)
-    u_new = SVector{4}(u⁰_t, 0.0, 0.0, u³_z)
+    u_new = SVector{4}(u⁰_t, u¹_x, 0.0, u³_z)
     u0, p = set_x(prob, SVector{8}(x_new..., u_new...))
     return remake(prob; u0, p)
 end
@@ -483,7 +498,7 @@ const ABSTOL = isempty(ABSTOL_ENV) ? 1.0e-11 : parse(Float64, ABSTOL_ENV)
 # → ~6 MB of splines per trajectory, ~60 GB at N=10⁴ — fine on the cluster nodes, tight on 123 GB
 # boxes; lower EDM_INTERP_SAVEAT (or EDM_N) if host RAM binds. With the campaign convention
 # TSPAN_TAU·γ = 16 the count is γ-free (~24k at knots=16 → ~47 GB at N=10⁴).
-saveat = collect(τi_solve:((2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)):τf_solve)
+saveat = collect(τi_solve:((2π / ω) / DOPPLER_IN / parse(Float64, INTERP_SAVEAT)):τf_solve)
 # Solve the electrons `rng` of the ensemble. The batch's sim_id is offset into the global electron
 # index, so a batch boundary changes nothing about which electron gets which initial condition —
 # `EDM_ELECTRON_BATCH` only changes how many of them are resident at once (electron_batches.jl).
@@ -523,7 +538,7 @@ screen = ObserverScreen(
 # product. EDM_GAMMA_TRACE_OVERSAMPLE=0 disables the trace entirely.
 const GAMMA_TRACE_OS = parse(Int, get(ENV, "EDM_GAMMA_TRACE_OVERSAMPLE", "4"))
 GAMMA_TRACE_OS >= 0 || error("EDM_GAMMA_TRACE_OVERSAMPLE must be ≥ 0, got $GAMMA_TRACE_OS")
-knot_dt = (2π / ω) / (GAMMA * (1 + β)) / parse(Float64, INTERP_SAVEAT)
+knot_dt = (2π / ω) / DOPPLER_IN / parse(Float64, INTERP_SAVEAT)
 const GT = gamma_trace_acc(τi, τf, knot_dt, GAMMA_TRACE_OS)   # trajectory_products.jl, shared with thomson_scattering.jl
 # Emission-time profile (lab time, laser periods) over the solve span at the Doppler-scaled knot step; EDM_EMISSION_TIME=0 disables it.
 const EMISSION_TIME = get(ENV, "EDM_EMISSION_TIME", "1") == "1"
@@ -536,7 +551,7 @@ const AE_THETA_MAX = parse(Float64, get(ENV, "EDM_AE_THETA_MAX_MRAD", "10")) * 1
 const AE_N = parse(Int, get(ENV, "EDM_AE_N", "81"))
 const AE_OVERSAMPLE = parse(Int, get(ENV, "EDM_AE_OVERSAMPLE", "4"))
 const AE_θ = collect(range(-AE_THETA_MAX, AE_THETA_MAX, AE_N))
-const AE_DIRS = far_field_directions(AE_θ, AE_θ; zsign = SCREEN_ZSIGN)
+const AE_DIRS = far_field_directions(AE_θ, AE_θ; zsign = SCREEN_ZSIGN, tilt = TILT)   # centred on the beam direction
 const AE_SUM = Ref{Any}(nothing)
 
 # One batch: its trajectories plus the host-side products that used to be reduced over the whole
@@ -549,7 +564,7 @@ function solve_batch_products(rng)
     @info "trajectories solved" batch = (first(rng), last(rng)) t_trajectories = time() - t0 RELTOL ABSTOL DTMAX knots_per_period = INTERP_SAVEAT
     # Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
     # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
-    cov = check_window_coverage(trajs_b, screen)
+    cov = FIELD ? check_window_coverage(trajs_b, screen) : nothing
     γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, GT.τs, c, GAMMA, τf) : nothing
     et = EMISSION_TIME ? emission_time(trajs_b, ET.τs, c, 2π / ω) : nothing
     ae = ANGULAR_ENERGY ? angular_energy(trajs_b, AE_DIRS; c, ε₀ = ModelingToolkit.getdefault(world.ε₀), oversample = AE_OVERSAMPLE) : nothing
@@ -603,10 +618,11 @@ const FIELD_BUFFERS = Ref{Any}(nothing)
 const EMPTY_TRAJS = Ref{Any}(nothing)   # typed empty vector for the sharded finishing call
 const COVS = Any[]
 function accumulate_batch(bp, b)
-    push!(COVS, bp.cov)
+    FIELD && push!(COVS, bp.cov)
     bp.γ === nothing || fold_gamma!(GT, bp.γ, bp.n)
     bp.et === nothing || fold_emission!(ET, bp.et)
     bp.ae === nothing || (AE_SUM[] = AE_SUM[] === nothing ? bp.ae : AE_SUM[] .+ bp.ae)
+    FIELD || return nothing   # EDM_FIELD=0: the host products are the whole batch
     EMPTY_TRAJS[] = similar(bp.trajs, 0)
     FIELD_BUFFERS[] = if ndev > 1
         b == 1 && @info "sharding electrons across $ndev devices"
@@ -628,7 +644,7 @@ end
 
 # The one download: the multi-device reduce over the per-device buffers (an empty electron list —
 # every electron is already in them), or the plain permuted download of the single device's.
-finish_accumulation() = ndev > 1 ?
+finish_accumulation() = !FIELD ? nothing : ndev > 1 ?
     accumulate_field_sharded(
         EMPTY_TRAJS[], screen, accum_alg, gpu_backend;
         accum_kw..., coef_reuse = Val(COEF_REUSE), sample_chunks = SAMPLE_CHUNKS, mode = Val(FIELD_MODE), sync_per_electron = SYNC, timer = launch_timer,
@@ -638,21 +654,23 @@ finish_accumulation() = ndev > 1 ?
     finish_field(FIELD_BUFFERS[])
 
 const BATCH_STATS = Ref{Any}(nothing)
+function run_batches()
+    out, stats = run_electron_batches(BATCHES, solve_batch_products, accumulate_batch, finish_accumulation;
+        primed = BATCH1, primed_s = t_batch1, overlap = ELECTRON_BATCH_OVERLAP)
+    BATCH_STATS[] = stats
+    return out
+end
 t_field = @elapsed begin
-    fld, gpu_telem = with_gpu_sampler(gpu_backend, GPU_SAMPLE_DT;
-            devices = 1:ndev, tracefile = gputracefile) do
-        out, stats = run_electron_batches(BATCHES, solve_batch_products, accumulate_batch, finish_accumulation;
-            primed = BATCH1, primed_s = t_batch1, overlap = ELECTRON_BATCH_OVERLAP)
-        BATCH_STATS[] = stats
-        out
-    end
+    fld, gpu_telem = FIELD ?
+        with_gpu_sampler(run_batches, gpu_backend, GPU_SAMPLE_DT; devices = 1:ndev, tracefile = gputracefile) :
+        (run_batches(), nothing)
 end
 FIELD_BUFFERS[] = nothing   # release the device accumulators before the post-processing
 GC.gc()
 # [timing].trajectories is the SUM of the batch solves; trajectories_overlapped how much of it ran
 # behind the GPU. Window coverage is the exact fold of the per-batch checks (electron_batches.jl).
 t_trajectories = BATCH_STATS[].solve_s
-window_cov = merge_window_coverage(COVS)
+window_cov = FIELD ? merge_window_coverage(COVS) : nothing
 t_kernel = try maximum(sum, values(launch_times(launch_timer))) catch; NaN end
 @info "field accumulated" t_field t_kernel ndev n_batches = BATCH_STATS[].n_batches t_trajectories trajectories_overlapped = BATCH_STATS[].overlapped_s
 
@@ -662,20 +680,30 @@ if GAMMA_TRACE_OS > 0
     @info "γ(τ)/γ₀ trace serialized" n_τ = length(GT.τs) mean_drain = sum(GT.drain) / length(GT.drain)
 end
 EMISSION_TIME && write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP, w0 = w₀, Rdisc = Rmax)
-ANGULAR_ENERGY && write_angular_energy(OUTDIR, RUN_TAG, AE_SUM[], AE_θ, AE_θ; zsign = SCREEN_ZSIGN, oversample = AE_OVERSAMPLE, N)
+ANGULAR_ENERGY && write_angular_energy(OUTDIR, RUN_TAG, AE_SUM[], AE_θ, AE_θ; zsign = SCREEN_ZSIGN, oversample = AE_OVERSAMPLE, N, tilt = TILT)
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default
 # resolution — much larger than the 4-potential .jls; size the run dir accordingly.
 datafile = joinpath(OUTDIR, "field_$(Nx)_N$(N)_Ns$(N_samples)_spp$(samples_per_period)_$(RUN_TAG).jls")
-serialize(datafile, fld)
-println("serialized → $datafile")
+FIELD && (serialize(datafile, fld); println("serialized → $datafile"))
 
 # ── Harmonic maps + ∠F phase + power spectrum (reduce + serialize + plot) ──
 # Shared with the standalone recovery path in harmonic_products.jl, so the reduction and
 # rendering live in one place. Emits hmaps_<tag>.jls + the per-harmonic 2×3 E/B grids
 # (:jet, per-panel extrema — same style as the LPWA maps), the ∠F phase grids, and the power spectrum.
-if SKIP_POST
+if !FIELD
+    # No cube, no reducer work: the solver-side caches ARE the reduction. Stamp them in the marker —
+    # .reduced.partial under the overlap path (run_cell finalizes it after the no-op reduce), else .reduced.
+    for pre in ("gammatau_", "emissiontime_", "ic_", "angenergy_")
+        f = joinpath(OUTDIR, "$(pre)$(RUN_TAG).jls")
+        isfile(f) && record_reduction!(OUTDIR, RUN_TAG, f)
+    end
+    SKIP_POST || mv(joinpath(OUTDIR, "$(RUN_TAG).reduced.partial"), joinpath(OUTDIR, "$(RUN_TAG).reduced"); force = true)
+    @info "EDM_FIELD=0 — no field cube; trajectory products only"
+    hprod = nothing
+    plotfiles = String[]
+elseif SKIP_POST
     @info "EDM_SKIP_POSTPROCESS=1 — cube serialized; harmonic maps + screen observables deferred to the async post-process"
     hprod = nothing
     plotfiles = String[]
@@ -773,14 +801,17 @@ config["electron_batch"] = ELECTRON_BATCH
 ANGULAR_ENERGY && (config["ae_theta_max_mrad"] = AE_THETA_MAX * 1e3; config["ae_n"] = AE_N; config["ae_oversample"] = AE_OVERSAMPLE)
 # Explicit layout (EDM_POSITIONS): the raw list for replay, the name as the dashboard axis.
 haskey(ENV, "EDM_Z") && (config["screen_z_lambda"] = Z_LAMBDA)
+# Collision geometry / field switch: recorded only when set, so head-on field manifests are unchanged.
+haskey(ENV, "EDM_COLLISION_ANGLE") && (config["collision_angle"] = COLLISION_ANGLE)
+haskey(ENV, "EDM_FIELD") && (config["field"] = FIELD)
 isempty(POSITIONS_SPEC) || (config["positions"] = POSITIONS_SPEC == "square" ? "square:$(NELEC)" : String(POSITIONS_SPEC); config["layout"] = String(LAYOUT))
 
 outputs = Dict{String, Any}(
-    "datafile" => basename(datafile),
-    "gpu_trace" => basename(gputracefile),   # builder gates the util/power/VRAM panels on this key
     "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
 )
-if !SKIP_POST
+FIELD && (outputs["datafile"] = basename(datafile))
+FIELD && (outputs["gpu_trace"] = basename(gputracefile))   # builder gates the util/power/VRAM panels on this key
+if FIELD && !SKIP_POST
     outputs["harmonic_maps"] = basename(hprod.hmapsfile)   # reduced maps → resolve_hmaps finds them directly
     outputs["plots"] = basename.(plotfiles)
 end
@@ -814,8 +845,8 @@ setup = Dict{String, Any}(
 timing = Dict{String, Any}(
     "total" => time() - T_START,
     "trajectories" => t_trajectories,
-    "field" => t_field,
 )
+timing[FIELD ? "field" : "products"] = t_field   # EDM_FIELD=0: the batch loop is solves + host products only
 if ndev > 1   # the sharded reduce's own wall-clock (folds under the lock; final download + permute)
     timing["reduce_fold"] = REDUCE_STATS.fold_s
     timing["reduce_download"] = REDUCE_STATS.download_s
@@ -828,19 +859,19 @@ sharding = Dict{String, Any}("electrons" => ndev)
 # GPU telemetry → [gpu] (static device snapshot + power/util/VRAM stats over the field window).
 # The launch is one thread per (pixel, sample chunk), so that is the thread count it records.
 # `nothing` (no vendor extension / telemetry error) ⇒ the section is simply omitted.
-gpu = gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny * SAMPLE_CHUNKS, ndev, gpu_telem)
-record_kernel_timing!(timing, gpu, launch_timer; tracefile = kerneltimesfile)
+gpu = FIELD ? gpu_manifest_section(gpu_backend, GPU_BACKEND, Nx * Ny * SAMPLE_CHUNKS, ndev, gpu_telem) : nothing
+FIELD && record_kernel_timing!(timing, gpu, launch_timer; tracefile = kerneltimesfile)
 # The per-launch series is a run product like the gputrace: declared so the dashboard stages it
 # from [outputs] instead of globbing beside the manifest (absent ⇒ the timer recorded nothing).
 isfile(kerneltimesfile) && (outputs["kernel_times"] = basename(kerneltimesfile))
 # Compile-time resource report of the field kernel that ran → [gpu].kernel_registers/_shared_mem_bytes/
 # _occupancy/… (read back from the vendor's compiled-kernel cache; see gpu_telemetry.jl).
-record_kernel_resources!(gpu, gpu_backend)
+FIELD && record_kernel_resources!(gpu, gpu_backend)
 # the register cap the kernel was compiled under (EDM_MAXREGS A/B); absent = the compiler's own choice
 haskey(ENV, "EDM_MAXREGS") && gpu !== nothing && (gpu["kernel_maxregs"] = parse(Int, ENV["EDM_MAXREGS"]))
 # Window coverage → [window]; algorithmic FLOP accounting → [flops] (both host-side; omitted on error).
-window_sec = window_manifest_section(window_cov)
-flops_sec = flops_manifest_section(gpu_backend, accum_alg, FIELD_MODE, accum_kw, N, Nx, Ny, N_samples,
+window_sec = FIELD ? window_manifest_section(window_cov) : nothing
+flops_sec = !FIELD ? nothing : flops_manifest_section(gpu_backend, accum_alg, FIELD_MODE, accum_kw, N, Nx, Ny, N_samples,
     window_cov === nothing ? missing : window_cov.slots_executed, t_field, ndev)
 extra = Dict{String, Any}(
     "timing" => timing, "sharding" => sharding,

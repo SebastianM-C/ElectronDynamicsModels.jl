@@ -383,11 +383,12 @@ end
 # Incoherent angular energy (EDM_ANGULAR_ENERGY=1): the ensemble's dW/dΩ on a far-field direction grid,
 # summed in intensity over the electrons (ElectronDynamicsModels.angular_energy), with the 1/e half-widths
 # of Wei et al.'s divergence definition (half the full width at 1/e of the peak). θ in rad; W in
-# energy per steradian (a.u.). Cache angenergy_<tag>.jls + chip + derived sidecar.
-function write_angular_energy(outdir, run_tag, W, θx, θy; zsign, oversample, N, note = nothing)
+# energy per steradian (a.u.). Cache angenergy_<tag>.jls + chip + derived sidecar. `tilt` (rad): the grid is centred
+# on the beam direction, rotated by it about ŷ (far_field_directions), so θx, θy and the half-widths are about the beam.
+function write_angular_energy(outdir, run_tag, W, θx, θy; zsign, oversample, N, tilt = 0.0, note = nothing)
     wid = one_over_e_halfwidths(W, θx, θy)
     dΩ = (θx[end] - θx[1]) / (length(θx) - 1) * (θy[end] - θy[1]) / (length(θy) - 1)
-    ae = (; θx = collect(Float64, θx), θy = collect(Float64, θy), W, zsign, oversample, N,
+    ae = (; θx = collect(Float64, θx), θy = collect(Float64, θy), W, zsign, oversample, N, tilt = Float64(tilt),
         halfwidth_x = wid.x, halfwidth_y = wid.y, halfwidth_req = wid.r_eq, W_grid = sum(W) * dΩ, note)
     aefile = joinpath(outdir, "angenergy_$(run_tag).jls")
     serialize(aefile, ae)
@@ -409,8 +410,9 @@ function write_angular_energy_chip(outdir, run_tag, ae)
     lines!(ax2, ty, ae.W[I[1], :] ./ peak; label = "θy")
     hlines!(ax2, [exp(-1)]; color = :gray, linestyle = :dash)
     axislegend(ax2)
-    Label(fig[0, :], @sprintf("angular energy — %s  (1/e half-width θx %.3g, θy %.3g, r_eq %.3g mrad; N = %d)",
-        first(run_tag, 8), ae.halfwidth_x * mr, ae.halfwidth_y * mr, ae.halfwidth_req * mr, ae.N); fontsize = 15, font = :bold)
+    Label(fig[0, :], @sprintf("angular energy — %s  (1/e half-width θx %.3g, θy %.3g, r_eq %.3g mrad; N = %d%s)",
+        first(run_tag, 8), ae.halfwidth_x * mr, ae.halfwidth_y * mr, ae.halfwidth_req * mr, ae.N,
+        iszero(ae.tilt) ? "" : @sprintf("; grid about the beam, tilt %.4g°", rad2deg(ae.tilt))); fontsize = 15, font = :bold)
     png = joinpath(outdir, "angenergy_$(run_tag).png")
     save(png, fig)
     write_derived(outdir; kind = "angular_energy", label = @sprintf("angular energy: 1/e half-width %.3g mrad", ae.halfwidth_req * mr),
@@ -418,10 +420,11 @@ function write_angular_energy_chip(outdir, run_tag, ae)
         plot_params = Dict("halfwidth_x_mrad" => ae.halfwidth_x * mr, "halfwidth_y_mrad" => ae.halfwidth_y * mr,
             "halfwidth_req_mrad" => ae.halfwidth_req * mr, "theta_max_mrad" => maximum(abs, ae.θx) * mr,
             "n_theta" => length(ae.θx), "zsign" => ae.zsign, "oversample" => ae.oversample, "N" => ae.N,
-            "W_grid" => ae.W_grid, "peak" => peak),
+            "W_grid" => ae.W_grid, "peak" => peak, "tilt_deg" => rad2deg(ae.tilt)),
         description = "Radiated energy per solid angle summed INCOHERENTLY over the electrons (each electron's " *
             "far-field Jackson integral along its own worldline; no observer clock, no window), on a grid of " *
             "far-field directions on the screen side. Half-widths at 1/e of the peak: along θx and θy through " *
-            "the peak, and r_eq = √(area/π) of the region above 1/e. NaN = the 1/e level lies outside the grid.")
+            "the peak, and r_eq = √(area/π) of the region above 1/e. NaN = the 1/e level lies outside the grid. " *
+            "tilt_deg ≠ 0: the grid is centred on the tilted beam direction (angles are about the beam).")
     return png
 end
