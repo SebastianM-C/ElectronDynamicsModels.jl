@@ -56,6 +56,9 @@ using JET
     @testset "Observer window" begin
         include("observer_window.jl")
     end
+    @testset "Incoherent angular energy" begin
+        include("angular_energy.jl")
+    end
     @testset "GaussLaser" begin
         include("gauss_laser.jl")
     end

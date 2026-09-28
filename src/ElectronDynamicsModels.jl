@@ -40,6 +40,7 @@ const η = @SMatrix [
 ]
 
 export GaussLaser, LaguerreGaussLaser, a0_from_pulse_energy, a0_from_peak, lg_peak_factor
+export angular_energy, far_field_directions, one_over_e_halfwidths
 export ReferenceFrame, Worldline,
     UniformField, PlaneWave,
     ParticleDynamics,
@@ -74,6 +75,7 @@ include("sampling.jl")   # sunflower: the electron-disc layout of the production
 include("dynamics.jl")
 include("fields.jl")
 include("radiation.jl")
+include("angular_energy.jl")   # incoherent far-field dW/dΩ along each worldline (no observer clock)
 include("harmonics.jl")
 include("oam_analysis.jl")
 include("plotting.jl")
