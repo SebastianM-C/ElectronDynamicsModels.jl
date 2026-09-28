@@ -9,7 +9,7 @@
 # Harmonics: 1,2,3,4 as the old ladders set explicitly — the script's :narrow default (n₀ ± 1, 2n₀ ≈ 4γ²) would
 # trip the Nyquist guard at these γ. Rect reduction (EDM_APODIZATION=none), as the rest of the session.
 # Sizes: γ 1000 Ns 4297 → 30.9 GiB; γ 4000 Ns 1856 → 13.3 GiB (both fit the H100 PCIe).
-A8_ISA=${A8_ISA:-16}   # knots per Doppler period for the a₀ 8 pair (the old a₀ 5 LL cells used 32)
+A8_ISA=${A8_ISA:-32}   # knots per Doppler period for the a₀ 8 pair (Sebastian: 32, as the old a₀ 5 LL cells)
 CAMPAIGN=ll_pairs_v2
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
