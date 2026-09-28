@@ -1,6 +1,6 @@
 # campaigns/wei_feasibility.sh — feasibility probe for the high-γ, high-ℓ inverse configuration: γ = 391, a₀ = 0.27,
-# circular polarization (circular_plus first — Sebastian, to test whether that handedness matches the observed broadening;
-# the circular_minus pair is staged below as a one-line addition), waist w₀ = 25 λ (20 μm at 800 nm), two laser modes:
+# circular polarization, both handednesses (Sebastian: circular_plus to test whether it matches the observed broadening,
+# circular_minus as the comparison pair, its own named sweep), waist w₀ = 25 λ (20 μm at 800 nm), two laser modes:
 # Gaussian (LG p = 0, m = 0) and LG ℓ = 7 (p = 0, m = 7; intensity ring at w₀√(ℓ/2) = 1.87 w₀, inside the 3.25 w₀ disc).
 # Worldline-first: the purpose is the ODE side at this γ and mode (trajectory solve, γ(τ) trace) and the per-electron
 # radiated energy (emission-time + emission-end chips), before an angular-energy reduction script is written. The
