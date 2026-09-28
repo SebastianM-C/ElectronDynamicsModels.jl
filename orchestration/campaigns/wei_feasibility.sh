@@ -1,5 +1,6 @@
 # campaigns/wei_feasibility.sh — feasibility probe for the high-γ, high-ℓ inverse configuration: γ = 391, a₀ = 0.27,
-# circular polarization (circular_minus, the script default), waist w₀ = 25 λ (20 μm at 800 nm), two laser modes:
+# circular polarization (circular_plus first — Sebastian, to test whether that handedness matches the observed broadening;
+# the circular_minus pair is staged below as a one-line addition), waist w₀ = 25 λ (20 μm at 800 nm), two laser modes:
 # Gaussian (LG p = 0, m = 0) and LG ℓ = 7 (p = 0, m = 7; intensity ring at w₀√(ℓ/2) = 1.87 w₀, inside the 3.25 w₀ disc).
 # Worldline-first: the purpose is the ODE side at this γ and mode (trajectory solve, γ(τ) trace) and the per-electron
 # radiated energy (emission-time + emission-end chips), before an angular-energy reduction script is written. The
@@ -13,7 +14,7 @@ SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
 SWEEP_AXES=lg_m
 BASE=(
-  EDM_GAMMA=391 EDM_A0=0.27 EDM_POL=circular_minus
+  EDM_GAMMA=391 EDM_A0=0.27 EDM_POL=circular_plus
   EDM_W0_LAMBDA=25 EDM_LG_P=0
   EDM_TSPAN_TAU=0.04092071611253197 EDM_WINDOW=narrow EDM_FIELD_MODE=total
   EDM_N=500 EDM_NSUBSTEPS=1 EDM_INTERP_SAVEAT=64
@@ -28,4 +29,7 @@ BASE=(
 CELLS=(
   "gauss|EDM_LG_M=0"
   "lg7|EDM_LG_M=7"
+  # handedness comparison (uncomment both): own named sweep, since pol lives in [laser], not [config]
+  # "gauss_cm|EDM_LG_M=0 EDM_POL=circular_minus EDM_SWEEP=wei_feasibility_cm"
+  # "lg7_cm|EDM_LG_M=7 EDM_POL=circular_minus EDM_SWEEP=wei_feasibility_cm"
 )
