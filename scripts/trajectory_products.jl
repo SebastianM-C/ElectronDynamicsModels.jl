@@ -30,7 +30,7 @@ function gamma_trace(trajs, τs, c, γ0, τf)
                     γ < lo[k] && (lo[k] = γ)
                     γ > hi[k] && (hi[k] = γ)
                 end
-                drain[e] = 1 - tr(τf)[2][1] / (γ0 * c)
+                drain[e] = 1 - tr(τf)[2][1] / ((γ0 isa Number ? γ0 : γ0[e]) * c)   # γ0: shared or per electron
             end
         end
     end

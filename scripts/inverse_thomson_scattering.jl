@@ -454,6 +454,39 @@ end
 R₀ = isempty(POSITIONS_SPEC) ? Rmax * sunflower(NELEC, 2) : parse_positions(POSITIONS_SPEC)
 N = length(R₀)
 isempty(POSITIONS_SPEC) || @info "explicit electron layout (EDM_POSITIONS)" layout = LAYOUT N positions_w0 = (N <= 64 ? [r ./ w₀ for r in R₀] : "$(N) points")
+# EDM_MOMENTA: per-electron initial momentum, "θx,θy,δ;…" — direction angles (mrad) about the beam
+# axis (tilted by EDM_COLLISION_ANGLE like the shared one) and δ = γᵢ/γ₀ − 1 — one entry per electron
+# of the layout, in its order. EDM_BEAM names it (manifest/sweep axis; defaults to the raw list).
+# Every electron still passes its waist offset at t = 0 (straight-line back-propagation with its own
+# u), and gets its own solve span ±TSPAN_TAU·τ·max(1, γ₀/γᵢ) — covering the shared γ-trace/emission
+# grids — plus its own dtmax and knot step at its own Doppler rate, so its sample count stays γ-free.
+# Field-off only: the observer window and screen assume one γ along z.
+const MOMENTA_SPEC = strip(get(ENV, "EDM_MOMENTA", ""))
+const BEAM = strip(get(ENV, "EDM_BEAM", MOMENTA_SPEC))
+(!isempty(MOMENTA_SPEC) && FIELD) && error("EDM_MOMENTA needs EDM_FIELD=0: the field window assumes one γ along z")
+(!isempty(MOMENTA_SPEC) && BUNCH_NB != 0) && error("EDM_BUNCH_NB assumes one shared velocity; not with EDM_MOMENTA")
+function electron_kinematics(θx, θy, δ)
+    γ = GAMMA * (1 + δ)
+    γ > 1 || error("EDM_MOMENTA: δ = $δ gives γ = $γ ≤ 1")
+    n = normalize(SVector(tan(θx), tan(θy), 1.0))
+    s, co = sincos(TILT)
+    n = SVector(co * n[1] + s * n[3], n[2], -s * n[1] + co * n[3])
+    p = c * sqrt(γ^2 - 1)
+    stretch = max(1.0, GAMMA / γ)
+    knot = (2π / ω) / (γ * (1 + sqrt(1 - 1 / γ^2) * n[3])) / parse(Float64, INTERP_SAVEAT)
+    return (; γ, u = SVector(γ * c, p * n[1], p * n[2], p * n[3]), tspan = (τi * stretch, τf * stretch),
+        dtmax = τ / (2γ), saveat = (τi * stretch):knot:(τf * stretch))
+end
+const KIN = isempty(MOMENTA_SPEC) ? NamedTuple[] : let
+    rows = map(split(MOMENTA_SPEC, ';'; keepempty = false)) do e
+        v = [parse(Float64, strip(s)) for s in split(e, ',')]
+        length(v) == 3 || error("EDM_MOMENTA: expected `θx,θy,δ` triples separated by `;`, got \"$e\"")
+        v
+    end
+    length(rows) == N || error("EDM_MOMENTA lists $(length(rows)) electrons, the layout has $N")
+    [electron_kinematics(v[1] * 1.0e-3, v[2] * 1.0e-3, v[3]) for v in rows]
+end
+isempty(KIN) || @info "per-electron momenta (EDM_MOMENTA)" beam = (length(BEAM) <= 80 ? BEAM : "$(N) entries") γ_extrema = extrema(k.γ for k in KIN) span_stretch_max = maximum(k.tspan[2] for k in KIN) / τf
 # Optional phased-array prebunching (EDM_BUNCH_NB > 0): per-electron longitudinal start offset
 #     Δz = (1+β)/2 · [ ρ²/2Z  +  ℓ·θ/2π · λ/n_b ]  −  Δz_chirp.
 # ρ² term: array-focuses the backscatter at the on-axis pixel (cancels the transverse path
@@ -472,13 +505,19 @@ end
 bunch_dz(r) = BUNCH_NB == 0 ? 0.0 :
     ((1 + β) / 2) * ((r[1]^2 + r[2]^2) / (2Z) + BUNCH_L * atan(r[2], r[1]) / (2π) * λ / BUNCH_NB) -
     BUNCH_CHIRP * A0^2 * u_rel2(r) * sqrt(π / 2) * c * τ / (N0 + 1)
-xμ = [[u⁰_t * τi_solve, TILT == 0 ? r[1] : r[1] + u¹_x * τi_solve, r[2], u³_z * τi_solve + bunch_dz(r)] for r in R₀]   # through (r, 0) at t = 0
+xμ = isempty(KIN) ?
+    [[u⁰_t * τi_solve, TILT == 0 ? r[1] : r[1] + u¹_x * τi_solve, r[2], u³_z * τi_solve + bunch_dz(r)] for r in R₀] :   # through (r, 0) at t = 0
+    [(τ0 = k.tspan[1]; [k.u[1] * τ0, r[1] + k.u[2] * τ0, r[2] + k.u[3] * τ0, k.u[4] * τ0]) for (r, k) in zip(R₀, KIN)]
 
 set_x = setsym_oop(prob, [Initial(sys.x); Initial(sys.u)])
 
 function prob_func(prob, ctx)
     i = ctx.sim_id
     x_new = SVector{4}(xμ[i]...)
+    isempty(KIN) || return let k = KIN[i]
+        u0, p = set_x(prob, SVector{8}(x_new..., k.u...))
+        remake(prob; u0, p, tspan = k.tspan, saveat = k.saveat, dtmax = k.dtmax)   # per-electron solve kwargs
+    end
     u_new = SVector{4}(u⁰_t, u¹_x, 0.0, u³_z)
     u0, p = set_x(prob, SVector{8}(x_new..., u_new...))
     return remake(prob; u0, p)
@@ -507,13 +546,14 @@ solve_trajectories(rng) = trajectory_interpolants(
         EnsembleProblem(prob; safetycopy = false,
             prob_func = (p, ctx) -> prob_func(p, (; sim_id = first(rng) - 1 + ctx.sim_id))),
         Vern9(), EnsembleThreads();
-        reltol = RELTOL, abstol = ABSTOL, dtmax = DTMAX, trajectories = length(rng), saveat
+        reltol = RELTOL, abstol = ABSTOL, trajectories = length(rng),
+        (isempty(KIN) ? (; dtmax = DTMAX, saveat) : (;))...   # EDM_MOMENTA: set per electron in prob_func
     )
 )
 
 # As-run initial-conditions cache + chip (write_ic_products lives in trajectory_products.jl,
 # shared with the gammatau_backfill.jl path). Reads the initial conditions, not the solutions.
-write_ic_products(xμ, u⁰, [bunch_dz(r) for r in R₀], OUTDIR, RUN_TAG;
+write_ic_products(xμ, isempty(KIN) ? u⁰ : [collect(k.u) for k in KIN], [bunch_dz(r) for r in R₀], OUTDIR, RUN_TAG;
     γ0 = GAMMA, λ, w₀, nb = BUNCH_NB, l = BUNCH_L, chirp = BUNCH_CHIRP)
 
 # (Screen geometry + observer-window sizing and their guards live ABOVE the ensemble solve,
@@ -565,7 +605,7 @@ function solve_batch_products(rng)
     # Observer-window coverage (host, ms): warns before GPU time is spent if some pixel would miss
     # part of an electron's history; its executed-slot count feeds [flops] (see gpu_telemetry.jl).
     cov = FIELD ? check_window_coverage(trajs_b, screen) : nothing
-    γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, GT.τs, c, GAMMA, τf) : nothing
+    γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, GT.τs, c, isempty(KIN) ? GAMMA : [KIN[i].γ for i in rng], τf) : nothing
     et = EMISSION_TIME ? emission_time(trajs_b, ET.τs, c, 2π / ω) : nothing
     ae = ANGULAR_ENERGY ? angular_energy(trajs_b, AE_DIRS; c, ε₀ = ModelingToolkit.getdefault(world.ε₀), oversample = AE_OVERSAMPLE) : nothing
     return (; trajs = trajs_b, cov, γ, et, ae, n = length(rng))
@@ -805,6 +845,14 @@ haskey(ENV, "EDM_Z") && (config["screen_z_lambda"] = Z_LAMBDA)
 haskey(ENV, "EDM_COLLISION_ANGLE") && (config["collision_angle"] = COLLISION_ANGLE)
 haskey(ENV, "EDM_FIELD") && (config["field"] = FIELD)
 isempty(POSITIONS_SPEC) || (config["positions"] = POSITIONS_SPEC == "square" ? "square:$(NELEC)" : String(POSITIONS_SPEC); config["layout"] = String(LAYOUT))
+# Per-electron momenta (EDM_MOMENTA): the raw list for replay, the name as the dashboard axis, and the
+# as-drawn spread (rms direction angle per axis about the beam axis, rms δ, γ extremes).
+isempty(KIN) || let θ = [atan(k.u[2], k.u[4]) - TILT for k in KIN], ϑ = [atan(k.u[3], hypot(k.u[2], k.u[4])) for k in KIN], δ = [k.γ / GAMMA - 1 for k in KIN]
+    config["momenta"] = String(MOMENTA_SPEC); config["beam"] = String(BEAM)
+    config["beam_theta_rms_mrad"] = [sqrt(sum(abs2, θ) / N), sqrt(sum(abs2, ϑ) / N)] .* 1e3
+    config["beam_delta_rms"] = sqrt(sum(abs2, δ) / N)
+    config["beam_gamma_extrema"] = collect(extrema(k.γ for k in KIN))
+end
 
 outputs = Dict{String, Any}(
     "log" => "run_$(RUN_TAG).log",   # captured by the run wrapper; travels with the run
