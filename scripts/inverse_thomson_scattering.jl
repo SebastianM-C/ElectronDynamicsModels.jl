@@ -39,6 +39,9 @@
 # Laser mode: EDM_LG_P, EDM_LG_M (LG radial/azimuthal index, default 2/−2; 0/0 = Gaussian),
 # EDM_W0_LAMBDA (waist in λ, default 75; the electron disc Rmax = 3.25 w₀ follows it).
 # EDM_OMEGA_TAU (ω·τ of the e^(−(t/τ)²) field envelope, default 150).
+# EDM_ANGULAR_ENERGY=1: incoherent far-field dW/dΩ per electron (angular_energy), on a ±EDM_AE_THETA_MAX_MRAD
+# (default 10) grid of EDM_AE_N² directions (default 81) on the screen side, EDM_AE_OVERSAMPLE (default 4)
+# samples per knot interval → angenergy_<uuid>.jls + chip; independent of the field cube.
 # Backscatter-spectrum knobs: EDM_WINDOW (full|narrow), EDM_SCREEN_HW (screen half-width in w₀,
 # default 25), EDM_HARMONICS (comma-sep n; default ≈4γ² in :narrow). Guards (fail fast, BEFORE the
 # ensemble solve): requested harmonics must clear Nyquist (any mode); the :full window must reach
@@ -525,6 +528,16 @@ const GT = gamma_trace_acc(τi, τf, knot_dt, GAMMA_TRACE_OS)   # trajectory_pro
 # Emission-time profile (lab time, laser periods) over the solve span at the Doppler-scaled knot step; EDM_EMISSION_TIME=0 disables it.
 const EMISSION_TIME = get(ENV, "EDM_EMISSION_TIME", "1") == "1"
 const ET = emission_time_acc(τi_solve, τf_solve, EMISSION_TIME ? knot_dt : 0.0)
+# Incoherent angular energy (EDM_ANGULAR_ENERGY=1): dW/dΩ summed in intensity over the electrons on a
+# far-field direction grid on the screen side — the ensemble's γ-ray angular distribution, which the
+# coherent cube could only reach through a terabyte window. Batch sums fold exactly.
+const ANGULAR_ENERGY = get(ENV, "EDM_ANGULAR_ENERGY", "0") == "1"
+const AE_THETA_MAX = parse(Float64, get(ENV, "EDM_AE_THETA_MAX_MRAD", "10")) * 1e-3
+const AE_N = parse(Int, get(ENV, "EDM_AE_N", "81"))
+const AE_OVERSAMPLE = parse(Int, get(ENV, "EDM_AE_OVERSAMPLE", "4"))
+const AE_θ = collect(range(-AE_THETA_MAX, AE_THETA_MAX, AE_N))
+const AE_DIRS = far_field_directions(AE_θ, AE_θ; zsign = SCREEN_ZSIGN)
+const AE_SUM = Ref{Any}(nothing)
 
 # One batch: its trajectories plus the host-side products that used to be reduced over the whole
 # ensemble at once. Both reduce exactly across batches (γ: sums and elementwise extrema; window
@@ -539,7 +552,8 @@ function solve_batch_products(rng)
     cov = check_window_coverage(trajs_b, screen)
     γ = GAMMA_TRACE_OS > 0 ? gamma_trace(trajs_b, GT.τs, c, GAMMA, τf) : nothing
     et = EMISSION_TIME ? emission_time(trajs_b, ET.τs, c, 2π / ω) : nothing
-    return (; trajs = trajs_b, cov, γ, et, n = length(rng))
+    ae = ANGULAR_ENERGY ? angular_energy(trajs_b, AE_DIRS; c, ε₀ = ModelingToolkit.getdefault(world.ε₀), oversample = AE_OVERSAMPLE) : nothing
+    return (; trajs = trajs_b, cov, γ, et, ae, n = length(rng))
 end
 
 # Batch 1 is solved BEFORE the field-phase timer starts, so [timing].field keeps measuring the
@@ -592,6 +606,7 @@ function accumulate_batch(bp, b)
     push!(COVS, bp.cov)
     bp.γ === nothing || fold_gamma!(GT, bp.γ, bp.n)
     bp.et === nothing || fold_emission!(ET, bp.et)
+    bp.ae === nothing || (AE_SUM[] = AE_SUM[] === nothing ? bp.ae : AE_SUM[] .+ bp.ae)
     EMPTY_TRAJS[] = similar(bp.trajs, 0)
     FIELD_BUFFERS[] = if ndev > 1
         b == 1 && @info "sharding electrons across $ndev devices"
@@ -647,6 +662,7 @@ if GAMMA_TRACE_OS > 0
     @info "γ(τ)/γ₀ trace serialized" n_τ = length(GT.τs) mean_drain = sum(GT.drain) / length(GT.drain)
 end
 EMISSION_TIME && write_emission_time(OUTDIR, RUN_TAG, ET; T = 2π / ω, window_periods = NSAMPLES / SPP, w0 = w₀, Rdisc = Rmax)
+ANGULAR_ENERGY && write_angular_energy(OUTDIR, RUN_TAG, AE_SUM[], AE_θ, AE_θ; zsign = SCREEN_ZSIGN, oversample = AE_OVERSAMPLE, N)
 
 # Serialize the full split field so offline scripts can read this run directly.
 # NOTE: full-res this is 4 × (N_samples·3·Nx·Ny·8) bytes ≈ 4×30.7 GB at the default
@@ -753,6 +769,8 @@ config["sample_chunks"] = SAMPLE_CHUNKS
 # Electrons per solve→accumulate→discard batch (0 = the single-pass path). Bounds the host peak at
 # ≈ batch × spline size + one cube copy instead of N × spline size; see scripts/electron_batches.jl.
 config["electron_batch"] = ELECTRON_BATCH
+# Incoherent angular-energy grid (EDM_ANGULAR_ENERGY=1 only; absent otherwise, so existing manifests are unchanged).
+ANGULAR_ENERGY && (config["ae_theta_max_mrad"] = AE_THETA_MAX * 1e3; config["ae_n"] = AE_N; config["ae_oversample"] = AE_OVERSAMPLE)
 # Explicit layout (EDM_POSITIONS): the raw list for replay, the name as the dashboard axis.
 haskey(ENV, "EDM_Z") && (config["screen_z_lambda"] = Z_LAMBDA)
 isempty(POSITIONS_SPEC) || (config["positions"] = POSITIONS_SPEC == "square" ? "square:$(NELEC)" : String(POSITIONS_SPEC); config["layout"] = String(LAYOUT))

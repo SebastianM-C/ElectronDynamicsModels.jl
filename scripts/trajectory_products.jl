@@ -379,3 +379,49 @@ function drain_disk_product(dir, cl, ll, γ, a0)
     println("saved → $(basename(out))")
     return
 end
+
+# Incoherent angular energy (EDM_ANGULAR_ENERGY=1): the ensemble's dW/dΩ on a far-field direction grid,
+# summed in intensity over the electrons (ElectronDynamicsModels.angular_energy), with the 1/e half-widths
+# of Wei et al.'s divergence definition (half the full width at 1/e of the peak). θ in rad; W in
+# energy per steradian (a.u.). Cache angenergy_<tag>.jls + chip + derived sidecar.
+function write_angular_energy(outdir, run_tag, W, θx, θy; zsign, oversample, N, note = nothing)
+    wid = one_over_e_halfwidths(W, θx, θy)
+    dΩ = (θx[end] - θx[1]) / (length(θx) - 1) * (θy[end] - θy[1]) / (length(θy) - 1)
+    ae = (; θx = collect(Float64, θx), θy = collect(Float64, θy), W, zsign, oversample, N,
+        halfwidth_x = wid.x, halfwidth_y = wid.y, halfwidth_req = wid.r_eq, W_grid = sum(W) * dΩ, note)
+    aefile = joinpath(outdir, "angenergy_$(run_tag).jls")
+    serialize(aefile, ae)
+    write_angular_energy_chip(outdir, run_tag, ae)
+    return aefile
+end
+
+function write_angular_energy_chip(outdir, run_tag, ae)
+    mr = 1e3
+    tx, ty = ae.θx .* mr, ae.θy .* mr
+    peak, I = findmax(ae.W)
+    fig = Figure(size = (1150, 460))
+    ax = Axis(fig[1, 1]; title = "dW/dΩ (incoherent, normalized)", xlabel = "θx (mrad)", ylabel = "θy (mrad)", aspect = 1)
+    hm = heatmap!(ax, tx, ty, ae.W ./ peak; colormap = :inferno)
+    contour!(ax, tx, ty, ae.W ./ peak; levels = [exp(-1)], color = :white, linewidth = 1.5)
+    Colorbar(fig[1, 2], hm)
+    ax2 = Axis(fig[1, 3]; title = "cuts through the peak", xlabel = "θ (mrad)", ylabel = "dW/dΩ / peak")
+    lines!(ax2, tx, ae.W[:, I[2]] ./ peak; label = "θx")
+    lines!(ax2, ty, ae.W[I[1], :] ./ peak; label = "θy")
+    hlines!(ax2, [exp(-1)]; color = :gray, linestyle = :dash)
+    axislegend(ax2)
+    Label(fig[0, :], @sprintf("angular energy — %s  (1/e half-width θx %.3g, θy %.3g, r_eq %.3g mrad; N = %d)",
+        first(run_tag, 8), ae.halfwidth_x * mr, ae.halfwidth_y * mr, ae.halfwidth_req * mr, ae.N); fontsize = 15, font = :bold)
+    png = joinpath(outdir, "angenergy_$(run_tag).png")
+    save(png, fig)
+    write_derived(outdir; kind = "angular_energy", label = @sprintf("angular energy: 1/e half-width %.3g mrad", ae.halfwidth_req * mr),
+        run_id = run_tag, plot = basename(png), source = "angenergy_$(run_tag).jls",
+        plot_params = Dict("halfwidth_x_mrad" => ae.halfwidth_x * mr, "halfwidth_y_mrad" => ae.halfwidth_y * mr,
+            "halfwidth_req_mrad" => ae.halfwidth_req * mr, "theta_max_mrad" => maximum(abs, ae.θx) * mr,
+            "n_theta" => length(ae.θx), "zsign" => ae.zsign, "oversample" => ae.oversample, "N" => ae.N,
+            "W_grid" => ae.W_grid, "peak" => peak),
+        description = "Radiated energy per solid angle summed INCOHERENTLY over the electrons (each electron's " *
+            "far-field Jackson integral along its own worldline; no observer clock, no window), on a grid of " *
+            "far-field directions on the screen side. Half-widths at 1/e of the peak: along θx and θy through " *
+            "the peak, and r_eq = √(area/π) of the region above 1/e. NaN = the 1/e level lies outside the grid.")
+    return png
+end
