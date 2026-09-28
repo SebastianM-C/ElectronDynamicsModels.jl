@@ -14,8 +14,9 @@
 # coverage check (host, before any GPU time) and the window-budget chip confirm or refute it per cell.
 #
 # Sizes (48 B·Ns·401²): Ns 3332 → 24.0 GiB (a₀ ≤ 0.3), 3844 → 27.6 (a₀ 1), 4868 → 35.0 (a₀ 2, NVL/PCIe only),
-# 13060 → 93.9 GiB (a₀ 5: refused on every single card here ⇒ 2 × NVL sharded, or SPP 512 without 3n₀).
+# 13060 → 93.9 GiB (a₀ 5: refused on every single card here ⇒ 2 × NVL sharded, or one B200).
 # EDM_ELECTRON_BATCH=4000 keeps the trajectory splines at ~19 GiB of host RAM instead of ~76 (exact reduction).
+A5_DEVICES=${A5_DEVICES:-}   # a5 placement: 0,1 = shard over both cards (2 × NVL); empty = one big card (B200)
 CAMPAIGN=inverse_a0_ladder_g5
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
@@ -36,7 +37,6 @@ CELLS=(
   "a3em1|EDM_A0=0.3 EDM_HARMONICS=89.8989,93.7701,97.9898,179.7978,195.9796,269.6967,293.9694"
   "a1|EDM_A0=1 EDM_WINDOW_LEAD=0.75 EDM_WINDOW_TAIL=0.75 EDM_HARMONICS=48.9949,65.3265,97.9898,146.9847,195.9796,293.9694"
   "a2|EDM_A0=2 EDM_WINDOW_LEAD=1.25 EDM_WINDOW_TAIL=1.25 EDM_HARMONICS=19.598,32.6633,39.1959,58.7939,97.9898,195.9796,293.9694"
-  # conditional (Sebastian's call; needs 2 devices — see the header):
-  # "a5|EDM_A0=5 EDM_WINDOW_LEAD=5.25 EDM_WINDOW_TAIL=5.25 EDM_HARMONICS=3.7688,7.2585,7.5377,11.3065,97.9898,195.9796,293.9694"   # 2 devices
-  # "a5|EDM_A0=5 EDM_SPP=512 EDM_WINDOW_LEAD=5.25 EDM_WINDOW_TAIL=5.25 EDM_HARMONICS=3.7688,7.2585,7.5377,11.3065,97.9898,195.9796"   # one NVL, 3n₀ > Nyquist dropped
+  # a₀ = 5 at SPP 1024 (Sebastian, 2026-09-28): 93.9 GiB ⇒ sharded over 2 devices (A5_DEVICES=0,1) or one ≥ 105 GiB card
+  "a5|EDM_A0=5 EDM_WINDOW_LEAD=5.25 EDM_WINDOW_TAIL=5.25 EDM_HARMONICS=3.7688,7.2585,7.5377,11.3065,97.9898,195.9796,293.9694${A5_DEVICES:+ CUDA_VISIBLE_DEVICES=$A5_DEVICES}"
 )
