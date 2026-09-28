@@ -22,6 +22,11 @@
 # shared with ll_probe_rerun) — cubes bypass the container disk; drain.sh empties the volume
 # after the campaign. Bins: plateau ladder + 4γ² edge triplet + mid-gap + first-harmonic
 # triplet (all ≤ Nyquist 85000 ω₁); the kept cube holds the full spectrum regardless.
+# Screen variant (Q11): full = 361² at ±0.00619 w₀ (cube 155.4 GiB: 1×B200 VRAM ok, but 164 GiB solve + 233 GiB
+# reduce exceed its 170 GB RAM ⇒ 2×B200); nx281 = 281² at ±0.00481 w₀, the same pixel pitch (2 px per 2ω_bs grain)
+# over a 70×70-grain field instead of 90×90 (Ns 26647, cube 94.1 GiB, 103 GiB solve, 141 GiB reduce: fits 1×B200).
+LLS_SCREEN=${LLS_SCREEN:-full}
+case $LLS_SCREEN in full) _SCR="EDM_NX=361 EDM_SCREEN_HW=0.00619";; nx281) _SCR="EDM_NX=281 EDM_SCREEN_HW=0.00481";; *) echo "LLS_SCREEN=full|nx281" >&2; return 1 2>/dev/null || exit 1;; esac
 CAMPAIGN=ll_probe_s_v2
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
@@ -29,7 +34,7 @@ SWEEP_AXES=N,a0      # as the ll_probe_s declaration
 BASE=(
   EDM_GAMMA=100 EDM_TSPAN_TAU=0.16 EDM_WINDOW=narrow EDM_FIELD_MODE=total
   EDM_N=2000 EDM_NSUBSTEPS=1 EDM_INTERP_SAVEAT=64
-  EDM_SPP=170000 EDM_NX=361 EDM_SCREEN_HW=0.00619
+  EDM_SPP=170000 $_SCR
   EDM_WINDOW_LEAD=0.002 EDM_WINDOW_TAIL=0.002
   EDM_ACCUM_ALG=newton EDM_NEWTON_ITERS=2
   EDM_HARMONICS=8000,16000,24000,32000,39898,39998,40098,60000,79896,79996,80096

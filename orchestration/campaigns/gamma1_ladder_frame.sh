@@ -3,10 +3,10 @@
 # transmission-side screen (EDM_SCREEN_ZSIGN=−1 ↔ the ladder's +Z screen, up to the gamma1_crosscheck mirror).
 # The partner is emission_ladder_numeric a3em1 (5c87d965). Rect reduction inline (the inverse script honours
 # EDM_APODIZATION=none; the ladder needed its REDUCE_HOOK for that), so the ladder's sentinel checks don't run.
-# Split mode (E, B, E_far, B_far): cube 87.7 GiB ⇒ refused by every single card's 90 % guard (NVL 84 GiB);
-# on 2 × H100 NVL the solver shards electrons (43.9 GiB per device). Total mode (E and B, 43.8 GiB) fits one
-# card and still gives the E + B check. The ladder partner ran RK4; this cell runs Newton.
-# FIELD_MODE picks the cell: total (one card) | split (2 × NVL, sharded) — Sebastian's Q7.
+# Split mode (E, B, E_far, B_far): cube 87.7 GiB ⇒ refused by every local card's 90 % guard (NVL 84 GiB), and
+# electron sharding does not help (each device holds a full buffer set). Total mode (E and B, 43.8 GiB) fits one
+# card and still gives the E + B check (Sebastian: total). The ladder partner ran RK4; this cell runs Newton.
+# FIELD_MODE picks the cell: total (one card, chosen) | split (needs a ≥ 98 GiB card).
 FIELD_MODE=${FIELD_MODE:-total}
 CAMPAIGN=gamma1_ladder_frame
 SCRIPT=scripts/inverse_thomson_scattering.jl

@@ -2,13 +2,14 @@
 # rerun set), at the old ladder framing: N 2000, 401², SPP 2048, tspan 16/γ, Newton 2 iterations, knots 16 per
 # Doppler period, total mode, narrow window with 0.3 λ margins, cubes kept.
 #   (a₀ 2, γ 1000, ±5 w₀) — ll_gamma_ladder g1000;  (a₀ 2, γ 4000, ±1 w₀) — ll_gamma_ladder g4000;
-#   (a₀ 8, γ 4000, ±1 w₀) — new corner (a₀²γ = 2.6e5).
+#   (a₀ 8, γ 4000, ±1 w₀) — new corner (a₀²γ = 2.6e5; χ ≈ 0.19, past the χ ≲ 0.1 classical-LL range).
 # The harmonic maps are BEAM PATTERNS, not line maps: 4γ² = 4e6 / 6.4e7 ω₁ is far above Nyquist (1024 ω₁), so the
 # extracted bins are the laser-harmonic content of the aliased signal (h1…h4, as the old ladders). The physics
 # products are the γ(τ)/γ₀ drain traces (pair chip) and the per-electron emission-time/-end chips.
 # Harmonics: 1,2,3,4 as the old ladders set explicitly — the script's :narrow default (n₀ ± 1, 2n₀ ≈ 4γ²) would
 # trip the Nyquist guard at these γ. Rect reduction (EDM_APODIZATION=none), as the rest of the session.
 # Sizes: γ 1000 Ns 4297 → 30.9 GiB; γ 4000 Ns 1856 → 13.3 GiB (both fit the H100 PCIe).
+A8_ISA=${A8_ISA:-16}   # knots per Doppler period for the a₀ 8 pair (the old a₀ 5 LL cells used 32)
 CAMPAIGN=ll_pairs_v2
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
@@ -25,7 +26,7 @@ BASE=(
 )
 G1000="EDM_A0=2 EDM_GAMMA=1000 EDM_TSPAN_TAU=0.016 EDM_SCREEN_HW=5"
 G4000A2="EDM_A0=2 EDM_GAMMA=4000 EDM_TSPAN_TAU=0.004 EDM_SCREEN_HW=1"
-G4000A8="EDM_A0=8 EDM_GAMMA=4000 EDM_TSPAN_TAU=0.004 EDM_SCREEN_HW=1"
+G4000A8="EDM_A0=8 EDM_GAMMA=4000 EDM_TSPAN_TAU=0.004 EDM_SCREEN_HW=1 EDM_INTERP_SAVEAT=$A8_ISA"
 CELLS=(
   "g1000_a2_cl|$G1000"
   "g1000_a2_ll|$G1000 EDM_SYSTEM=ll"
