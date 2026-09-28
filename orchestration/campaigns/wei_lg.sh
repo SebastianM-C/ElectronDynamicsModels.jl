@@ -4,12 +4,12 @@
 # a0_from_peak(0.2649; mode = (p = 0, m = 7)) = 0.2649/1945.48 (EDM's a0 scales the underlying Gaussian E₀). Electrons
 # 200 MeV (γ 392.39). Pulse 25 fs FWHM intensity ASSUMED from the driver ⇒ ωτ = 50. Head-on here (theirs is 135°);
 # electron spread and divergence not modelled. LP and CP (their Fig. 4c,d). Worldline-first, token 33² screen.
-# Harmonics: n₀ = (1+β)/(1−β) = 615878 and n_a = n₀/(1 + a²/2) LP, n₀/(1 + a²) CP, inside Nyquist 650000 at SPP 1.3e6.
+# Harmonics: n₀ = (1+β)/(1−β) = 615878 and n_a = n₀/(1 + a²/2) for LP and CP (EDM's same-intensity a₀), inside Nyquist 650000 at SPP 1.3e6.
 # Narrow Ns ≈ 9800 ⇒ cube 0.48 GiB.
 CAMPAIGN=wei_lg
 SCRIPT=scripts/inverse_thomson_scattering.jl
 KEEP_CUBE=1
-SWEEP_AXES=lg_m
+SWEEP_AXES=polarization
 BASE=(
   EDM_GAMMA=392.39023671183674 EDM_A0=1.3616767107703034e-4 EDM_POL=linear
   EDM_W0_LAMBDA=11.358602781278035 EDM_LG_P=0 EDM_OMEGA_TAU=50
@@ -24,6 +24,6 @@ BASE=(
 )
 CELLS=(
   "lp_lg7|EDM_LG_M=7 EDM_HARMONICS=595000,615878"
-  # CP: own named sweep (pol lives in [laser], not [config])
-  "cp_lg7|EDM_LG_M=7 EDM_POL=circular_plus EDM_SWEEP=wei_lg_cp EDM_HARMONICS=575491,615878"
+  # CP: polarization is a sweep axis (the builder reads [laser].pol)
+  "cp_lg7|EDM_LG_M=7 EDM_POL=circular_plus EDM_HARMONICS=595000,615878"
 )

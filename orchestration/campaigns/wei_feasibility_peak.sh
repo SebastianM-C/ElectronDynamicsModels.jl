@@ -5,8 +5,9 @@
 # ring 1945× the Gaussian) stay in wei_feasibility. Everything else as wei_feasibility.
 . "$(dirname "${BASH_SOURCE[0]}")/wei_feasibility.sh"
 CAMPAIGN=wei_feasibility_peak
+SWEEP_AXES=polarization   # both cells are m = 7
 BASE+=(EDM_A0=1.3878292694031262e-4)
 CELLS=(
   "lg7|EDM_LG_M=7"
-  "lg7_cm|EDM_LG_M=7 EDM_POL=circular_minus EDM_SWEEP=wei_feasibility_peak_cm"
+  "lg7_cm|EDM_LG_M=7 EDM_POL=circular_minus"
 )
