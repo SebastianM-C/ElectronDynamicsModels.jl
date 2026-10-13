@@ -1,0 +1,32 @@
+# RayMakie/Hikari render env for the Thomson-scattering animation experiment.
+# RENDER-ONLY: Hikari pins StructArrays 0.6 while SciMLBase 3 (via
+# RecursiveArrayTools 4) needs StructArrays 0.7, so the physics stack cannot
+# live in the same env. precompute_frames.jl runs in ../ (the animation env)
+# and dumps per-frame payloads; thomson_ray.jl renders them from here.
+# [sources] pins the same dev branches as ../../../RayDemo's known-good env.
+[deps]
+ComputePipeline = "95dc2771-c249-4cd0-9c9f-1f3b4330693c"
+FileIO = "5789e2e9-d7fb-5bc7-8068-2c6fae9b9549"
+GPUSelect = "203851ad-5791-4cf9-9fcc-5933b5611f42"
+GeometryBasics = "5c1252a2-5f33-56bf-86c9-59e7332b4326"
+Hikari = "afc56b53-c9a9-482a-a956-d1d800e05558"
+Lava = "3a680b1f-cb25-4bee-9cf7-bc880b76dc8c"
+Makie = "ee78f7c6-11fb-53f2-987a-cfe4a2b5a57a"
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+RayMakie = "70852e3a-d594-4041-8350-783a02753e02"
+Raycore = "afc56b53-c9a9-482a-a956-d1d800e05559"
+Serialization = "9e88b42a-f829-5b0c-bbe9-9e923198166b"
+
+[sources]
+GPUSelect = {url = "https://github.com/SimonDanisch/GPUSelect.jl", rev = "main"}
+Lava = {url = "https://github.com/SimonDanisch/Lava.jl", rev = "sd/nvidia"}
+Hikari = {url = "https://github.com/JuliaGraphics/Hikari.jl", rev = "sd/vk-hw-accel"}
+Raycore = {url = "https://github.com/JuliaGeometry/Raycore.jl", rev = "master"}
+Makie = {url = "https://github.com/MakieOrg/Makie.jl.git", rev = "sd/lava", subdir = "Makie"}
+RayMakie = {url = "https://github.com/MakieOrg/Makie.jl.git", rev = "sd/lava", subdir = "RayMakie"}
+ComputePipeline = {url = "https://github.com/MakieOrg/Makie.jl.git", rev = "sd/lava", subdir = "ComputePipeline"}
+
+[compat]
+# 0.5.11 mis-parses binary-PLY face indices (see RayDemo/Project.toml); same
+# pin as the working RayDemo env
+GeometryBasics = "=0.5.10"
