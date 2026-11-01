@@ -367,6 +367,19 @@ end
     @test [d.name for d in decls] == ["ll_gamma_ladder", "n_iters"]
     @test decls[1].design == "oat" && decls[1].label == "γ ladder" && decls[1].hub === nothing
     @test decls[2].design == "grid" && decls[2].label === nothing
+    # the benchmark flag is written only when set, and read back as a Bool either way
+    @test !haskey(TOML.parsefile(p)["sweep"], "benchmark") && decls[1].benchmark === false
+    pb = write_sweep_declaration(dir; name = "cube-bench", script = "radiation_multigpu.jl",
+        axes = ["Nx", "device_count"], benchmark = true, scaling = "weak")
+    @test TOML.parsefile(pb)["sweep"]["benchmark"] === true
+    @test TOML.parsefile(pb)["sweep"]["scaling"] == "weak"
+    let d = only(filter(d -> d.name == "cube-bench", read_sweep_declarations(dir)))
+        @test d.benchmark === true && d.scaling == "weak"
+    end
+    @test decls[1].scaling === nothing
+    @test_throws ErrorException write_sweep_declaration(dir; name = "bad", script = "x.jl",
+        axes = String[], scaling = "linear")
+    rm(pb)
 
     # idempotent: rewriting a name replaces, never accumulates
     write_sweep_declaration(dir; name = "n_iters",
