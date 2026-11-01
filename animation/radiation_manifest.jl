@@ -137,6 +137,34 @@ function _merge_stats(ds::Vector)
     return out
 end
 
+# Per-GPU sampler traces (header "# epoch_s\tdevice\t…", one row per sample, device = 1 in
+# every part since each process saw one GPU) → one trace with device = 1…n, time-sorted.
+# Differing headers (counter sets) fall back to the first part's trace alone.
+function _merge_gpu_traces(outdir, run_tag, files)
+    paths = [joinpath(outdir, f) for f in files if isfile(joinpath(outdir, f))]
+    isempty(paths) && return first(files)
+    heads = [readline(p) for p in paths]
+    allequal(heads) || (@warn "GPU traces have different columns — keeping the first only" files; return basename(first(paths)))
+    cols = split(lstrip(first(heads), ['#', ' ']), '\t')
+    di = findfirst(==("device"), cols)
+    rows = Tuple{Float64, String}[]
+    for (k, p) in enumerate(paths), ln in Iterators.drop(eachline(p), 1)
+        isempty(ln) && continue
+        f = split(ln, '\t')
+        di === nothing || (f[di] = string(k))
+        push!(rows, (something(tryparse(Float64, f[1]), Inf), join(f, '\t')))
+    end
+    sort!(rows; by = first)
+    out = joinpath(outdir, "gputrace_$(run_tag).tsv")
+    open(out * ".tmp", "w") do io
+        println(io, first(heads))
+        foreach(r -> println(io, r[2]), rows)
+    end
+    mv(out * ".tmp", out; force = true)
+    foreach(p -> p == out || rm(p), paths)
+    return basename(out)
+end
+
 """
     merge_radiation_parts(outdir, run_tag, n) -> path
 
@@ -171,6 +199,11 @@ function merge_radiation_parts(outdir, run_tag, n)
     # a single shared file (the batch layout manifest) stays a plain string
     for (k, v) in outs
         length(v) == 1 && (outs[k] = only(v))
+    end
+    # The dashboard reads [outputs].gpu_trace as ONE file: fold the per-GPU traces into
+    # gputrace_<tag>.tsv, as a multi-device solver run writes it.
+    if get(outs, "gpu_trace", nothing) isa AbstractVector
+        outs["gpu_trace"] = _merge_gpu_traces(outdir, run_tag, outs["gpu_trace"])
     end
     m["outputs"] = outs
     m["parts"] = Dict{String, Any}("gpu$(k - 1)" => Dict{String, Any}(
