@@ -16,6 +16,12 @@
 #   EDM_RAD_FRAME_STRIDE  subsample the frame clock (test strips only, default 1)
 #   EDM_BENCH         "1" → time the worst-case mid slice twice (2nd run excludes
 #                     kernel compile), print the full-cube estimate, exit
+#   EDM_ANIM_GEOMETRY direct (default, setup.jl) | inverse (setup_inverse.jl, whose own
+#                     EDM_ANIM_* knobs pick γ, a0, mode, frames)
+#   EDM_RAD_BATCHES   "a:b" — compute only batches a…b of the EDM_RAD_BATCH layout (one
+#                     process per GPU, e.g. CUDA_VISIBLE_DEVICES=k with disjoint ranges into
+#                     the same EDM_OUTDIR/EDM_RUN_TAG). Sealed batch files are skipped, so a
+#                     re-run (after a crash or an eviction) resumes where it stopped.
 #
 # Output: animation/radiation_cube.jls with a NamedTuple
 #   (; rad, slice_zs, txs, tys, frame_times)
@@ -25,7 +31,10 @@
 #
 # Run: julia +release --startup=no --project=animation animation/precompute_radiation.jl
 
-include(joinpath(@__DIR__, "setup.jl"))
+const GEOMETRY = lowercase(get(ENV, "EDM_ANIM_GEOMETRY", "direct"))
+GEOMETRY in ("direct", "inverse") ||
+    error("EDM_ANIM_GEOMETRY must be direct or inverse, got $(repr(GEOMETRY))")
+include(joinpath(@__DIR__, GEOMETRY == "inverse" ? "setup_inverse.jl" : "setup.jl"))
 
 using Serialization
 using Printf
@@ -124,11 +133,23 @@ mkpath(OUTDIR)
 if BATCH > 0
     base = replace(outfile, r"\.jls$" => "")
     nb = cld(NSLICES, BATCH)
-    serialize("$(base)_manifest.jls",
-        (; slice_zs, txs, tys, frame_times, NSLICES, NT, batch = BATCH, n_batches = nb))
+    batch_file(bi) = @sprintf("%s_batch%03d.jls", base, bi)
+    mine = let s = get(ENV, "EDM_RAD_BATCHES", "")
+        isempty(s) ? (1:nb) : (let (a, b) = parse.(Int, split(s, ':')); a:min(b, nb) end)
+    end
+    # Several processes may share this output: each writes the (identical) manifest
+    # through its own tmp name and an atomic rename.
+    mf = "$(base)_manifest.jls"
+    serialize("$mf.$(getpid()).tmp",
+        (; slice_zs, txs, tys, frame_times, NSLICES, NT, batch = BATCH, n_batches = nb,
+            geometry = GEOMETRY))
+    mv("$mf.$(getpid()).tmp", mf; force = true)
+    todo = filter(bi -> !isfile(batch_file(bi)), mine)
+    length(todo) < length(mine) &&
+        @info "resuming: $(length(mine) - length(todo)) of $(length(mine)) batches already sealed"
     buf = Array{Float32}(undef, n_frames, BATCH, NT, NT)
     buf_s = Array{Float32}(undef, n_frames, BATCH, NT, NT)
-    t_total = @elapsed for bi in 1:nb
+    t_total = @elapsed for bi in todo
         lo, hi = (bi - 1) * BATCH + 1, min(bi * BATCH, NSLICES)
         for (k, si) in enumerate(lo:hi)
             t_slice = @elapsed begin
@@ -139,15 +160,16 @@ if BATCH > 0
             @info @sprintf("slice %3d/%d (X = %+6.1fλ)  %.1fs", si, NSLICES, slice_zs[si] / λ, t_slice)
         end
         n = hi - lo + 1
-        bf = @sprintf("%s_batch%03d.jls", base, bi)
+        bf = batch_file(bi)
         serialize(bf * ".tmp", (; rad = buf[:, 1:n, :, :], rad_s = buf_s[:, 1:n, :, :],
             slices = lo:hi))
         mv(bf * ".tmp", bf; force = true)
         @info "batch $bi/$nb sealed → $bf"
     end
-    touch("$(base)_done")
-    @info @sprintf("radiation slices done in %.1f min → %s_batch*.jls (%d batches)",
-        t_total / 60, base, nb)
+    # _done means the WHOLE cube is sealed, whichever process finishes last
+    all(bi -> isfile(batch_file(bi)), 1:nb) && touch("$(base)_done")
+    @info @sprintf("radiation batches %s done in %.1f min → %s_batch*.jls (%d batches in the cube)",
+        string(mine), t_total / 60, base, nb)
 else
     t_total = @elapsed for (si, zsl) in enumerate(slice_zs)
         t_slice = @elapsed begin
