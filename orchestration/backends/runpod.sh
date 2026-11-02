@@ -72,7 +72,7 @@ CM="$HOME/.ssh/cm-runpod-$(basename "$STATE").sock"   # per-STATE: concurrent dr
 # high public port, and some networks block outbound TCP in that range (2026-09-04: the driver
 # box could not reach 11000–50000 anywhere, while a VPS could) — every ssh/rsync then rides the
 # jump; the pod-side drainer/depot cache are unaffected (they originate on the pod).
-SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600${RUNPOD_SSH_KEY:+ -i $RUNPOD_SSH_KEY -o IdentitiesOnly=yes}${RUNPOD_SSH_JUMP:+ -o ProxyJump=$RUNPOD_SSH_JUMP}"
+SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600${RUNPOD_SSH_KEY:+ -i $RUNPOD_SSH_KEY -o IdentitiesOnly=yes}${RUNPOD_SSH_JUMP:+ -o ProxyJump=$RUNPOD_SSH_JUMP}"
 SSH_WAIT_TRIES="${RUNPOD_SSH_WAIT_TRIES:-40}"   # readiness polls (×~30 s) before declaring sshd dead
 
 rp()      { curl -fsS -H "Authorization: Bearer $TOK" -H "Content-Type: application/json" "$@"; }

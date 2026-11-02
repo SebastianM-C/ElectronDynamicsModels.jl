@@ -64,7 +64,7 @@ mkdir -p "$(dirname "$STATE")"
 POLL="${VERDA_POLL_SEC:-120}"; MAXTRIES="${VERDA_MAX_TRIES:-240}"
 PUBKEY="$(cat "${VERDA_SSH_PUBKEY:-$HOME/.config/verda/ssh_pubkey}" 2>/dev/null || ssh-add -L 2>/dev/null | head -1)"
 CM="$HOME/.ssh/cm-verda-$(basename "$STATE").sock"   # per-STATE: concurrent drivers must not remux onto one socket
-SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600${VERDA_SSH_KEY:+ -i $VERDA_SSH_KEY -o IdentitiesOnly=yes}"
+SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600${VERDA_SSH_KEY:+ -i $VERDA_SSH_KEY -o IdentitiesOnly=yes}"
 SSH_WAIT_TRIES="${VERDA_SSH_WAIT_TRIES:-40}"
 
 log()     { echo "[$(date -u +%FT%TZ)] $*"; }
