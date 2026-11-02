@@ -83,10 +83,11 @@ end
 # radattempt_<tag>_<k>.toml (not run_*, so nothing indexes it as a run of its own), the new
 # one lists every earlier attempt in [outputs].previous_attempts and carries whole-run totals
 # ([timing].attempt, slices_all_attempts, compute_all_attempts).
+# An untagged local run ("local") is not a resume of the previous one: it just replaces it.
 function _install_manifest(outdir, tag, m)
     path = joinpath(outdir, "run_$(tag).toml")
     attempt(k) = joinpath(outdir, "radattempt_$(tag)_$(k).toml")
-    if isfile(path)
+    if isfile(path) && tag != "local"
         k = 1
         while isfile(attempt(k)); k += 1; end
         mv(path, attempt(k))
@@ -109,8 +110,9 @@ function _install_manifest(outdir, tag, m)
 end
 
 # Merge rule for several GPUs' [timing]/[gpu] sections: vectors concatenate (per device),
-# counts and GPU-seconds add, *_min → min,
-# *_mean → mean, everything else (wall times, *_max, *_peak) → max. Non-numeric values and
+# counts (slices, *samples, batches_resumed) and compute seconds add, *_min → min,
+# *_mean → unweighted mean over the parts (slice_mean: weighted by slices), everything else
+# (wall times, *_max, *_peak) → max. Non-numeric values and
 # device descriptors come from the first part.
 # A key only some parts carry (a resumed GPU that computed nothing has no slice stats) is
 # aggregated over the parts that do; slice_mean is weighted by each part's slice count.
@@ -128,7 +130,7 @@ function _merge_stats(ds::Vector)
     for k in unique(k for d in ds for (k, v) in d if isnum(v))
         has = [d for d in ds if haskey(d, k) && isnum(d[k])]
         vals = [d[k] for d in has]
-        out[k] = k in ("slices", "samples", "batches_resumed", "compute") ? sum(vals) :
+        out[k] = k in ("slices", "batches_resumed", "compute") || endswith(k, "samples") ? sum(vals) :
             endswith(k, "_min") ? minimum(vals) :
             k == "slice_mean" && all(d -> haskey(d, "slices"), has) ?
                 sum(d -> d["slice_mean"] * d["slices"], has) / sum(d -> d["slices"], has) :
@@ -141,8 +143,11 @@ end
 # every part since each process saw one GPU) → one trace with device = 1…n, time-sorted.
 # Differing headers (counter sets) fall back to the first part's trace alone.
 function _merge_gpu_traces(outdir, run_tag, files)
-    paths = [joinpath(outdir, f) for f in files if isfile(joinpath(outdir, f))]
-    isempty(paths) && return first(files)
+    # device = the part's GPU index (gpu<k> → k + 1), even when another part's trace is missing
+    gpuidx(f) = (m = match(r"_gpu(\d+)\.tsv$", f); m === nothing ? nothing : parse(Int, m[1]) + 1)
+    present = [(gpuidx(f), joinpath(outdir, f)) for f in files if isfile(joinpath(outdir, f))]
+    isempty(present) && return first(files)
+    paths = last.(present)
     heads = [readline(p) for p in paths]
     allequal(heads) || (@warn "GPU traces have different columns — keeping the first only" files; return basename(first(paths)))
     cols = split(lstrip(first(heads), ['#', ' ']), '\t')
@@ -151,7 +156,7 @@ function _merge_gpu_traces(outdir, run_tag, files)
     for (k, p) in enumerate(paths), ln in Iterators.drop(eachline(p), 1)
         isempty(ln) && continue
         f = split(ln, '\t')
-        di === nothing || (f[di] = string(k))
+        di === nothing || (f[di] = string(something(first(present[k]), k)))
         push!(rows, (something(tryparse(Float64, f[1]), Inf), join(f, '\t')))
     end
     sort!(rows; by = first)
@@ -193,12 +198,13 @@ function merge_radiation_parts(outdir, run_tag, n)
             m["config"]["n_slices"] * m["timing"]["slice_mean"] / n
     end
     outs = Dict{String, Any}()
+    scalar = Set{String}()   # keys every part wrote as one file name (the shared batch manifest)
     for p in ps, (k, v) in get(p, "outputs", Dict())
+        v isa AbstractVector || push!(scalar, k)
         outs[k] = unique(vcat(get(outs, k, String[]), v isa AbstractVector ? v : [v]))
     end
-    # a single shared file (the batch layout manifest) stays a plain string
-    for (k, v) in outs
-        length(v) == 1 && (outs[k] = only(v))
+    for k in scalar
+        length(outs[k]) == 1 && (outs[k] = only(outs[k]))
     end
     # The dashboard reads [outputs].gpu_trace as ONE file: fold the per-GPU traces into
     # gputrace_<tag>.tsv, as a multi-device solver run writes it.

@@ -111,8 +111,13 @@ outfile = joinpath(OUTDIR, isempty(RUN_TAG) ? "radiation_cube.jls" : "radiation_
 mkpath(OUTDIR)
 nb = BATCH > 0 ? cld(NSLICES, BATCH) : 0
 mine = let s = get(ENV, "EDM_RAD_BATCHES", "")
-    (BATCH == 0 || isempty(s)) ? (1:nb) : (let (a, b) = parse.(Int, split(s, ':')); a:min(b, nb) end)
+    BATCH == 0 && !isempty(s) && @warn "EDM_RAD_BATCHES=$s is ignored without EDM_RAD_BATCH > 0"
+    (BATCH == 0 || isempty(s)) ? (1:nb) : (let (a, b) = parse.(Int, split(s, ':')); max(a, 1):min(b, nb) end)
 end
+# Atomic replace: mv(; force = true) deletes the destination before renaming, so a concurrent
+# reader could find it missing for a moment.
+atomic_mv(src, dst) = isdefined(Base.Filesystem, :rename) ?
+    Base.Filesystem.rename(src, dst) : mv(src, dst; force = true)
 tagged(prefix, ext) = joinpath(OUTDIR, string(prefix, "_", isempty(RUN_TAG) ? "local" : RUN_TAG,
     PART === nothing ? "" : "_gpu$(PART)", ext))
 gputracefile = tagged("gputrace", ".tsv")
@@ -169,6 +174,16 @@ manifest_setup() = Dict{String, Any}(
     "tau_span" => [τi, τf], "backscatter_n0" => IS_INVERSE ? DOPPLER : 1.0,
     "saveat_knots_per_period" => IS_INVERSE ? SAVEAT_KNOTS : 16.0,
 )
+# Everything a cube's numbers depend on (the physics config, laser and setup, without the
+# bookkeeping keys). A resume only reuses sealed batches written under the same fingerprint.
+function cube_fingerprint()
+    c = manifest_config()
+    foreach(k -> delete!(c, k), ("bench", "batches", "sync_per_electron"))
+    for (sec, d) in (("laser", manifest_laser()), ("setup", manifest_setup())), (k, v) in d
+        c["$sec.$k"] = v
+    end
+    return repr(sort!(collect(c); by = first))
+end
 function finish_manifest(timing, outputs, telem)
     isfile(gputracefile) && (outputs["gpu_trace"] = basename(gputracefile))
     p = try
@@ -217,10 +232,18 @@ if BATCH > 0
     # Several processes may share this output: each writes the (identical) manifest
     # through its own tmp name and an atomic rename.
     mf = "$(base)_manifest.jls"
+    fingerprint = cube_fingerprint()
+    sealed = count(bi -> isfile(batch_file(bi)), 1:nb)
+    if sealed > 0
+        old = isfile(mf) ? get(deserialize(mf), :fingerprint, nothing) : nothing
+        old == fingerprint || error("$sealed sealed batch file(s) $(base)_batch*.jls were written " *
+            "under a different configuration (or before configs were fingerprinted); move them " *
+            "away or use a new EDM_RUN_TAG")
+    end
     serialize("$mf.$(getpid()).tmp",
         (; slice_zs, txs, tys, frame_times, NSLICES, NT, batch = BATCH, n_batches = nb,
-            geometry = GEOMETRY))
-    mv("$mf.$(getpid()).tmp", mf; force = true)
+            geometry = GEOMETRY, fingerprint))
+    atomic_mv("$mf.$(getpid()).tmp", mf)
     todo = filter(bi -> !isfile(batch_file(bi)), mine)
     length(todo) < length(mine) &&
         @info "resuming: $(length(mine) - length(todo)) of $(length(mine)) batches already sealed"
@@ -242,7 +265,7 @@ if BATCH > 0
             bf = batch_file(bi)
             serialize(bf * ".tmp", (; rad = buf[:, 1:n, :, :], rad_s = buf_s[:, 1:n, :, :],
                 slices = lo:hi))
-            mv(bf * ".tmp", bf; force = true)
+            atomic_mv(bf * ".tmp", bf)
             @info "batch $bi/$nb sealed → $bf"
         end
     end

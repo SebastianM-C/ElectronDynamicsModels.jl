@@ -16,9 +16,16 @@
 
 include(joinpath(@__DIR__, "radiation_manifest.jl"))   # HAS_MANIFEST + merge_radiation_parts
 
-const NGPU = let s = get(ENV, "EDM_RAD_GPUS", get(ENV, "EDM_BENCH_GPUS", ""))
-    isempty(s) ? count(l -> startswith(l, "GPU "), readlines(`nvidia-smi -L`)) : parse(Int, s)
+function gpu_count()
+    s = get(ENV, "EDM_RAD_GPUS", get(ENV, "EDM_BENCH_GPUS", ""))
+    isempty(s) || return parse(Int, s)
+    try
+        return count(l -> startswith(l, "GPU "), readlines(`nvidia-smi -L`))
+    catch
+        error("cannot count GPUs with nvidia-smi (ROCm host?): set EDM_RAD_GPUS")
+    end
 end
+const NGPU = gpu_count()
 const BENCH = get(ENV, "EDM_BENCH", "0") == "1"
 const BATCH = parse(Int, get(ENV, "EDM_RAD_BATCH", "0"))
 const NSLICES = parse(Int, get(ENV, "EDM_RAD_NSLICES", "128"))
@@ -39,26 +46,33 @@ end
 
 @info "launching $NGPU concurrent precompute processes ($THREADS threads each)" BENCH BATCH NB
 logs = [joinpath(OUT, "radiation_$(TAG)_gpu$(k).log") for k in 0:(NGPU - 1)]
+# a part left by an earlier attempt must never stand in for one this run failed to write
+foreach(k -> rm(joinpath(OUT, "radpart_$(TAG)_gpu$(k).toml"); force = true), 0:(NGPU - 1))
 t = @elapsed begin
     procs = map(0:(NGPU - 1)) do k
         env = Pair{String, String}["CUDA_VISIBLE_DEVICES" => string(k), "EDM_RAD_PART" => string(k)]
         BENCH || NB == 0 || push!(env, "EDM_RAD_BATCHES" => "$(first(share(k))):$(last(share(k)))")
         cmd = addenv(`$(Base.julia_cmd()) --startup=no --project=$(Base.active_project()) -t $THREADS $SCRIPT`, env...)
-        run(pipeline(cmd; stdout = logs[k + 1], stderr = logs[k + 1]); wait = false)
+        # ONE handle for both streams: two opens of the same path truncate and overwrite each other
+        io = open(logs[k + 1], "w")
+        (run(pipeline(cmd; stdout = io, stderr = io); wait = false), io)
     end
-    foreach(wait, procs)
+    foreach(((p, io),) -> (wait(p); close(io)), procs)
 end
+procs = first.(procs)
+# success(), not exitcode == 0: a process killed by a signal (OOM, eviction) has exitcode 0
+status(p) = p.termsignal != 0 ? "killed by signal $(p.termsignal)" : "exit $(p.exitcode)"
 for (k, l) in enumerate(logs)
     lines = filter(s -> occursin(r"bench:|NSUB|radiation precompute|batches .* done|manifest|ERROR|Warning", s), readlines(l))
-    println("── GPU $(k - 1) (exit $(procs[k].exitcode)):")
+    println("── GPU $(k - 1) ($(status(procs[k]))):")
     foreach(s -> println("   ", s), lines)
 end
 @info "all $NGPU processes finished in $(round(t / 60; digits = 1)) min"
-if HAS_MANIFEST && all(p -> p.exitcode == 0, procs)
+if HAS_MANIFEST && all(success, procs)
     try
         @info "manifest → $(merge_radiation_parts(OUT, TAG, NGPU))"
     catch err
         @warn "manifest merge failed — the per-GPU parts are kept" exception = err
     end
 end
-any(p -> p.exitcode != 0, procs) && exit(1)
+all(success, procs) || exit(1)

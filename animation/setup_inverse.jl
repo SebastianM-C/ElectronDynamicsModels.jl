@@ -20,7 +20,8 @@
 # Physics notes (a0 = 1, γ = 1.5): the light-front momentum h = γ(1+β) = 2.62 is conserved in
 # the wave, so p_z drops from γβ = 1.12 to (h² − 1 − a²)/2h = 0.93 m c at the peak: a visible
 # slowdown, no reflection (that needs a > √(h² − 1) = 2.4). The on-axis forward line is
-# ω_s/ω = (1+β)/(1−β) = 6.85 at γ = 1.5 (13.9 at γ = 2), redshifted by ~1 + a0²/2.
+# ω_s/ω = (1+β)/(1−β) = 6.85 at γ = 1.5 (13.9 at γ = 2), redshifted by ~1 + a0²/2 (linear polarization;
+# 1 + a0² for circular).
 
 using ElectronDynamicsModels
 using ModelingToolkit

@@ -143,7 +143,7 @@ _write_sweep_decl() {
                   axes = split(replace(ENV["SWEEP_DECL_AXES"], "," => " ")),
                   design = ENV["SWEEP_DECL_DESIGN"],
                   label = isempty(ENV["SWEEP_DECL_LABEL"]) ? nothing : ENV["SWEEP_DECL_LABEL"],
-                  benchmark = ENV["SWEEP_DECL_BENCHMARK"] == "1",
+                  benchmark = lowercase(ENV["SWEEP_DECL_BENCHMARK"]) in ("1", "true", "yes"),
                   scaling = isempty(ENV["SWEEP_DECL_SCALING"]) ? nothing : ENV["SWEEP_DECL_SCALING"])' ) \
         || echo "[warn] sweep declaration write failed — campaign continues (dashboard falls back to detection)" >&2
 }
