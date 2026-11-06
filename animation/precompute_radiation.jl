@@ -12,7 +12,15 @@
 #   EDM_GPU_BACKEND   cuda (default, local RTX 4080S) | rocm (cloud MI300X) | cpu (tests)
 #   EDM_RAD_NT        transverse pixels per side        (default 96)
 #   EDM_RAD_NSLICES   slices along propagation          (default 128)
-#   EDM_NSUBSTEPS     retarded-solve substeps           (default recommended_n_substeps)
+#   EDM_ACCUM_ALG     rk4 | newton: retarded-time solver (default rk4). Newton solves the
+#                     light-cone condition per sample, so its cost per sample is n_iters + 1
+#                     spline evaluations against 4·n_substeps + 1 for the RK4 march
+#   EDM_NEWTON_ITERS  Newton corrections per sample     (default 2; newton only)
+#   EDM_NSUBSTEPS     retarded-solve substeps           (default recommended_n_substeps; rk4 only)
+#   EDM_SAMPLE_CHUNKS threads per pixel, each walking a slice of the frame samples (default 1).
+#                     One slice is only NT² pixels (16k at NT=128) — far fewer threads than a
+#                     datacenter GPU holds — so chunks > 1 fill the device (each chunk starts
+#                     from a cold light-cone solve).
 #   EDM_RAD_FRAME_STRIDE  subsample the frame clock (test strips only, default 1)
 #   EDM_BENCH         "1" → time the worst-case mid slice twice (2nd run excludes
 #                     kernel compile), print the full-cube estimate, exit
@@ -93,7 +101,13 @@ slice_screen(z) = ObserverScreen(txs, tys, z, x⁰_samples; c)
 NSUB = let s = get(ENV, "EDM_NSUBSTEPS", "")
     isempty(s) ? recommended_n_substeps(slice_screen(first(slice_zs))) : parse(Int, s)
 end
-@info "radiation precompute" GPU_BACKEND GEOMETRY NT NSLICES n_frames NSUB n_electrons = length(trajs)
+SAMPLE_CHUNKS = parse(Int, get(ENV, "EDM_SAMPLE_CHUNKS", "1"))
+const ACCUM_ALG = lowercase(get(ENV, "EDM_ACCUM_ALG", "rk4"))
+ACCUM_ALG in ("rk4", "newton") || error("EDM_ACCUM_ALG must be rk4 or newton, got $(repr(ACCUM_ALG))")
+NEWTON_ITERS = parse(Int, get(ENV, "EDM_NEWTON_ITERS", "2"))
+const SOLVER_ALG = ACCUM_ALG == "newton" ? GPUKernelNewton() : GPUKernelRK4()
+const SOLVER_KW = ACCUM_ALG == "newton" ? (; n_iters = NEWTON_ITERS) : (; n_substeps = NSUB)
+@info "radiation precompute" GPU_BACKEND GEOMETRY NT NSLICES n_frames ACCUM_ALG NSUB NEWTON_ITERS SAMPLE_CHUNKS n_electrons = length(trajs)
 
 # EDM_RAD_BATCH > 0: stream the cube out as per-batch slice files instead of
 # one monolith — each completed batch is serialized (atomic .tmp → rename) and
@@ -129,8 +143,9 @@ gputracefile = tagged("gputrace", ".tsv")
 const launch_timer = new_launch_timer()
 function far_fields(screen; timer = launch_timer)
     fld = accumulate_field(
-        trajs, screen, GPUKernelRK4(), gpu_backend;
-        n_substeps = NSUB, mode = Val(:split), sync_per_electron = SYNC, timer,
+        trajs, screen, SOLVER_ALG, gpu_backend;
+        SOLVER_KW..., sample_chunks = SAMPLE_CHUNKS, mode = Val(:split),
+        sync_per_electron = SYNC, timer,
     )
     intens = Float32.(dropdims(sum(abs2, fld.E_far; dims = 2); dims = 2))
     signed = Float32.(fld.E_far[:, 1, :, :])
@@ -152,8 +167,9 @@ function manifest_config()
         "frame_stride" => FRAME_STRIDE,
         "t_start_T0" => first(frame_times) / T0, "t_end_T0" => last(frame_times) / T0,
         "z_min_lambda" => ZMIN / λ, "z_max_lambda" => ZMAX / λ,
-        "transverse_halfwidth_w0" => 2.0, "n_substeps" => NSUB, "sync_per_electron" => SYNC,
-        "field_mode" => "split", "accumulation_alg" => "GPUKernelRK4",
+        "transverse_halfwidth_w0" => 2.0, "sample_chunks" => SAMPLE_CHUNKS, "sync_per_electron" => SYNC,
+        "field_mode" => "split", "accumulation_alg" => string(nameof(typeof(SOLVER_ALG))),
+        "n_substeps" => NSUB, "newton_iters" => NEWTON_ITERS,   # both always, as the solver manifests do
         "batch" => BATCH, "n_batches" => nb, "batches" => BATCH > 0 ? "$(first(mine)):$(last(mine))" : "",
     )
     if IS_INVERSE
