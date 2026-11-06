@@ -19,7 +19,8 @@
 #   • capacity: GET /instance-availability/<type>?location_code= is a free boolean and POST
 #     /instances answers 503 when the type has no capacity ⇒ provision() polls a type×location ladder
 #   • the OS volume IS the disk ("dynamic" storage): size it for the campaign (VERDA_OS_VOLUME_GB,
-#     $0.20/GiB-month ⇒ 200 GiB ≈ 5.5 ¢/h); `delete` removes the OS volume by default (no leak)
+#     $0.20/GiB-month ⇒ 200 GiB ≈ 5.5 ¢/h); a plain `delete` TRASHES the OS volume
+#     (96 h, billed) ⇒ vm_delete asks for delete_permanently and purges the trash by id
 #   • billing in prepaid 10-min increments (unused remainder refunded); spot = 50 % list, evicted
 #     without warning (VERDA_SPOT=1 — OS volume → trash on eviction, salvageable for 96 h)
 #   • NVIDIA-only catalog (B300/B200/H200/H100/…) ⇒ BACKEND=cuda; depot cache keyed cuda+host CPU
@@ -217,7 +218,7 @@ wait_ready() {   # status → running + public ip, then sshd
         IP=$(vm_json | jq -r '.ip // empty' 2>/dev/null) || IP=""
         [ "$st" = running ] && [ -n "$IP" ] && { log "endpoint root@$IP ($st)"; vm_shape; break; }
         case "$st" in error|installation_failed|no_capacity|discontinued)
-            log "[ERROR] instance $VM entered '$st' — deleting it"; vm_delete; return 1 ;; esac
+            log "[ERROR] instance $VM entered '$st' — deleting it"; vm_delete; purge_trashed_vols; return 1 ;; esac
         sleep 15
     done
     [ -n "${IP:-}" ] && [ "$st" = running ] || { log "[ERROR] VM not running after wait (status $st)"; return 1; }
@@ -512,8 +513,35 @@ attach_campaign() {   # resume monitoring+download after a driver-side interrupt
     monitor_and_download
 }
 
-vm_delete() {   # PUT /instances {action:delete} — deletes the OS volume too (API default), i.e. no storage leak
+# A plain {action:delete} moves the OS volume to the TRASH (kept 96 h, still billed), not "with
+# the VM" — two 200 GiB disks sat there after 2026-11-02 teardowns. So name the VM's volumes and
+# ask for delete_permanently; if that body is refused (e.g. a spot-evicted VM whose volume is
+# already trashed), fall back to the plain delete and purge the trash by id afterwards.
+vm_delete() {
+    VM_VOLS=$(vm_json | jq -c '[.os_volume_id // empty] + (.volume_ids // []) | map(tostring) | unique' 2>/dev/null) || VM_VOLS='[]'
+    [ -n "$VM_VOLS" ] || VM_VOLS='[]'
+    if [ "$VM_VOLS" != '[]' ] && vapi -X PUT "$API/instances" \
+        -d "$(jq -n --arg id "$VM" --argjson v "$VM_VOLS" '{action:"delete",id:$id,volume_ids:$v,delete_permanently:true}')" >/dev/null; then
+        return 0
+    fi
     vapi -X PUT "$API/instances" -d "$(jq -n --arg id "$VM" '{action:"delete",id:$id}')" >/dev/null
+}
+
+purge_trashed_vols() {   # best effort: anything of this VM's that still landed in the trash
+    [ "${VM_VOLS:-[]}" != '[]' ] || return 0
+    local hit i
+    for i in 1 2 3; do   # the trash move lags the delete by a few seconds
+        hit=$(vapi "$API/volumes/trash" 2>/dev/null | jq -c --argjson v "$VM_VOLS" '[.[] | select(.is_permanently_deleted != true) | .id | select(IN($v[]))]' 2>/dev/null) || hit='[]'
+        [ "$hit" != '[]' ] && [ -n "$hit" ] && break
+        sleep 10
+    done
+    [ "$hit" != '[]' ] && [ -n "$hit" ] || return 0
+    if vapi -X PUT "$API/volumes" -d "$(jq -n --argjson v "$hit" '{action:"delete",id:$v,is_permanent:true}')" >/dev/null; then
+        log "purged trashed volume(s) $hit"
+    else
+        log "[WARN] volume(s) $hit are in the Verda trash (billed until purged) — delete them permanently in the console"
+        notify warning high "EDM verda trash" "VM $VM: volume(s) $hit left in the trash; purge in the console"
+    fi
 }
 
 teardown() {
@@ -523,7 +551,8 @@ teardown() {
     /usr/bin/ssh -O exit -o ControlPath="$CM" root@"$IP" 2>/dev/null || true
     if vm_delete 2>/dev/null; then
         rm -f "$STATE"; ledger "$VM" teardown "type=$TYPE loc=$LOC" "" "$(vm_balance)"
-        log "deleted VM $VM (OS volume removed with it; billing stops at the current 10-min increment)"
+        log "deleted VM $VM, volumes ${VM_VOLS:-[]} permanently requested (billing stops at the current 10-min increment)"
+        purge_trashed_vols
         notify checkered_flag default "EDM verda torn down" "VM $VM ($TYPE) deleted."
     else
         notify rotating_light urgent "EDM teardown FAILED" "delete of VM $VM errored — likely STILL billing. Delete in the Verda console."
