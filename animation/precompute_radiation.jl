@@ -78,8 +78,8 @@ BENCH = get(ENV, "EDM_BENCH", "0") == "1"
 # launches matters even more here than at production size.
 SYNC = parse(Bool, get(ENV, "EDM_SYNC_PER_ELECTRON", "false"))
 
-txs = LinRange(-2w₀, 2w₀, NT)
-tys = LinRange(-2w₀, 2w₀, NT)
+txs = LinRange(first(xs), last(xs), NT)   # the setup's box (±2 w₀ unless EDM_ANIM_HALF_W)
+tys = LinRange(first(ys), last(ys), NT)
 # Slice extent along propagation, in λ units (defaults = the pulse box). The
 # animation's detector plane sits at +16λ; extending ZMAX there makes the cube
 # meet the screen with no gap.
@@ -162,7 +162,7 @@ const IS_INVERSE = GEOMETRY == "inverse"
 function manifest_config()
     d = Dict{String, Any}(
         "kind" => "radiation_cube", "bench" => BENCH, "geometry" => GEOMETRY,
-        "mode" => IS_INVERSE ? ANIM_MODE : "hero", "a0" => a₀, "N" => length(trajs),
+        "mode" => ANIM_MODE, "a0" => a₀, "N" => length(trajs),
         "Nx" => NT, "Ny" => NT, "N_samples" => n_frames, "n_slices" => NSLICES,
         "frame_stride" => FRAME_STRIDE,
         "t_start_T0" => first(frame_times) / T0, "t_end_T0" => last(frame_times) / T0,

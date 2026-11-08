@@ -21,12 +21,23 @@ const c = 137.03599908330932
 T0 = 2π / ω              # laser period
 λ = 2π * c / ω
 w₀ = 4λ                  # stylized waist: helix pitch (λ) visible against the donut (w₀)
-τ = 2.5T0                # few-cycle pulse
 a₀ = 1.0                 # ponderomotive kick ∝ a0² — keeps the scattering visible
-p_radial = 0
-m_azimuthal = 1          # single-start helix
-pol = :linear            # signed E-components carry the helical wavefronts
-ϕ₀ = 0.0
+# EDM_ANIM_MODE (changing it invalidates every cube): hero = m 1, p 0, linear (single-start helix; signed E-components
+# carry the helical wavefronts), τ 2.5 T0; thesis = the thesis runs' mode, m −2, p 2, circular_minus, φ₀ −π/2, τ 3 T0
+# (as setup_inverse.jl's thesis mode). EDM_ANIM_RMAX (disk radius, w₀; default 1.2, the thesis runs use 3.25),
+# EDM_ANIM_N (electrons, default 800) and EDM_ANIM_HALF_W (transverse half-width of the box, w₀; default 2) widen the
+# scene for the thesis mode, whose outer ring peaks at √5 w₀.
+const ANIM_MODE = lowercase(get(ENV, "EDM_ANIM_MODE", "hero"))
+const MODES = Dict(
+    "hero" => (; m = 1, p = 0, pol = :linear, τ = 2.5T0, ϕ₀ = 0.0),
+    "thesis" => (; m = -2, p = 2, pol = :circular_minus, τ = 3.0T0, ϕ₀ = -π / 2),
+)
+haskey(MODES, ANIM_MODE) || error("EDM_ANIM_MODE must be hero or thesis, got $(repr(ANIM_MODE))")
+τ = MODES[ANIM_MODE].τ
+p_radial = MODES[ANIM_MODE].p
+m_azimuthal = MODES[ANIM_MODE].m
+pol = MODES[ANIM_MODE].pol
+ϕ₀ = MODES[ANIM_MODE].ϕ₀
 
 @named world = Worldline(:τ, :atomic)
 @named laser = LaguerreGaussLaser(;
@@ -66,8 +77,8 @@ play_times = LinRange(t_start, t_play_end, n_play_frames)
 
 # ── Electron cloud: sunflower disk at the focal plane, at rest ──
 
-N = 800
-Rmax = 1.2w₀
+N = parse(Int, get(ENV, "EDM_ANIM_N", "800"))
+Rmax = parse(Float64, get(ENV, "EDM_ANIM_RMAX", "1.2")) * w₀
 R₀ = Rmax * sunflower(N, 2)
 
 # ── Trajectory solve ──
@@ -140,6 +151,7 @@ electron_positions(trajs, t) = [position_at_labtime(traj, t) for traj in trajs]
 fe = FieldEvaluator(laser)
 
 nx, ny, nz = 128, 128, 384
-xs = LinRange(-2w₀, 2w₀, nx)
-ys = LinRange(-2w₀, 2w₀, ny)
+const HALF_W_BOX = parse(Float64, get(ENV, "EDM_ANIM_HALF_W", "2"))
+xs = LinRange(-HALF_W_BOX * w₀, HALF_W_BOX * w₀, nx)
+ys = LinRange(-HALF_W_BOX * w₀, HALF_W_BOX * w₀, ny)
 zs = LinRange(-12λ, 12λ, nz)   # extended along propagation so the flight reads
