@@ -37,6 +37,8 @@
 #             EDM_SWEEP=other override wins — that's how one dir hosts several named sweeps).
 #   SWEEP_NAME  declaration name, a slug (default: $CAMPAIGN, else basename $CAMP)
 #   SWEEP_DESIGN grid (default) | oat        SWEEP_LABEL optional display label
+#   SWEEP_BENCHMARK=1  declare the sweep a BENCHMARK (dashboard /benchmarks; no reduce owed)
+#   SWEEP_SCALING strong | weak — what a benchmark's device_count axis measures (default: strong)
 # Usage: run_cell <label> [EDM_VAR=val ...]   (per-cell overrides win — env is last-wins)
 : "${SCRIPT:=scripts/thomson_scattering.jl}"
 
@@ -133,13 +135,16 @@ _write_sweep_decl() {
     ( cd "$REPO" && env ${PREENV[@]+"${PREENV[@]}"} \
           SWEEP_DECL_DIR="$CAMP" SWEEP_DECL_NAME="$SWEEP_NAME" SWEEP_DECL_AXES="$SWEEP_AXES" \
           SWEEP_DECL_SCRIPT="$(basename "$SCRIPT")" SWEEP_DECL_DESIGN="${SWEEP_DESIGN:-grid}" \
-          SWEEP_DECL_LABEL="${SWEEP_LABEL:-}" \
+          SWEEP_DECL_LABEL="${SWEEP_LABEL:-}" SWEEP_DECL_BENCHMARK="${SWEEP_BENCHMARK:-0}" \
+          SWEEP_DECL_SCALING="${SWEEP_SCALING:-}" \
           "${JL[@]}" --project=scripts -e 'using RunManifests
               write_sweep_declaration(ENV["SWEEP_DECL_DIR"];
                   name = ENV["SWEEP_DECL_NAME"], script = ENV["SWEEP_DECL_SCRIPT"],
                   axes = split(replace(ENV["SWEEP_DECL_AXES"], "," => " ")),
                   design = ENV["SWEEP_DECL_DESIGN"],
-                  label = isempty(ENV["SWEEP_DECL_LABEL"]) ? nothing : ENV["SWEEP_DECL_LABEL"])' ) \
+                  label = isempty(ENV["SWEEP_DECL_LABEL"]) ? nothing : ENV["SWEEP_DECL_LABEL"],
+                  benchmark = lowercase(ENV["SWEEP_DECL_BENCHMARK"]) in ("1", "true", "yes"),
+                  scaling = isempty(ENV["SWEEP_DECL_SCALING"]) ? nothing : ENV["SWEEP_DECL_SCALING"])' ) \
         || echo "[warn] sweep declaration write failed — campaign continues (dashboard falls back to detection)" >&2
 }
 

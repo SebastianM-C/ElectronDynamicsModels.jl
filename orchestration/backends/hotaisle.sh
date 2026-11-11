@@ -42,7 +42,7 @@ DEPOT_CACHE="${DEPOT_CACHE:-}"; DEPOT_CACHE_KEY="${DEPOT_CACHE_KEY:-$HOME/.confi
 CM="$HOME/.ssh/cm-hotaisle-%C.sock"
 # HOTAISLE_SSH_KEY (optional): private key pinned with -i/IdentitiesOnly for headless drivers
 # (no ssh agent) — its pubkey must be on the Hot Aisle ACCOUNT before the VM is provisioned.
-SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600${HOTAISLE_SSH_KEY:+ -i $HOTAISLE_SSH_KEY -o IdentitiesOnly=yes}"
+SSHOPTS="-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=20 -o ServerAliveInterval=30 -o ServerAliveCountMax=4 -o ControlMaster=auto -o ControlPath=$CM -o ControlPersist=600${HOTAISLE_SSH_KEY:+ -i $HOTAISLE_SSH_KEY -o IdentitiesOnly=yes}"
 
 api()       { curl -fsS -X "$1" -H "Authorization: Token $TOK" "${@:3}" "$API$2"; }
 ssh_vm()    { /usr/bin/ssh $SSHOPTS hotaisle@"$IP" "$@"; }

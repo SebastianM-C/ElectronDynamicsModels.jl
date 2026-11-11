@@ -12,6 +12,12 @@
 /animation/*.mp4
 /animation/*.jls
 /animation/*.jls.partial
+/animation/run_*.toml
+/animation/radpart_*.toml
+/animation/radattempt_*.toml
+/animation/gputrace_*.tsv
+/animation/radiation_*.log
+/animation/radiation_cube*_done
 /animation/camera_keyframes.jl
 # Orchestration framework is COMMITTED (portable across machines); only the machine-specific
 # infra config is ignored. Secrets never live here — they stay in ~/.config (referenced by path).

@@ -705,10 +705,11 @@ end
 
 const SWEEP_NAME_RE = r"^[a-z0-9][a-z0-9_-]*$"
 const SWEEP_DESIGNS = ("grid", "oat")
+const SWEEP_SCALINGS = ("strong", "weak")
 
 """
     write_sweep_declaration(dir; name, script, axes, design = "grid", hub = nothing,
-                            label = nothing) -> path
+                            label = nothing, benchmark = false, scaling = nothing) -> path
 
 Write the `sweep_<name>.toml` declaration into `dir` — the launch-time statement of a
 campaign's structure that the dashboard prefers over sweep auto-detection.
@@ -726,13 +727,21 @@ campaign's structure that the dashboard prefers over sweep auto-detection.
     one-at-a-time arms sharing a hub cell).
   * `hub` — optional run uuid overriding the inferred OAT hub.
   * `label` — optional display label (defaults to `name` dashboard-side).
+  * `benchmark` — `true` marks the member runs as BENCHMARK runs (timing/diagnostics, no
+    reduce owed): the dashboard moves them to /benchmarks and status.json gives them the
+    `benchmark` rung. Written only when true, so ordinary declarations are unchanged.
+  * `scaling` — `"strong"` | `"weak"` (benchmark ladders): what a device-count axis measures
+    on the dashboard's /benchmarks page; strong = the same job split over more devices
+    (speedup), weak = the work grows with the devices (per-device efficiency). Omitted when
+    `nothing`; undeclared, a `device_count` axis is drawn as strong.
 
 Idempotent: rewrites `sweep_<name>.toml` in place (`run_cell.sh` calls this once per
 campaign, gated on the file's absence). Stamps `schema_version` like the other writers.
 """
 function write_sweep_declaration(
         dir::AbstractString; name, script, axes,
-        design = "grid", hub = nothing, label = nothing
+        design = "grid", hub = nothing, label = nothing, benchmark::Bool = false,
+        scaling = nothing
     )
     n = string(name)
     occursin(SWEEP_NAME_RE, n) || error(
@@ -755,6 +764,14 @@ function write_sweep_declaration(
     )
     hub === nothing || (s["hub"] = string(hub))
     label === nothing || (s["label"] = string(label))
+    benchmark && (s["benchmark"] = true)
+    if scaling !== nothing
+        string(scaling) in SWEEP_SCALINGS || error(
+            "write_sweep_declaration: unknown scaling $(repr(string(scaling))) — use one of " *
+                join(SWEEP_SCALINGS, ", ") * "."
+        )
+        s["scaling"] = string(scaling)
+    end
     m = Dict{String, Any}(
         "schema_version" => MANIFEST_SCHEMA_VERSION,
         "provenance" => Dict{String, Any}(
@@ -799,7 +816,9 @@ function read_sweep_declarations(dir::AbstractString)
         push!(out, (;
             name = n, script = string(s["script"]), axes = String.(s["axes"]),
             design = string(get(s, "design", "grid")), hub = get(s, "hub", nothing),
-            label = get(s, "label", nothing), path = joinpath(dir, f),
+            label = get(s, "label", nothing), benchmark = get(s, "benchmark", false) === true,
+            scaling = get(s, "scaling", nothing),
+            path = joinpath(dir, f),
         ))
     end
     return out
